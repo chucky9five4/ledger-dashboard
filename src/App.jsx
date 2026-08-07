@@ -53,6 +53,7 @@ const FIELD_TO_COLUMN = {
 function toSnakeRow(rec) {
   const out = {};
   Object.keys(rec).forEach((k) => { if (FIELD_TO_COLUMN[k]) out[FIELD_TO_COLUMN[k]] = rec[k]; });
+  ["sale_date", "effective_date", "payment_date"].forEach((col) => { if (out[col] === "") out[col] = null; });
   return out;
 }
 function toCamelRow(row) {
