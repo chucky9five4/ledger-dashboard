@@ -7,7 +7,7 @@ import {
 import {
   LayoutDashboard, UploadCloud, Users, Building2, Search, Database,
   Trash2, Download, AlertTriangle, CheckCircle2, FileSpreadsheet, X,
-  Settings, Cloud, CloudOff, IdCard, Link2, UserPlus
+  Settings, Cloud, CloudOff, Contact, Link2, UserPlus
 } from "lucide-react";
 
 // Local browser storage (used only as a fallback before Supabase is connected).
@@ -734,7 +734,7 @@ export default function App() {
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "import", label: "Import statement", icon: UploadCloud },
     { key: "agents", label: "Agents", icon: Users },
-    { key: "directory", label: "Agent directory", icon: IdCard },
+    { key: "directory", label: "Agent directory", icon: Contact },
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
