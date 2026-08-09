@@ -462,6 +462,8 @@ export default function App() {
     });
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: newRecords.length };
     const mappingPreset = { mapping, planTypeMode, planTypeColumn, planTypeFixed };
+    const { nameTextMap } = agentLookupMaps;
+    const newAgentsInBatch = [...new Set(newRecords.map((r) => r.agent))].filter((n) => !nameTextMap[normalizeNameKey(n)]);
 
     if (cloudCfg) {
       try {
@@ -471,7 +473,6 @@ export default function App() {
         setBatches((prev) => [...prev, batchEntry]);
         await sbFetch(cloudCfg, "carrier_mappings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier, mapping: mappingPreset.mapping, plan_type_mode: mappingPreset.planTypeMode, plan_type_column: mappingPreset.planTypeColumn, plan_type_fixed: mappingPreset.planTypeFixed }]) });
         setCarrierMappings((prev) => ({ ...prev, [carrier]: mappingPreset }));
-        showToast(`Imported ${newRecords.length} rows from ${carrier} to your database.`);
       } catch (e) {
         showToast("Import failed to save: " + e.message, "error");
         return;
@@ -486,10 +487,16 @@ export default function App() {
         await storage.set("upload-batches", JSON.stringify(nextBatches), false);
         await storage.set("carrier-mappings", JSON.stringify(nextMappings), false);
       } catch (e) { showToast("Could not save locally.", "error"); }
-      showToast(`Imported ${newRecords.length} rows from ${carrier}.`);
     }
     resetImportStaging();
-    setView("dashboard");
+    if (cloudCfg && newAgentsInBatch.length > 0) {
+      showToast(`Imported ${newRecords.length} rows from ${carrier} \u2014 ${newAgentsInBatch.length} agent name(s) need review.`, "success");
+      setView("directory");
+      setDirectoryTab("unmatched");
+    } else {
+      showToast(`Imported ${newRecords.length} rows from ${carrier}.`);
+      setView("dashboard");
+    }
   }
 
   // ---------- MANAGE DATA ----------
@@ -613,8 +620,20 @@ export default function App() {
       const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ canonical_name: rawName, npn: null }]) });
       const agent = inserted[0];
       await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agent.id, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
+
+      // Catch up any sibling spellings already sitting in the data (e.g. an
+      // ALL-CAPS variant of the same name) so they get relabeled too, not
+      // just silently marked "known" without their records being fixed.
+      const targetKey = normalizeNameKey(rawName);
+      const siblingNames = [...new Set(records.map((r) => r.agent))].filter((n) => n !== rawName && normalizeNameKey(n) === targetKey);
+      for (const sibling of siblingNames) {
+        await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(sibling)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: rawName }) });
+      }
+      if (siblingNames.length) {
+        setRecords((prev) => prev.map((r) => (siblingNames.includes(r.agent) ? { ...r, agent: rawName } : r)));
+      }
       await loadDirectory(cloudCfg);
-      showToast(`"${rawName}" added as a new agent.`);
+      showToast(siblingNames.length ? `"${rawName}" added, and ${siblingNames.length} matching spelling(s) merged in.` : `"${rawName}" added as a new agent.`);
     } catch (e) { showToast("Could not create agent: " + e.message, "error"); }
   }
 
@@ -757,6 +776,7 @@ export default function App() {
             <button key={n.key} className={"pt-nav-item" + (view === n.key ? " active" : "")} onClick={() => setView(n.key)}>
               <n.icon size={17} strokeWidth={1.75} />
               <span>{n.label}</span>
+              {n.key === "directory" && unmatchedAgentNames.length > 0 && <span className="pt-nav-badge">{unmatchedAgentNames.length}</span>}
             </button>
           ))}
         </nav>
@@ -1445,6 +1465,7 @@ const CSS = `
 }
 .pt-nav-item:hover { background: rgba(255,255,255,0.05); }
 .pt-nav-item.active { background: rgba(184,134,59,0.14); border-left-color: var(--gold); color: #fff; }
+.pt-nav-badge { margin-left: auto; background: var(--gold); color: var(--ink); font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
 .pt-sidebar-footer { margin-top: auto; padding: 14px 10px 6px; border-top: 1px solid rgba(255,255,255,0.08); }
 .pt-conn-dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #8A96AE; margin-bottom: 10px; }
 .pt-conn-dot.on { color: #8FD1A8; }
