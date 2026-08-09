@@ -7,7 +7,7 @@ import {
 import {
   LayoutDashboard, UploadCloud, Users, Building2, Search, Database,
   Trash2, Download, AlertTriangle, CheckCircle2, FileSpreadsheet, X,
-  Settings, Cloud, CloudOff
+  Settings, Cloud, CloudOff, IdCard, Link2, UserPlus
 } from "lucide-react";
 
 // Local browser storage (used only as a fallback before Supabase is connected).
@@ -34,6 +34,8 @@ const CHART_COLORS = ["#B8863B", "#12203B", "#2E7D8C", "#1F7A4D", "#6B4C7A", "#B
 
 const MAPPING_FIELDS = [
   { key: "agent", label: "Agent name", required: true },
+  { key: "agentNpn", label: "Agent NPN (National Producer Number)", required: false },
+  { key: "agentCarrierId", label: "Agent ID (this carrier's own agent #, e.g. Humana ID)", required: false },
   { key: "product", label: "Plan / product name", required: true },
   { key: "commissionAmount", label: "Commission amount", required: true },
   { key: "clientName", label: "Client name", required: false },
@@ -43,12 +45,16 @@ const MAPPING_FIELDS = [
   { key: "commissionType", label: "Commission type (initial / renewal)", required: false },
   { key: "paymentDate", label: "Payment date", required: false },
 ];
+function normalizeNameKey(s) {
+  return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
 
 const FIELD_TO_COLUMN = {
   carrier: "carrier", agent: "agent", planType: "plan_type", product: "product",
   clientName: "client_name", saleDate: "sale_date", effectiveDate: "effective_date",
   status: "status", commissionAmount: "commission_amount", commissionType: "commission_type",
   paymentDate: "payment_date", uploadBatchId: "upload_batch_id", sourceFile: "source_file", importedAt: "imported_at",
+  agentNpn: "agent_npn", agentCarrierId: "carrier_agent_id",
 };
 function toSnakeRow(rec) {
   const out = {};
@@ -64,6 +70,7 @@ function toCamelRow(row) {
     commissionAmount: Number(row.commission_amount) || 0, commissionType: row.commission_type || "",
     paymentDate: row.payment_date || "", uploadBatchId: row.upload_batch_id,
     sourceFile: row.source_file, importedAt: row.imported_at,
+    agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "",
   };
 }
 function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount }; }
@@ -95,7 +102,9 @@ const SETUP_SQL = `create table policies (
   payment_date date,
   upload_batch_id text,
   source_file text,
-  imported_at timestamptz default now()
+  imported_at timestamptz default now(),
+  agent_npn text,
+  carrier_agent_id text
 );
 
 create table upload_batches (
@@ -114,13 +123,60 @@ create table carrier_mappings (
   plan_type_fixed text
 );
 
+create table agent_directory (
+  id uuid primary key default gen_random_uuid(),
+  canonical_name text not null,
+  npn text,
+  created_at timestamptz default now()
+);
+
+create table agent_aliases (
+  id uuid primary key default gen_random_uuid(),
+  agent_id uuid references agent_directory(id) on delete cascade,
+  alias_type text not null,
+  carrier text,
+  alias_value text not null,
+  created_at timestamptz default now()
+);
+
 alter table policies enable row level security;
 alter table upload_batches enable row level security;
 alter table carrier_mappings enable row level security;
+alter table agent_directory enable row level security;
+alter table agent_aliases enable row level security;
 
 create policy "allow all - solo use" on policies for all using (true) with check (true);
 create policy "allow all - solo use" on upload_batches for all using (true) with check (true);
-create policy "allow all - solo use" on carrier_mappings for all using (true) with check (true);`;
+create policy "allow all - solo use" on carrier_mappings for all using (true) with check (true);
+create policy "allow all - solo use" on agent_directory for all using (true) with check (true);
+create policy "allow all - solo use" on agent_aliases for all using (true) with check (true);`;
+
+const MIGRATION_SQL = `alter table policies add column if not exists agent_npn text;
+alter table policies add column if not exists carrier_agent_id text;
+
+create table if not exists agent_directory (
+  id uuid primary key default gen_random_uuid(),
+  canonical_name text not null,
+  npn text,
+  created_at timestamptz default now()
+);
+
+create table if not exists agent_aliases (
+  id uuid primary key default gen_random_uuid(),
+  agent_id uuid references agent_directory(id) on delete cascade,
+  alias_type text not null,
+  carrier text,
+  alias_value text not null,
+  created_at timestamptz default now()
+);
+
+alter table agent_directory enable row level security;
+alter table agent_aliases enable row level security;
+
+drop policy if exists "allow all - solo use" on agent_directory;
+drop policy if exists "allow all - solo use" on agent_aliases;
+create policy "allow all - solo use" on agent_directory for all using (true) with check (true);
+create policy "allow all - solo use" on agent_aliases for all using (true) with check (true);`;
 
 function excelSerialToDate(serial) {
   const utcDays = Math.floor(serial - 25569);
@@ -213,6 +269,21 @@ export default function App() {
   const [cloudTestKey, setCloudTestKey] = useState("");
   const [cloudStatus, setCloudStatus] = useState("idle");
   const [cloudError, setCloudError] = useState("");
+  const [agentDirectory, setAgentDirectory] = useState([]);
+  const [agentAliases, setAgentAliases] = useState([]);
+  const [directoryAvailable, setDirectoryAvailable] = useState(false);
+
+  async function loadDirectory(cfg) {
+    try {
+      const dir = await sbFetch(cfg, "agent_directory?select=*&order=canonical_name.asc");
+      const al = await sbFetch(cfg, "agent_aliases?select=*");
+      setAgentDirectory((dir || []).map((r) => ({ id: r.id, canonicalName: r.canonical_name, npn: r.npn || "" })));
+      setAgentAliases((al || []).map((r) => ({ id: r.id, agentId: r.agent_id, aliasType: r.alias_type, carrier: r.carrier || "", aliasValue: r.alias_value })));
+      setDirectoryAvailable(true);
+    } catch (e) {
+      setDirectoryAvailable(false);
+    }
+  }
 
   async function loadLocal() {
     try { const r = await storage.get("records", false); setRecords(r ? JSON.parse(r.value) : []); } catch (e) { setRecords([]); }
@@ -228,6 +299,7 @@ export default function App() {
     const mObj = {};
     (maps || []).forEach((row) => { mObj[row.carrier] = { mapping: row.mapping, planTypeMode: row.plan_type_mode, planTypeColumn: row.plan_type_column, planTypeFixed: row.plan_type_fixed }; });
     setCarrierMappings(mObj);
+    await loadDirectory(cfg);
   }
 
   useEffect(() => {
@@ -290,7 +362,7 @@ export default function App() {
   const [headers, setHeaders] = useState([]);
   const [rawRows, setRawRows] = useState([]);
   const [carrierInput, setCarrierInput] = useState("");
-  const [mapping, setMapping] = useState({ agent: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
+  const [mapping, setMapping] = useState({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
   const [planTypeMode, setPlanTypeMode] = useState("column");
   const [planTypeColumn, setPlanTypeColumn] = useState("");
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
@@ -298,7 +370,7 @@ export default function App() {
 
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
-    setMapping({ agent: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
+    setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
   }
 
@@ -339,27 +411,55 @@ export default function App() {
 
   const mappingValid = carrierInput.trim() && mapping.agent && mapping.product && mapping.commissionAmount;
 
+  const agentLookupMaps = useMemo(() => {
+    const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
+    agentDirectory.forEach((a) => { agentById[a.id] = a.canonicalName; });
+    agentAliases.forEach((a) => {
+      if (a.aliasType === "npn") npnMap[a.aliasValue] = a.agentId;
+      else if (a.aliasType === "carrier_id") carrierIdMap[(a.carrier || "") + "::" + a.aliasValue] = a.agentId;
+      else if (a.aliasType === "name_text") nameTextMap[a.aliasValue] = a.agentId;
+    });
+    agentDirectory.forEach((a) => { nameTextMap[normalizeNameKey(a.canonicalName)] = a.id; });
+    return { npnMap, carrierIdMap, nameTextMap, agentById };
+  }, [agentDirectory, agentAliases]);
+
+  function resolveAgentName(rawName, npn, carrierId, carrier) {
+    const { npnMap, carrierIdMap, nameTextMap, agentById } = agentLookupMaps;
+    if (npn && npnMap[npn]) return agentById[npnMap[npn]] || rawName;
+    if (carrierId && carrierIdMap[(carrier || "") + "::" + carrierId]) return agentById[carrierIdMap[(carrier || "") + "::" + carrierId]] || rawName;
+    const key = normalizeNameKey(rawName);
+    if (nameTextMap[key]) return agentById[nameTextMap[key]] || rawName;
+    return rawName;
+  }
+
   async function commitImport() {
     if (!mappingValid) return;
     const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
-    const newRecords = rawRows.map((r, i) => ({
-      id: batchId + "_" + i,
-      carrier,
-      agent: String(r[mapping.agent] ?? "").trim() || "Unassigned",
-      planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
-      product: String(r[mapping.product] ?? "").trim() || "Unspecified",
-      clientName: mapping.clientName ? String(r[mapping.clientName] ?? "").trim() : "",
-      saleDate: mapping.saleDate ? parseDateValue(r[mapping.saleDate]) : "",
-      effectiveDate: mapping.effectiveDate ? parseDateValue(r[mapping.effectiveDate]) : "",
-      status: mapping.status ? (String(r[mapping.status] ?? "").trim() || "Active") : "Active",
-      commissionAmount: parseMoney(r[mapping.commissionAmount]),
-      commissionType: mapping.commissionType ? String(r[mapping.commissionType] ?? "").trim() : "",
-      paymentDate: mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "",
-      uploadBatchId: batchId,
-      sourceFile: fileName,
-      importedAt: new Date().toISOString(),
-    }));
+    const newRecords = rawRows.map((r, i) => {
+      const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
+      const agentNpn = mapping.agentNpn ? String(r[mapping.agentNpn] ?? "").trim() : "";
+      const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
+      return {
+        id: batchId + "_" + i,
+        carrier,
+        agent: resolveAgentName(rawAgent, agentNpn, agentCarrierId, carrier),
+        agentNpn,
+        agentCarrierId,
+        planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
+        product: String(r[mapping.product] ?? "").trim() || "Unspecified",
+        clientName: mapping.clientName ? String(r[mapping.clientName] ?? "").trim() : "",
+        saleDate: mapping.saleDate ? parseDateValue(r[mapping.saleDate]) : "",
+        effectiveDate: mapping.effectiveDate ? parseDateValue(r[mapping.effectiveDate]) : "",
+        status: mapping.status ? (String(r[mapping.status] ?? "").trim() || "Active") : "Active",
+        commissionAmount: parseMoney(r[mapping.commissionAmount]),
+        commissionType: mapping.commissionType ? String(r[mapping.commissionType] ?? "").trim() : "",
+        paymentDate: mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "",
+        uploadBatchId: batchId,
+        sourceFile: fileName,
+        importedAt: new Date().toISOString(),
+      };
+    });
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: newRecords.length };
     const mappingPreset = { mapping, planTypeMode, planTypeColumn, planTypeFixed };
 
@@ -435,6 +535,145 @@ export default function App() {
     setConfirmClearAll(false);
   }
 
+  // ---------- AGENT DIRECTORY ----------
+  const [directoryTab, setDirectoryTab] = useState("directory");
+  const [selectedDirAgent, setSelectedDirAgent] = useState(null);
+  const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentNpn, setNewAgentNpn] = useState("");
+  const [editAgentName, setEditAgentName] = useState("");
+  const [editAgentNpn, setEditAgentNpn] = useState("");
+  const [newAliasType, setNewAliasType] = useState("npn");
+  const [newAliasCarrier, setNewAliasCarrier] = useState("");
+  const [newAliasValue, setNewAliasValue] = useState("");
+  const [linkChoice, setLinkChoice] = useState({});
+
+  async function addAgentManual() {
+    if (!newAgentName.trim() || !cloudCfg) return;
+    try {
+      const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ canonical_name: newAgentName.trim(), npn: newAgentNpn.trim() || null }]) });
+      const agent = inserted[0];
+      if (newAgentNpn.trim()) {
+        await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agent.id, alias_type: "npn", alias_value: newAgentNpn.trim() }]) });
+      }
+      await loadDirectory(cloudCfg);
+      setNewAgentName(""); setNewAgentNpn("");
+      showToast("Agent added to directory.");
+    } catch (e) { showToast("Could not add agent: " + e.message, "error"); }
+  }
+  async function updateAgentDetails(agentId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_directory?id=eq.${agentId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ canonical_name: editAgentName.trim(), npn: editAgentNpn.trim() || null }) });
+      await sbFetch(cloudCfg, `agent_aliases?agent_id=eq.${agentId}&alias_type=eq.npn`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      if (editAgentNpn.trim()) {
+        await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: "npn", alias_value: editAgentNpn.trim() }]) });
+      }
+      await loadDirectory(cloudCfg);
+      showToast("Agent updated.");
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+  async function deleteDirAgent(agentId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_directory?id=eq.${agentId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setSelectedDirAgent(null);
+      await loadDirectory(cloudCfg);
+      showToast("Agent removed from directory.");
+    } catch (e) { showToast("Could not delete: " + e.message, "error"); }
+  }
+  async function addAliasToAgent(agentId) {
+    if (!newAliasValue.trim() || !cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: newAliasType, carrier: newAliasType === "carrier_id" ? newAliasCarrier.trim() : null, alias_value: newAliasType === "name_text" ? normalizeNameKey(newAliasValue) : newAliasValue.trim() }]) });
+      await loadDirectory(cloudCfg);
+      setNewAliasValue(""); setNewAliasCarrier("");
+      showToast("Alias added.");
+    } catch (e) { showToast("Could not add alias: " + e.message, "error"); }
+  }
+  async function deleteAlias(aliasId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_aliases?id=eq.${aliasId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await loadDirectory(cloudCfg);
+    } catch (e) { showToast("Could not remove alias: " + e.message, "error"); }
+  }
+  async function linkRawNameToAgent(rawName, agentId, canonicalName) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
+      await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(rawName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
+      setRecords((prev) => prev.map((r) => (r.agent === rawName ? { ...r, agent: canonicalName } : r)));
+      await loadDirectory(cloudCfg);
+      showToast(`Linked "${rawName}" to ${canonicalName}.`);
+    } catch (e) { showToast("Could not link: " + e.message, "error"); }
+  }
+  async function createAgentFromRawName(rawName) {
+    if (!cloudCfg) return;
+    try {
+      const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ canonical_name: rawName, npn: null }]) });
+      const agent = inserted[0];
+      await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agent.id, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
+      await loadDirectory(cloudCfg);
+      showToast(`"${rawName}" added as a new agent.`);
+    } catch (e) { showToast("Could not create agent: " + e.message, "error"); }
+  }
+
+  const unmatchedAgentNames = useMemo(() => {
+    const { nameTextMap } = agentLookupMaps;
+    const distinct = [...new Set(records.map((r) => r.agent))];
+    return distinct
+      .filter((n) => !nameTextMap[normalizeNameKey(n)])
+      .map((n) => {
+        const recs = records.filter((r) => r.agent === n);
+        return { name: n, count: recs.length, revenue: recs.reduce((s, r) => s + r.commissionAmount, 0) };
+      })
+      .sort((a, b) => b.revenue - a.revenue);
+  }, [records, agentLookupMaps]);
+
+  // Roster import (bulk-create agents from a CRM export)
+  const [rosterFileName, setRosterFileName] = useState("");
+  const [rosterHeaders, setRosterHeaders] = useState([]);
+  const [rosterRows, setRosterRows] = useState([]);
+  const [rosterNameCol, setRosterNameCol] = useState("");
+  const [rosterNpnCol, setRosterNpnCol] = useState("");
+
+  function handleRosterFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!json.length) return;
+        setRosterHeaders(Object.keys(json[0]));
+        setRosterRows(json);
+        setRosterFileName(file.name);
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  async function commitRosterImport() {
+    if (!rosterNameCol || !cloudCfg) return;
+    try {
+      const toInsert = rosterRows
+        .map((r) => ({ canonical_name: String(r[rosterNameCol] ?? "").trim(), npn: rosterNpnCol ? String(r[rosterNpnCol] ?? "").trim() || null : null }))
+        .filter((r) => r.canonical_name);
+      const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(toInsert) });
+      const aliasRows = [];
+      (inserted || []).forEach((a) => {
+        aliasRows.push({ agent_id: a.id, alias_type: "name_text", alias_value: normalizeNameKey(a.canonical_name) });
+        if (a.npn) aliasRows.push({ agent_id: a.id, alias_type: "npn", alias_value: a.npn });
+      });
+      if (aliasRows.length) await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(aliasRows) });
+      await loadDirectory(cloudCfg);
+      showToast(`Added ${inserted.length} agents to your directory.`);
+      setRosterFileName(""); setRosterHeaders([]); setRosterRows([]); setRosterNameCol(""); setRosterNpnCol("");
+    } catch (e) { showToast("Roster import failed: " + e.message, "error"); }
+  }
+
   // ---------- DASHBOARD FILTERS ----------
   const [filterCarrier, setFilterCarrier] = useState("All");
   const [filterAgent, setFilterAgent] = useState("All");
@@ -495,6 +734,7 @@ export default function App() {
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "import", label: "Import statement", icon: UploadCloud },
     { key: "agents", label: "Agents", icon: Users },
+    { key: "directory", label: "Agent directory", icon: IdCard },
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
@@ -876,6 +1116,156 @@ export default function App() {
           </div>
         )}
 
+        {view === "directory" && (
+          <div>
+            <div className="pt-page-head"><div><h1>Agent directory</h1><p>The master list your imports match against, so one agent always shows up as one name.</p></div></div>
+
+            {!cloudCfg ? (
+              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use the Agent Directory \u2014 it needs somewhere to store your agent list.</p></div>
+            ) : !directoryAvailable ? (
+              <div className="pt-card">
+                <p className="pt-error">Your database doesn't have the directory tables yet.</p>
+                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
+                <pre className="pt-sql">{MIGRATION_SQL}</pre>
+              </div>
+            ) : (
+              <>
+                <div className="pt-tabs">
+                  <button className={"pt-tab" + (directoryTab === "directory" ? " active" : "")} onClick={() => setDirectoryTab("directory")}>Directory ({agentDirectory.length})</button>
+                  <button className={"pt-tab" + (directoryTab === "unmatched" ? " active" : "")} onClick={() => setDirectoryTab("unmatched")}>Unmatched names ({unmatchedAgentNames.length})</button>
+                </div>
+
+                {directoryTab === "directory" && (
+                  <div className="pt-grid-list">
+                    <div className="pt-card">
+                      <div className="pt-inline-form">
+                        <input placeholder="Agent name" value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} />
+                        <input placeholder="NPN (optional)" value={newAgentNpn} onChange={(e) => setNewAgentNpn(e.target.value)} style={{ maxWidth: 140 }} />
+                        <button className="pt-btn primary small" disabled={!newAgentName.trim()} onClick={addAgentManual}><UserPlus size={13} /> Add</button>
+                      </div>
+                      <table className="pt-table" style={{ marginTop: 14 }}>
+                        <thead><tr><th>Agent</th><th>NPN</th><th className="num">Aliases</th></tr></thead>
+                        <tbody>
+                          {agentDirectory.map((a) => (
+                            <tr key={a.id} className={"pt-clickable" + (selectedDirAgent === a.id ? " selected" : "")} onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }}>
+                              <td>{a.canonicalName}</td>
+                              <td className="mono">{a.npn || "\u2014"}</td>
+                              <td className="num">{agentAliases.filter((al) => al.agentId === a.id).length}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {selectedDirAgent && (
+                      <div className="pt-card">
+                        <div className="pt-row-between">
+                          <h3>Edit agent</h3>
+                          <button className="pt-btn ghost small" onClick={() => deleteDirAgent(selectedDirAgent)}><Trash2 size={13} /> Delete</button>
+                        </div>
+                        <div className="pt-field" style={{ marginTop: 10 }}>
+                          <label>Canonical name</label>
+                          <input value={editAgentName} onChange={(e) => setEditAgentName(e.target.value)} />
+                        </div>
+                        <div className="pt-field" style={{ marginTop: 8 }}>
+                          <label>NPN</label>
+                          <input value={editAgentNpn} onChange={(e) => setEditAgentNpn(e.target.value)} />
+                        </div>
+                        <button className="pt-btn primary small" style={{ marginTop: 10 }} onClick={() => updateAgentDetails(selectedDirAgent)}>Save</button>
+
+                        <div className="pt-mini-label" style={{ marginTop: 18 }}>Aliases (other IDs/names that mean this agent)</div>
+                        {agentAliases.filter((al) => al.agentId === selectedDirAgent).map((al) => (
+                          <div key={al.id} className="pt-alias-row">
+                            <span className="pt-alias-type">{al.aliasType === "npn" ? "NPN" : al.aliasType === "carrier_id" ? `${al.carrier || "Carrier"} ID` : "Name"}</span>
+                            <span className="mono">{al.aliasValue}</span>
+                            <button className="pt-btn ghost small" onClick={() => deleteAlias(al.id)}><X size={12} /></button>
+                          </div>
+                        ))}
+                        <div className="pt-inline-form" style={{ marginTop: 10 }}>
+                          <select value={newAliasType} onChange={(e) => setNewAliasType(e.target.value)}>
+                            <option value="npn">NPN</option>
+                            <option value="carrier_id">Carrier-specific ID</option>
+                            <option value="name_text">Name variant</option>
+                          </select>
+                          {newAliasType === "carrier_id" && <input placeholder="Carrier (e.g. Humana)" value={newAliasCarrier} onChange={(e) => setNewAliasCarrier(e.target.value)} style={{ maxWidth: 130 }} />}
+                          <input placeholder="Value" value={newAliasValue} onChange={(e) => setNewAliasValue(e.target.value)} />
+                          <button className="pt-btn ghost small" disabled={!newAliasValue.trim()} onClick={() => addAliasToAgent(selectedDirAgent)}>Add</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {directoryTab === "unmatched" && (
+                  <div className="pt-card">
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>These are raw agent names from your imports that aren't linked to a directory entry yet. Link each one to the right agent, or add them as new.</p>
+                    {unmatchedAgentNames.length === 0 ? (
+                      <p className="pt-hint">Nothing unmatched \u2014 every name in your data is linked. \ud83c\udf89</p>
+                    ) : (
+                      <table className="pt-table">
+                        <thead><tr><th>Name as imported</th><th className="num">Records</th><th className="num">Revenue</th><th>Link to\u2026</th><th></th></tr></thead>
+                        <tbody>
+                          {unmatchedAgentNames.map((u) => (
+                            <tr key={u.name}>
+                              <td>{u.name}</td>
+                              <td className="num">{u.count}</td>
+                              <td className="num mono">{fmtMoney(u.revenue)}</td>
+                              <td>
+                                <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
+                                  <option value="">Choose agent\u2026</option>
+                                  {agentDirectory.map((a) => <option key={a.id} value={a.id}>{a.canonicalName}</option>)}
+                                </select>
+                              </td>
+                              <td className="num">
+                                <div className="pt-btn-row">
+                                  <button className="pt-btn ghost small" disabled={!linkChoice[u.name]} onClick={() => linkRawNameToAgent(u.name, linkChoice[u.name], agentDirectory.find((a) => a.id === linkChoice[u.name])?.canonicalName)}><Link2 size={12} /> Link</button>
+                                  <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name)}><UserPlus size={12} /> New</button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+
+                <div className="pt-card">
+                  <h3>Import your agent roster</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Bulk-add agents from a CRM export. Map the name column, and NPN if it has one.</p>
+                  {!rosterFileName ? (
+                    <label className="pt-btn ghost">
+                      Choose roster file
+                      <input type="file" accept=".xlsx,.xls,.csv" onChange={handleRosterFile} style={{ display: "none" }} />
+                    </label>
+                  ) : (
+                    <>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {rosterFileName} \u00b7 {rosterRows.length} rows</div>
+                      <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
+                        <div className="pt-field">
+                          <label>Name column *</label>
+                          <select value={rosterNameCol} onChange={(e) => setRosterNameCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {rosterHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>NPN column (optional)</label>
+                          <select value={rosterNpnCol} onChange={(e) => setRosterNpnCol(e.target.value)}>
+                            <option value="">\u2014 not in file \u2014</option>
+                            {rosterHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={!rosterNameCol} onClick={commitRosterImport}>Import {rosterRows.length} agents</button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {view === "manage" && (
           <div>
             <div className="pt-page-head"><div><h1>Manage data</h1><p>Every import you've run. Remove one if something loaded wrong.</p></div></div>
@@ -1062,6 +1452,13 @@ const CSS = `
 .pt-status-badge.on { background: #EAF5EE; color: var(--green); }
 .pt-status-badge.off { background: #F1F2F4; color: var(--muted); }
 .pt-sql { background: var(--ink); color: #E7EAF2; padding: 14px; border-radius: 6px; font-size: 11.5px; overflow: auto; line-height: 1.6; font-family: "SF Mono", Menlo, monospace; white-space: pre; }
+.pt-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+.pt-tab { background: none; border: none; padding: 8px 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.pt-tab.active { color: var(--ink); border-bottom-color: var(--gold); font-weight: 600; }
+.pt-inline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pt-inline-form input, .pt-inline-form select { border: 1px solid var(--border); border-radius: 5px; padding: 6px 9px; font-size: 12.5px; }
+.pt-alias-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.pt-alias-type { background: var(--gold-soft); color: var(--ink); border-radius: 4px; padding: 2px 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 .pt-footer-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #8A96AE; }
 .pt-footer-value { font-family: "SF Mono", monospace; font-size: 19px; margin-top: 3px; color: #fff; }
 .pt-footer-sub { font-size: 11px; color: #8A96AE; margin-top: 2px; }
