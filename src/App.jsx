@@ -787,7 +787,7 @@ export default function App() {
             {cloudCfg ? "Cloud connected" : "Local only"}
           </div>
           <div className="pt-footer-label">All-time production</div>
-          <div className="pt-footer-value">{fmtMoneyShort(totalAllRevenue)}</div>
+          <div className="pt-footer-value"><MoneyShort v={totalAllRevenue} /></div>
           <div className="pt-footer-sub">{records.length.toLocaleString()} policies on file</div>
         </div>
       </aside>
@@ -838,10 +838,10 @@ export default function App() {
                 </div>
 
                 <div className="pt-cards">
-                  <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} tone={netRevenue < 0 ? "rose" : "ink"} />
+                  <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} />
                   <StatCard label="Policies" value={filteredRecords.length.toLocaleString()} tone="ink" />
-                  <StatCard label="Avg per policy" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} tone="ink" />
-                  <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} tone="rose" />
+                  <StatCard label="Avg per policy" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} money={filteredRecords.length ? netRevenue / filteredRecords.length : 0} />
+                  <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
                   <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
                   <StatCard label="Agents" value={activeAgentCount} tone="ink" />
                 </div>
@@ -895,7 +895,7 @@ export default function App() {
                         <tr key={a.key}>
                           <td>{a.key}</td>
                           <td className="num">{a.count}</td>
-                          <td className="num mono">{fmtMoney(a.revenue)}</td>
+                          <td className="num mono">{<Money v={a.revenue} />}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1020,7 +1020,7 @@ export default function App() {
                         <tr key={a.key} className={"pt-clickable" + (selectedAgent === a.key ? " selected" : "")} onClick={() => setSelectedAgent(a.key)}>
                           <td>{a.key}</td>
                           <td className="num">{a.count}</td>
-                          <td className="num mono">{fmtMoney(a.revenue)}</td>
+                          <td className="num mono">{<Money v={a.revenue} />}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1035,11 +1035,11 @@ export default function App() {
                     <div className="pt-mini-grid">
                       <div>
                         <div className="pt-mini-label">By carrier</div>
-                        {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><span>{c.key}</span><span className="mono">{fmtMoney(c.revenue)}</span></div>)}
+                        {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><span>{c.key}</span><span className="mono">{<Money v={c.revenue} />}</span></div>)}
                       </div>
                       <div>
                         <div className="pt-mini-label">By plan type</div>
-                        {selectedAgentByPlanType.map((p) => <div key={p.key} className="pt-mini-row"><span>{p.key}</span><span className="mono">{fmtMoney(p.revenue)}</span></div>)}
+                        {selectedAgentByPlanType.map((p) => <div key={p.key} className="pt-mini-row"><span>{p.key}</span><span className="mono">{<Money v={p.revenue} />}</span></div>)}
                       </div>
                     </div>
                     <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedAgentRecords.length})</div>
@@ -1048,7 +1048,7 @@ export default function App() {
                         <thead><tr><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                         <tbody>
                           {selectedAgentRecords.map((r) => (
-                            <tr key={r.id}><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{fmtMoney(r.commissionAmount)}</td></tr>
+                            <tr key={r.id}><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
                       </table>
@@ -1074,7 +1074,7 @@ export default function App() {
                         <tr key={c.key} className={"pt-clickable" + (selectedCarrier === c.key ? " selected" : "")} onClick={() => setSelectedCarrier(c.key)}>
                           <td>{c.key}</td>
                           <td className="num">{c.count}</td>
-                          <td className="num mono">{fmtMoney(c.revenue)}</td>
+                          <td className="num mono">{<Money v={c.revenue} />}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1089,11 +1089,11 @@ export default function App() {
                     <div className="pt-mini-grid">
                       <div>
                         <div className="pt-mini-label">By agent</div>
-                        {selectedCarrierByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span className="mono">{fmtMoney(a.revenue)}</span></div>)}
+                        {selectedCarrierByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span></div>)}
                       </div>
                       <div>
                         <div className="pt-mini-label">By plan type</div>
-                        {selectedCarrierByPlanType.map((p) => <div key={p.key} className="pt-mini-row"><span>{p.key}</span><span className="mono">{fmtMoney(p.revenue)}</span></div>)}
+                        {selectedCarrierByPlanType.map((p) => <div key={p.key} className="pt-mini-row"><span>{p.key}</span><span className="mono">{<Money v={p.revenue} />}</span></div>)}
                       </div>
                     </div>
                     <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedCarrierRecords.length})</div>
@@ -1102,7 +1102,7 @@ export default function App() {
                         <thead><tr><th>Agent</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                         <tbody>
                           {selectedCarrierRecords.map((r) => (
-                            <tr key={r.id}><td>{r.agent}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{fmtMoney(r.commissionAmount)}</td></tr>
+                            <tr key={r.id}><td>{r.agent}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
                       </table>
@@ -1127,7 +1127,7 @@ export default function App() {
                     <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                     <tbody>
                       {clientMatches.map((r) => (
-                        <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{fmtMoney(r.commissionAmount)}</td></tr>
+                        <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                       ))}
                     </tbody>
                   </table>
@@ -1230,7 +1230,7 @@ export default function App() {
                             <tr key={u.name}>
                               <td>{u.name}</td>
                               <td className="num">{u.count}</td>
-                              <td className="num mono">{fmtMoney(u.revenue)}</td>
+                              <td className="num mono">{<Money v={u.revenue} />}</td>
                               <td>
                                 <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
                                   <option value="">Choose agent\u2026</option>
@@ -1398,11 +1398,22 @@ function EmptyState({ onGo }) {
     </div>
   );
 }
-function StatCard({ label, value, tone }) {
+function moneyClass(n) {
+  return n > 0 ? "pt-money-pos" : n < 0 ? "pt-money-neg" : "pt-money-zero";
+}
+function Money({ v }) {
+  const n = Number(v) || 0;
+  return <span className={moneyClass(n)}>{fmtMoney(n)}</span>;
+}
+function MoneyShort({ v }) {
+  const n = Number(v) || 0;
+  return <span className={moneyClass(n)}>{fmtMoneyShort(n)}</span>;
+}
+function StatCard({ label, value, tone, money }) {
   return (
     <div className="pt-stat-card">
       <div className="pt-stat-label">{label}</div>
-      <div className={"pt-stat-value " + tone}>{value}</div>
+      <div className={"pt-stat-value " + (money !== undefined ? moneyClass(money) : tone)}>{value}</div>
     </div>
   );
 }
@@ -1439,6 +1450,9 @@ const CSS = `
 }
 .pt-loading { align-items: center; justify-content: center; color: var(--muted); }
 .mono { font-family: "SF Mono", "Roboto Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+.pt-money-pos { color: #1E9E63; font-weight: 600; font-family: "SF Mono", "Roboto Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+.pt-money-neg { color: #C0392B; font-weight: 600; font-family: "SF Mono", "Roboto Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+.pt-money-zero { color: var(--muted); font-family: "SF Mono", "Roboto Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
 
 .pt-sidebar {
   width: 220px;
@@ -1501,6 +1515,9 @@ const CSS = `
 .pt-stat-value { font-family: "SF Mono", monospace; font-size: 20px; letter-spacing: -0.01em; border-bottom: 2px solid var(--gold-soft); padding-bottom: 2px; display: inline-block; }
 .pt-stat-value.rose { color: var(--rose); border-bottom-color: #F1D4D1; }
 .pt-stat-value.ink { color: var(--ink); }
+.pt-stat-value.pt-money-pos { color: #1E9E63; border-bottom-color: #CDEFDD; }
+.pt-stat-value.pt-money-neg { color: #C0392B; border-bottom-color: #F5D5D1; }
+.pt-stat-value.pt-money-zero { color: var(--muted); border-bottom-color: var(--border); }
 
 .pt-grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; margin-bottom: 0; }
 .pt-grid-2 .pt-card { margin-bottom: 18px; }
