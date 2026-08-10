@@ -88,9 +88,19 @@ function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.fi
 function normalizeStatus(raw) {
   if (!raw) return "Active";
   const s = String(raw).toLowerCase();
-  if (s.includes("inactive") || s.includes("term") || s.includes("disenroll") || s.includes("cancel") || s.includes("lapse")) return "Inactive";
+  if (s.includes("rapid")) return "Rapid Disenrollment";
+  if (s.includes("future")) return "Future Disenrollment";
+  if (s.includes("cancel")) return "Cancelled";
+  if (s.includes("submit") || s.includes("pending")) return "Application Submitted";
+  if (s.includes("term") || s.includes("disenroll") || s.includes("inactive")) return "Term";
   if (s.includes("active")) return "Active";
   return String(raw).trim();
+}
+function statusBucket(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "active" || s === "future disenrollment") return "active";
+  if (s === "term" || s === "rapid disenrollment") return "inactive";
+  return "pending";
 }
 async function sbFetch(cfg, path, options = {}) {
   const res = await fetch(cfg.url.replace(/\/$/, "") + "/rest/v1/" + path, {
@@ -879,8 +889,9 @@ export default function App() {
     });
     return map;
   }, [membershipRecords]);
-  const activePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => r.status === "Active").length, [membershipLatestByPolicy]);
-  const inactivePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => r.status !== "Active").length, [membershipLatestByPolicy]);
+  const activePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "active").length, [membershipLatestByPolicy]);
+  const inactivePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "inactive").length, [membershipLatestByPolicy]);
+  const pendingPolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "pending").length, [membershipLatestByPolicy]);
 
   const clientStatusAcrossCarriers = useMemo(() => {
     const byName = {};
@@ -1022,6 +1033,9 @@ export default function App() {
                 </div>
                 {membershipRecords.length === 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Active/Inactive policy counts will populate once you import a production/membership statement.</p>
+                )}
+                {membershipRecords.length > 0 && pendingPolicyCount > 0 && (
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{pendingPolicyCount} polic{pendingPolicyCount === 1 ? "y" : "ies"} in "Application Submitted" or "Cancelled" status \u2014 not counted as Active or Inactive since neither is a confirmed outcome yet.</p>
                 )}
 
                 <div className="pt-grid-2">
@@ -1274,7 +1288,7 @@ export default function App() {
                         <thead><tr><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                         <tbody>
                           {selectedAgentRecords.map((r) => (
-                            <tr key={r.id}><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                            <tr key={r.id}><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
                       </table>
@@ -1328,7 +1342,7 @@ export default function App() {
                         <thead><tr><th>Agent</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                         <tbody>
                           {selectedCarrierRecords.map((r) => (
-                            <tr key={r.id}><td>{r.agent}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                            <tr key={r.id}><td>{r.agent}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
                       </table>
@@ -1353,7 +1367,7 @@ export default function App() {
                     <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                     <tbody>
                       {clientMatches.map((r) => (
-                        <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td>{r.status}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                        <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                       ))}
                     </tbody>
                   </table>
@@ -1691,6 +1705,11 @@ function StatCard({ label, value, tone, money }) {
     </div>
   );
 }
+function StatusBadge({ status }) {
+  const bucket = statusBucket(status);
+  const cls = bucket === "active" ? (status === "Future Disenrollment" ? "pt-status-amber" : "pt-status-green") : bucket === "inactive" ? "pt-status-red" : "pt-status-gray";
+  return <span className={"pt-status-chip " + cls}>{status || "Active"}</span>;
+}
 function FilterSelect({ label, value, onChange, options }) {
   return (
     <div className="pt-filter">
@@ -1765,6 +1784,11 @@ const CSS = `
 .pt-inline-form input, .pt-inline-form select { border: 1px solid var(--border); border-radius: 5px; padding: 6px 9px; font-size: 12.5px; }
 .pt-alias-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .pt-alias-type { background: var(--gold-soft); color: var(--ink); border-radius: 4px; padding: 2px 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pt-status-chip { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.pt-status-green { background: #E4F4EA; color: #1E9E63; }
+.pt-status-amber { background: #FDF0DA; color: #B8863B; }
+.pt-status-red { background: #FBE4E1; color: #C0392B; }
+.pt-status-gray { background: #EEF0F3; color: var(--muted); }
 .pt-footer-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #8A96AE; }
 .pt-footer-value { font-family: "SF Mono", monospace; font-size: 19px; margin-top: 3px; color: #fff; }
 .pt-footer-sub { font-size: 11px; color: #8A96AE; margin-top: 2px; }
