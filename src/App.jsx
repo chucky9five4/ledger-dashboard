@@ -326,6 +326,7 @@ export default function App() {
   const [agentDirectory, setAgentDirectory] = useState([]);
   const [agentAliases, setAgentAliases] = useState([]);
   const [directoryAvailable, setDirectoryAvailable] = useState(false);
+  const [membershipRecords, setMembershipRecords] = useState([]);
 
   async function loadDirectory(cfg) {
     try {
@@ -358,6 +359,10 @@ export default function App() {
     });
     setCarrierMappings(mObj);
     await loadDirectory(cfg);
+    try {
+      const mem = await sbFetch(cfg, "membership_updates?select=carrier,client_name,status,imported_at&order=imported_at.desc");
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, importedAt: r.imported_at })));
+    } catch (e) { setMembershipRecords([]); }
   }
 
   useEffect(() => {
@@ -591,6 +596,7 @@ export default function App() {
         upload_batch_id: batchId, source_file: fileName,
       }));
       await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(toInsertSnake) });
+      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
 
@@ -862,6 +868,30 @@ export default function App() {
   const activeCarrierCount = new Set(filteredRecords.map((r) => r.carrier)).size;
   const activeAgentCount = new Set(filteredRecords.map((r) => r.agent)).size;
 
+  const membershipLatestByPolicy = useMemo(() => {
+    const map = {};
+    membershipRecords.forEach((r) => {
+      const key = r.carrier + "::" + normalizeNameKey(r.clientName);
+      if (!map[key]) map[key] = r; // already sorted latest-first
+    });
+    return map;
+  }, [membershipRecords]);
+  const activePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => r.status === "Active").length, [membershipLatestByPolicy]);
+  const inactivePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => r.status !== "Active").length, [membershipLatestByPolicy]);
+
+  const clientStatusAcrossCarriers = useMemo(() => {
+    const byName = {};
+    Object.values(membershipLatestByPolicy).forEach((r) => {
+      const key = normalizeNameKey(r.clientName);
+      if (!byName[key]) byName[key] = [];
+      byName[key].push({ carrier: r.carrier, status: r.status, clientName: r.clientName });
+    });
+    return byName;
+  }, [membershipLatestByPolicy]);
+  const lostMembers = useMemo(() => Object.values(clientStatusAcrossCarriers).filter((entries) => !entries.some((e) => e.status === "Active")).map((entries) => entries[0]), [clientStatusAcrossCarriers]);
+  const retainedElsewhere = useMemo(() => Object.values(clientStatusAcrossCarriers).filter((entries) => entries.some((e) => e.status === "Active") && entries.some((e) => e.status !== "Active")), [clientStatusAcrossCarriers]);
+  const lostMemberCount = lostMembers.length;
+
   // ---------- AGENTS / CARRIERS ----------
   const [agentSearch, setAgentSearch] = useState("");
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -928,7 +958,7 @@ export default function App() {
           </div>
           <div className="pt-footer-label">All-time production</div>
           <div className="pt-footer-value"><MoneyShort v={totalAllRevenue} /></div>
-          <div className="pt-footer-sub">{records.length.toLocaleString()} policies on file</div>
+          <div className="pt-footer-sub">{records.length.toLocaleString()} commission rows</div>
         </div>
       </aside>
 
@@ -979,12 +1009,17 @@ export default function App() {
 
                 <div className="pt-cards">
                   <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} />
-                  <StatCard label="Policies" value={filteredRecords.length.toLocaleString()} tone="ink" />
-                  <StatCard label="Avg per policy" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} money={filteredRecords.length ? netRevenue / filteredRecords.length : 0} />
+                  <StatCard label="Commission rows" value={filteredRecords.length.toLocaleString()} tone="ink" />
+                  <StatCard label="Avg per row" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} money={filteredRecords.length ? netRevenue / filteredRecords.length : 0} />
                   <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
+                  <StatCard label="Active policies" value={activePolicyCount.toLocaleString()} tone="ink" />
+                  <StatCard label="Inactive policies" value={inactivePolicyCount.toLocaleString()} tone="ink" />
                   <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
                   <StatCard label="Agents" value={activeAgentCount} tone="ink" />
                 </div>
+                {membershipRecords.length === 0 && (
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Active/Inactive policy counts will populate once you import a production/membership statement.</p>
+                )}
 
                 <div className="pt-grid-2">
                   <div className="pt-card">
@@ -1745,7 +1780,7 @@ const CSS = `
 .pt-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 18px; }
 .pt-card h3 { font-size: 14.5px; margin: 0 0 14px; font-weight: 600; color: var(--ink); }
 
-.pt-cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 18px; }
+.pt-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
 .pt-stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .pt-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
 .pt-stat-value { font-family: "SF Mono", monospace; font-size: 20px; letter-spacing: -0.01em; border-bottom: 2px solid var(--gold-soft); padding-bottom: 2px; display: inline-block; }
