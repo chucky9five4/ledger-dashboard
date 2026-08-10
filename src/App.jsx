@@ -50,6 +50,14 @@ const MAPPING_FIELDS = [
 function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
+const MEMBER_MAPPING_FIELDS = [
+  { key: "clientName", label: "Client name", required: true },
+  { key: "status", label: "Status (Active/Inactive/Termed)", required: true },
+  { key: "agent", label: "Agent name", required: false },
+  { key: "planName", label: "Plan name", required: false },
+  { key: "effectiveDate", label: "Effective date", required: false },
+  { key: "termDate", label: "Term date", required: false },
+];
 
 const FIELD_TO_COLUMN = {
   carrier: "carrier", agent: "agent", planType: "plan_type", product: "product",
@@ -75,8 +83,15 @@ function toCamelRow(row) {
     agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "",
   };
 }
-function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount }; }
-function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count }; }
+function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission" }; }
+function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission" }; }
+function normalizeStatus(raw) {
+  if (!raw) return "Active";
+  const s = String(raw).toLowerCase();
+  if (s.includes("inactive") || s.includes("term") || s.includes("disenroll") || s.includes("cancel") || s.includes("lapse")) return "Inactive";
+  if (s.includes("active")) return "Active";
+  return String(raw).trim();
+}
 async function sbFetch(cfg, path, options = {}) {
   const res = await fetch(cfg.url.replace(/\/$/, "") + "/rest/v1/" + path, {
     ...options,
@@ -114,7 +129,22 @@ create table upload_batches (
   carrier text,
   file_name text,
   uploaded_at timestamptz default now(),
-  row_count int
+  row_count int,
+  batch_type text default 'commission'
+);
+
+create table membership_updates (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  client_name text not null,
+  agent text,
+  plan_name text,
+  status text not null,
+  effective_date date,
+  term_date date,
+  upload_batch_id text,
+  source_file text,
+  imported_at timestamptz default now()
 );
 
 create table carrier_mappings (
@@ -146,12 +176,34 @@ alter table upload_batches enable row level security;
 alter table carrier_mappings enable row level security;
 alter table agent_directory enable row level security;
 alter table agent_aliases enable row level security;
+alter table membership_updates enable row level security;
 
 create policy "allow all - solo use" on policies for all using (true) with check (true);
 create policy "allow all - solo use" on upload_batches for all using (true) with check (true);
 create policy "allow all - solo use" on carrier_mappings for all using (true) with check (true);
 create policy "allow all - solo use" on agent_directory for all using (true) with check (true);
-create policy "allow all - solo use" on agent_aliases for all using (true) with check (true);`;
+create policy "allow all - solo use" on agent_aliases for all using (true) with check (true);
+create policy "allow all - solo use" on membership_updates for all using (true) with check (true);`;
+
+const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
+
+create table if not exists membership_updates (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  client_name text not null,
+  agent text,
+  plan_name text,
+  status text not null,
+  effective_date date,
+  term_date date,
+  upload_batch_id text,
+  source_file text,
+  imported_at timestamptz default now()
+);
+
+alter table membership_updates enable row level security;
+drop policy if exists "allow all - solo use" on membership_updates;
+create policy "allow all - solo use" on membership_updates for all using (true) with check (true);`;
 
 const MIGRATION_SQL = `alter table policies add column if not exists agent_npn text;
 alter table policies add column if not exists carrier_agent_id text;
@@ -299,7 +351,11 @@ export default function App() {
     setBatches((bat || []).map(toCamelBatch));
     const maps = await sbFetch(cfg, "carrier_mappings?select=*");
     const mObj = {};
-    (maps || []).forEach((row) => { mObj[row.carrier] = { mapping: row.mapping, planTypeMode: row.plan_type_mode, planTypeColumn: row.plan_type_column, planTypeFixed: row.plan_type_fixed }; });
+    (maps || []).forEach((row) => {
+      const m = row.mapping || {};
+      const { __carrierMode, __carrierColumn, ...cleanMapping } = m;
+      mObj[row.carrier] = { mapping: cleanMapping, planTypeMode: row.plan_type_mode, planTypeColumn: row.plan_type_column, planTypeFixed: row.plan_type_fixed, carrierMode: __carrierMode || "fixed", carrierColumn: __carrierColumn || "" };
+    });
     setCarrierMappings(mObj);
     await loadDirectory(cfg);
   }
@@ -360,6 +416,7 @@ export default function App() {
   const totalAllRevenue = useMemo(() => records.reduce((s, r) => s + r.commissionAmount, 0), [records]);
 
   // ---------- IMPORT STATE ----------
+  const [importMode, setImportMode] = useState("commission");
   const [fileName, setFileName] = useState("");
   const [headers, setHeaders] = useState([]);
   const [rawRows, setRawRows] = useState([]);
@@ -369,11 +426,16 @@ export default function App() {
   const [planTypeColumn, setPlanTypeColumn] = useState("");
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
+  const [memberMapping, setMemberMapping] = useState({ clientName: "", status: "", agent: "", planName: "", effectiveDate: "", termDate: "" });
+  const [carrierMode, setCarrierMode] = useState("fixed");
+  const [carrierColumn, setCarrierColumn] = useState("");
 
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
+    setMemberMapping({ clientName: "", status: "", agent: "", planName: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
+    setCarrierMode("fixed"); setCarrierColumn("");
   }
 
   function handleFile(e) {
@@ -408,10 +470,12 @@ export default function App() {
       setPlanTypeMode(preset.planTypeMode || "column");
       setPlanTypeColumn(preset.planTypeColumn || "");
       setPlanTypeFixed(preset.planTypeFixed || "D-SNP");
+      setCarrierMode(preset.carrierMode || "fixed");
+      setCarrierColumn(preset.carrierColumn || "");
     }
   }
 
-  const mappingValid = carrierInput.trim() && mapping.agent && mapping.product && mapping.commissionAmount;
+  const mappingValid = carrierInput.trim() && mapping.agent && mapping.product && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn);
 
   const agentLookupMaps = useMemo(() => {
     const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
@@ -439,13 +503,14 @@ export default function App() {
     const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
     const newRecords = rawRows.map((r, i) => {
+      const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
       const agentNpn = mapping.agentNpn ? String(r[mapping.agentNpn] ?? "").trim() : "";
       const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
       return {
         id: batchId + "_" + i,
-        carrier,
-        agent: resolveAgentName(rawAgent, agentNpn, agentCarrierId, carrier),
+        carrier: rowCarrier,
+        agent: resolveAgentName(rawAgent, agentNpn, agentCarrierId, rowCarrier),
         agentNpn,
         agentCarrierId,
         planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
@@ -463,7 +528,7 @@ export default function App() {
       };
     });
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: newRecords.length };
-    const mappingPreset = { mapping, planTypeMode, planTypeColumn, planTypeFixed };
+    const mappingPreset = { mapping, planTypeMode, planTypeColumn, planTypeFixed, carrierMode, carrierColumn };
     const { nameTextMap } = agentLookupMaps;
     const newAgentsInBatch = [...new Set(newRecords.map((r) => r.agent))].filter((n) => !nameTextMap[normalizeNameKey(n)]);
 
@@ -473,7 +538,7 @@ export default function App() {
         setRecords((prev) => [...prev, ...(inserted || []).map(toCamelRow)]);
         await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
         setBatches((prev) => [...prev, batchEntry]);
-        await sbFetch(cloudCfg, "carrier_mappings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier, mapping: mappingPreset.mapping, plan_type_mode: mappingPreset.planTypeMode, plan_type_column: mappingPreset.planTypeColumn, plan_type_fixed: mappingPreset.planTypeFixed }]) });
+        await sbFetch(cloudCfg, "carrier_mappings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier, mapping: { ...mappingPreset.mapping, __carrierMode: carrierMode, __carrierColumn: carrierColumn }, plan_type_mode: mappingPreset.planTypeMode, plan_type_column: mappingPreset.planTypeColumn, plan_type_fixed: mappingPreset.planTypeFixed }]) });
         setCarrierMappings((prev) => ({ ...prev, [carrier]: mappingPreset }));
       } catch (e) {
         showToast("Import failed to save: " + e.message, "error");
@@ -498,6 +563,58 @@ export default function App() {
     } else {
       showToast(`Imported ${newRecords.length} rows from ${carrier}.`);
       setView("dashboard");
+    }
+  }
+
+  const memberMappingValid = carrierInput.trim() && memberMapping.clientName && memberMapping.status && (carrierMode === "fixed" || carrierColumn);
+
+  async function commitMembershipImport() {
+    if (!memberMappingValid) return;
+    const batchId = "b_" + Date.now();
+    const carrier = carrierInput.trim();
+    const memberRows = rawRows.map((r) => ({
+      carrier: carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier,
+      clientName: String(r[memberMapping.clientName] ?? "").trim(),
+      status: normalizeStatus(r[memberMapping.status]),
+      agent: memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "",
+      planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
+      effectiveDate: memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "",
+      termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
+    })).filter((r) => r.clientName);
+    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
+
+    if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
+    try {
+      const toInsertSnake = memberRows.map((r) => ({
+        carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
+        plan_name: r.planName || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
+        upload_batch_id: batchId, source_file: fileName,
+      }));
+      await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(toInsertSnake) });
+      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
+      setBatches((prev) => [...prev, batchEntry]);
+
+      // Apply each client's latest reported status to every matching commission record for that client's own carrier.
+      let updatedCount = 0;
+      for (const r of memberRows) {
+        const matches = records.filter((rec) => rec.carrier === r.carrier && normalizeNameKey(rec.clientName) === normalizeNameKey(r.clientName));
+        if (matches.length === 0) continue;
+        await sbFetch(cloudCfg, `policies?carrier=eq.${encodeURIComponent(r.carrier)}&client_name=ilike.${encodeURIComponent(r.clientName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: r.status }) });
+        updatedCount += matches.length;
+      }
+      if (updatedCount > 0) {
+        const statusByKey = {};
+        memberRows.forEach((r) => { statusByKey[r.carrier + "::" + normalizeNameKey(r.clientName)] = r.status; });
+        setRecords((prev) => prev.map((rec) => {
+          const key = rec.carrier + "::" + normalizeNameKey(rec.clientName);
+          return statusByKey[key] ? { ...rec, status: statusByKey[key] } : rec;
+        }));
+      }
+      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated.`);
+      resetImportStaging();
+      setView("dashboard");
+    } catch (e) {
+      showToast("Membership import failed: " + e.message, "error");
     }
   }
 
@@ -910,16 +1027,23 @@ export default function App() {
           <div>
             <div className="pt-page-head">
               <div>
-                <h1>Import a carrier statement</h1>
+                <h1>Import a statement</h1>
                 <p>Upload a spreadsheet, tell us what each column means once, and we'll remember it next time.</p>
               </div>
+            </div>
+
+            <div className="pt-tabs">
+              <button className={"pt-tab" + (importMode === "commission" ? " active" : "")} onClick={() => { setImportMode("commission"); resetImportStaging(); }}>Commission statement</button>
+              <button className={"pt-tab" + (importMode === "membership" ? " active" : "")} onClick={() => { setImportMode("membership"); resetImportStaging(); }}>Production / membership statement</button>
             </div>
 
             {!fileName ? (
               <div className="pt-card pt-upload-zone">
                 <FileSpreadsheet size={32} strokeWidth={1.3} color="#CE3334" />
                 <p className="pt-upload-title">Choose a .xlsx, .xls, or .csv file</p>
-                <p className="pt-upload-sub">Any carrier's export format works \u2014 you'll map the columns next.</p>
+                <p className="pt-upload-sub">
+                  {importMode === "commission" ? "Any carrier's export format works \u2014 you'll map the columns next." : "This updates active/inactive status directly on your existing policies."}
+                </p>
                 <label className="pt-btn primary" style={{ marginTop: 12 }}>
                   Choose file
                   <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{ display: "none" }} />
@@ -937,49 +1061,81 @@ export default function App() {
                   </div>
 
                   <div className="pt-field" style={{ marginTop: 16 }}>
-                    <label>Carrier</label>
+                    <label>{carrierMode === "column" ? "Label for this import (e.g. Brighton Group)" : "Carrier"}</label>
                     <input list="carrier-options" value={carrierInput} onChange={(e) => applyCarrierPreset(e.target.value)} placeholder="e.g. Humana, UHC, Aetna\u2026" />
                     <datalist id="carrier-options">
                       {carriersList.map((c) => <option key={c} value={c} />)}
                     </datalist>
-                    {carrierMappings[carrierInput.trim()] && <p className="pt-hint">Loaded your saved column mapping for {carrierInput.trim()}. Adjust below if this file is different.</p>}
-                  </div>
-                </div>
-
-                <div className="pt-card">
-                  <h3>Map your columns</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required.</p>
-                  <div className="pt-mapping-grid">
-                    {MAPPING_FIELDS.map((f) => (
-                      <div className="pt-field" key={f.key}>
-                        <label>{f.label}{f.required && " *"}</label>
-                        <select value={mapping[f.key]} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}>
-                          <option value="">\u2014 not in file \u2014</option>
-                          {headers.map((h) => <option key={h} value={h}>{h}</option>)}
-                        </select>
-                      </div>
-                    ))}
+                    {importMode === "commission" && carrierMappings[carrierInput.trim()] && <p className="pt-hint">Loaded your saved column mapping for {carrierInput.trim()}. Adjust below if this file is different.</p>}
                   </div>
 
                   <div className="pt-plantype-block">
-                    <label>Plan type (D-SNP, MA-HMO, MA-PPO, Med Supp, etc.)</label>
+                    <label>Which carrier does each row belong to?</label>
                     <div className="pt-radio-row">
-                      <label className="pt-radio"><input type="radio" checked={planTypeMode === "column"} onChange={() => setPlanTypeMode("column")} /> Read from a column</label>
-                      <label className="pt-radio"><input type="radio" checked={planTypeMode === "fixed"} onChange={() => setPlanTypeMode("fixed")} /> This whole file is one plan type</label>
+                      <label className="pt-radio"><input type="radio" checked={carrierMode === "fixed"} onChange={() => setCarrierMode("fixed")} /> This whole file is one carrier</label>
+                      <label className="pt-radio"><input type="radio" checked={carrierMode === "column"} onChange={() => setCarrierMode("column")} /> Read carrier from a column (mixed-carrier file, e.g. an upline statement)</label>
                     </div>
-                    {planTypeMode === "column" ? (
-                      <select value={planTypeColumn} onChange={(e) => setPlanTypeColumn(e.target.value)}>
-                        <option value="">\u2014 not in file \u2014</option>
+                    {carrierMode === "column" && (
+                      <select value={carrierColumn} onChange={(e) => setCarrierColumn(e.target.value)}>
+                        <option value="">\u2014 choose the carrier column \u2014</option>
                         {headers.map((h) => <option key={h} value={h}>{h}</option>)}
                       </select>
-                    ) : (
-                      <input list="plan-type-options" value={planTypeFixed} onChange={(e) => setPlanTypeFixed(e.target.value)} />
                     )}
-                    <datalist id="plan-type-options">
-                      {PLAN_TYPES.map((p) => <option key={p} value={p} />)}
-                    </datalist>
                   </div>
                 </div>
+
+                {importMode === "commission" ? (
+                  <div className="pt-card">
+                    <h3>Map your columns</h3>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required.</p>
+                    <div className="pt-mapping-grid">
+                      {MAPPING_FIELDS.map((f) => (
+                        <div className="pt-field" key={f.key}>
+                          <label>{f.label}{f.required && " *"}</label>
+                          <select value={mapping[f.key]} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}>
+                            <option value="">\u2014 not in file \u2014</option>
+                            {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pt-plantype-block">
+                      <label>Plan type (D-SNP, MA-HMO, MA-PPO, Med Supp, etc.)</label>
+                      <div className="pt-radio-row">
+                        <label className="pt-radio"><input type="radio" checked={planTypeMode === "column"} onChange={() => setPlanTypeMode("column")} /> Read from a column</label>
+                        <label className="pt-radio"><input type="radio" checked={planTypeMode === "fixed"} onChange={() => setPlanTypeMode("fixed")} /> This whole file is one plan type</label>
+                      </div>
+                      {planTypeMode === "column" ? (
+                        <select value={planTypeColumn} onChange={(e) => setPlanTypeColumn(e.target.value)}>
+                          <option value="">\u2014 not in file \u2014</option>
+                          {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                      ) : (
+                        <input list="plan-type-options" value={planTypeFixed} onChange={(e) => setPlanTypeFixed(e.target.value)} />
+                      )}
+                      <datalist id="plan-type-options">
+                        {PLAN_TYPES.map((p) => <option key={p} value={p} />)}
+                      </datalist>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-card">
+                    <h3>Map your columns</h3>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are all recognized automatically.</p>
+                    <div className="pt-mapping-grid">
+                      {MEMBER_MAPPING_FIELDS.map((f) => (
+                        <div className="pt-field" key={f.key}>
+                          <label>{f.label}{f.required && " *"}</label>
+                          <select value={memberMapping[f.key]} onChange={(e) => setMemberMapping({ ...memberMapping, [f.key]: e.target.value })}>
+                            <option value="">\u2014 not in file \u2014</option>
+                            {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="pt-card">
                   <h3>Preview \u2014 first 5 rows from your file</h3>
@@ -995,12 +1151,21 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="pt-row-between">
-                  <div>{!mappingValid && <p className="pt-error">Set the carrier name and map agent, product, and commission amount to continue.</p>}</div>
-                  <button className="pt-btn primary" disabled={!mappingValid} onClick={commitImport}>
-                    Import {rawRows.length} rows
-                  </button>
-                </div>
+                {importMode === "commission" ? (
+                  <div className="pt-row-between">
+                    <div>{!mappingValid && <p className="pt-error">Set the carrier name and map agent, product, and commission amount to continue.</p>}</div>
+                    <button className="pt-btn primary" disabled={!mappingValid} onClick={commitImport}>
+                      Import {rawRows.length} rows
+                    </button>
+                  </div>
+                ) : (
+                  <div className="pt-row-between">
+                    <div>{!memberMappingValid && <p className="pt-error">Set the carrier name and map client name and status to continue.</p>}</div>
+                    <button className="pt-btn primary" disabled={!memberMappingValid} onClick={commitMembershipImport}>
+                      Apply {rawRows.length} status updates
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>
