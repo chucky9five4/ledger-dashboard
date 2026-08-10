@@ -243,6 +243,9 @@ function parseDateValue(v) {
     const d = excelSerialToDate(v);
     if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   }
+  const s = String(v).trim();
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   const d = new Date(v);
   if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return "";
