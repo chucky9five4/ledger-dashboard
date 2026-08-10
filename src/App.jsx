@@ -620,16 +620,39 @@ export default function App() {
 
   // ---------- MANAGE DATA ----------
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [expandedBatchId, setExpandedBatchId] = useState(null);
+  const [batchDetailRows, setBatchDetailRows] = useState([]);
+  const [batchDetailLoading, setBatchDetailLoading] = useState(false);
+
+  async function toggleBatchDetail(b) {
+    if (expandedBatchId === b.id) { setExpandedBatchId(null); return; }
+    setExpandedBatchId(b.id);
+    setBatchDetailRows([]);
+    if (b.batchType === "membership" && cloudCfg) {
+      setBatchDetailLoading(true);
+      try {
+        const rows = await sbFetch(cloudCfg, `membership_updates?select=*&upload_batch_id=eq.${encodeURIComponent(b.id)}`);
+        setBatchDetailRows((rows || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status })));
+      } catch (e) { showToast("Could not load import detail.", "error"); }
+      setBatchDetailLoading(false);
+    }
+  }
   const [confirmClearAll, setConfirmClearAll] = useState(false);
 
   async function deleteBatch(batchId) {
+    const batch = batches.find((b) => b.id === batchId);
+    const isMembership = batch && batch.batchType === "membership";
     if (cloudCfg) {
       try {
-        await sbFetch(cloudCfg, `policies?upload_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        if (isMembership) {
+          await sbFetch(cloudCfg, `membership_updates?upload_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        } else {
+          await sbFetch(cloudCfg, `policies?upload_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+          setRecords((prev) => prev.filter((r) => r.uploadBatchId !== batchId));
+        }
         await sbFetch(cloudCfg, `upload_batches?id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-        setRecords((prev) => prev.filter((r) => r.uploadBatchId !== batchId));
         setBatches((prev) => prev.filter((b) => b.id !== batchId));
-        showToast("Import removed.");
+        showToast(isMembership ? "Membership import removed. Note: status changes it already applied to policies aren't automatically reverted." : "Import removed.");
       } catch (e) { showToast("Could not delete: " + e.message, "error"); }
     } else {
       const nextRecords = records.filter((r) => r.uploadBatchId !== batchId);
@@ -1458,27 +1481,75 @@ export default function App() {
             <div className="pt-card">
               {batches.length === 0 ? <p className="pt-hint">No imports yet.</p> : (
                 <table className="pt-table">
-                  <thead><tr><th>Carrier</th><th>File</th><th>Imported</th><th className="num">Rows</th><th></th></tr></thead>
+                  <thead><tr><th></th><th>Type</th><th>Carrier</th><th>File</th><th>Imported</th><th className="num">Rows</th><th></th></tr></thead>
                   <tbody>
-                    {[...batches].reverse().map((b) => (
-                      <tr key={b.id}>
-                        <td>{b.carrier}</td>
-                        <td>{b.fileName}</td>
-                        <td>{new Date(b.uploadedAt).toLocaleString()}</td>
-                        <td className="num">{b.rowCount}</td>
-                        <td className="num">
-                          {confirmDeleteId === b.id ? (
-                            <span className="pt-confirm-inline">
-                              Remove {b.rowCount} rows?
-                              <button className="pt-btn danger small" onClick={() => deleteBatch(b.id)}>Yes</button>
-                              <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
-                            </span>
-                          ) : (
-                            <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(b.id)}><Trash2 size={13} /></button>
+                    {[...batches].reverse().map((b) => {
+                      const commissionBreakdown = b.batchType !== "membership" ? groupBy(records.filter((r) => r.uploadBatchId === b.id), (r) => r.carrier).sort((x, y) => y.count - x.count) : [];
+                      const memberByCarrier = {};
+                      const memberByStatus = {};
+                      let unmatchedCount = 0;
+                      if (b.batchType === "membership") {
+                        batchDetailRows.forEach((r) => {
+                          memberByCarrier[r.carrier] = (memberByCarrier[r.carrier] || 0) + 1;
+                          memberByStatus[r.status] = (memberByStatus[r.status] || 0) + 1;
+                          const matched = records.some((rec) => rec.carrier === r.carrier && normalizeNameKey(rec.clientName) === normalizeNameKey(r.clientName));
+                          if (!matched) unmatchedCount += 1;
+                        });
+                      }
+                      return (
+                        <React.Fragment key={b.id}>
+                          <tr className="pt-clickable" onClick={() => toggleBatchDetail(b)}>
+                            <td style={{ width: 20, color: "var(--muted)" }}>{expandedBatchId === b.id ? "\u25be" : "\u25b8"}</td>
+                            <td><span className="pt-alias-type">{b.batchType === "membership" ? "Membership" : "Commission"}</span></td>
+                            <td>{b.carrier}</td>
+                            <td>{b.fileName}</td>
+                            <td>{new Date(b.uploadedAt).toLocaleString()}</td>
+                            <td className="num">{b.rowCount}</td>
+                            <td className="num" onClick={(e) => e.stopPropagation()}>
+                              {confirmDeleteId === b.id ? (
+                                <span className="pt-confirm-inline">
+                                  Remove {b.rowCount} rows?
+                                  <button className="pt-btn danger small" onClick={() => deleteBatch(b.id)}>Yes</button>
+                                  <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                                </span>
+                              ) : (
+                                <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(b.id)}><Trash2 size={13} /></button>
+                              )}
+                            </td>
+                          </tr>
+                          {expandedBatchId === b.id && (
+                            <tr>
+                              <td colSpan={7} style={{ background: "var(--paper)", padding: "12px 16px" }}>
+                                {b.batchType === "membership" ? (
+                                  batchDetailLoading ? <p className="pt-hint">Loading\u2026</p> : (
+                                    <>
+                                      <div className="pt-mini-grid">
+                                        <div>
+                                          <div className="pt-mini-label">Landed under these carriers</div>
+                                          {Object.keys(memberByCarrier).length === 0 ? <p className="pt-hint">No rows found.</p> : Object.entries(memberByCarrier).map(([c, n]) => <div key={c} className="pt-mini-row"><span>{c}</span><span>{n}</span></div>)}
+                                        </div>
+                                        <div>
+                                          <div className="pt-mini-label">Status breakdown</div>
+                                          {Object.entries(memberByStatus).map(([s, n]) => <div key={s} className="pt-mini-row"><span>{s}</span><span>{n}</span></div>)}
+                                        </div>
+                                      </div>
+                                      <p className="pt-hint" style={{ marginTop: 10 }}>
+                                        {unmatchedCount === 0 ? "Every client in this import matched an existing policy \u2014 all status updates applied cleanly." : `${unmatchedCount} client name(s) in this import didn't match any existing policy \u2014 their status couldn't be applied. Usually means that carrier's commission data hasn't been imported yet, or the name is spelled differently.`}
+                                      </p>
+                                    </>
+                                  )
+                                ) : (
+                                  <>
+                                    <div className="pt-mini-label">Landed under these carriers</div>
+                                    {commissionBreakdown.length === 0 ? <p className="pt-hint">No rows found for this import (they may have been deleted individually).</p> : commissionBreakdown.map((c) => <div key={c.key} className="pt-mini-row"><span>{c.key}</span><span>{c.count} rows \u00b7 <Money v={c.revenue} /></span></div>)}
+                                  </>
+                                )}
+                              </td>
+                            </tr>
                           )}
-                        </td>
-                      </tr>
-                    ))}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
