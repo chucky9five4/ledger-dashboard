@@ -7,7 +7,7 @@ import {
 import {
   LayoutDashboard, UploadCloud, Users, Building2, Search, Database,
   Trash2, Download, AlertTriangle, CheckCircle2, FileSpreadsheet, X,
-  Settings, Cloud, CloudOff, Contact, Link2, UserPlus
+  Settings, Cloud, CloudOff, Contact, Link2, UserPlus, Layers
 } from "lucide-react";
 
 // Local browser storage (used only as a fallback before Supabase is connected).
@@ -55,6 +55,7 @@ const MEMBER_MAPPING_FIELDS = [
   { key: "status", label: "Status (Active/Inactive/Termed)", required: true },
   { key: "agent", label: "Agent name", required: false },
   { key: "planName", label: "Plan name", required: false },
+  { key: "pbp", label: "PBP code (for carriers with unclear plan names)", required: false },
   { key: "effectiveDate", label: "Effective date", required: false },
   { key: "termDate", label: "Term date", required: false },
 ];
@@ -101,6 +102,29 @@ function statusBucket(status) {
   if (s === "active" || s === "future disenrollment") return "active";
   if (s === "term" || s === "rapid disenrollment") return "inactive";
   return "pending";
+}
+function classifyPlanFromName(raw) {
+  if (!raw) return "";
+  const s = String(raw).toLowerCase();
+  const isDSnp = /d[\s-]?snp|dual/.test(s);
+  const isCSnp = /c[\s-]?snp|chronic/.test(s);
+  const isHmo = /\bhmo\b/.test(s);
+  const isPpo = /\bppo\b/.test(s);
+  const base = isHmo ? "HMO" : isPpo ? "PPO" : "";
+  const snp = isDSnp ? "D-SNP" : isCSnp ? "C-SNP" : "";
+  if (base && snp) return base + " " + snp;
+  if (snp) return snp;
+  if (base) return base;
+  return "";
+}
+function resolvePlanCategory(carrier, planName, pbp, planCodeMap) {
+  const key = (carrier || "") + "::" + String(pbp || "").trim();
+  if (pbp && planCodeMap[key]) return { category: planCodeMap[key], resolved: true };
+  const textResult = classifyPlanFromName(planName);
+  const specificEnough = textResult.includes("SNP");
+  if (specificEnough) return { category: textResult, resolved: true };
+  if (pbp && String(pbp).trim()) return { category: textResult || "Unclassified", resolved: false };
+  return { category: textResult || "Unspecified", resolved: true };
 }
 async function sbFetch(cfg, path, options = {}) {
   const res = await fetch(cfg.url.replace(/\/$/, "") + "/rest/v1/" + path, {
@@ -149,12 +173,22 @@ create table membership_updates (
   client_name text not null,
   agent text,
   plan_name text,
+  pbp text,
   status text not null,
   effective_date date,
   term_date date,
   upload_batch_id text,
   source_file text,
   imported_at timestamptz default now()
+);
+
+create table plan_code_directory (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  pbp text not null,
+  category text not null,
+  created_at timestamptz default now(),
+  unique (carrier, pbp)
 );
 
 create table carrier_mappings (
@@ -187,13 +221,30 @@ alter table carrier_mappings enable row level security;
 alter table agent_directory enable row level security;
 alter table agent_aliases enable row level security;
 alter table membership_updates enable row level security;
+alter table plan_code_directory enable row level security;
 
 create policy "allow all - solo use" on policies for all using (true) with check (true);
 create policy "allow all - solo use" on upload_batches for all using (true) with check (true);
 create policy "allow all - solo use" on carrier_mappings for all using (true) with check (true);
 create policy "allow all - solo use" on agent_directory for all using (true) with check (true);
 create policy "allow all - solo use" on agent_aliases for all using (true) with check (true);
-create policy "allow all - solo use" on membership_updates for all using (true) with check (true);`;
+create policy "allow all - solo use" on membership_updates for all using (true) with check (true);
+create policy "allow all - solo use" on plan_code_directory for all using (true) with check (true);`;
+
+const MIGRATION_SQL3 = `alter table membership_updates add column if not exists pbp text;
+
+create table if not exists plan_code_directory (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  pbp text not null,
+  category text not null,
+  created_at timestamptz default now(),
+  unique (carrier, pbp)
+);
+
+alter table plan_code_directory enable row level security;
+drop policy if exists "allow all - solo use" on plan_code_directory;
+create policy "allow all - solo use" on plan_code_directory for all using (true) with check (true);`;
 
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
 
@@ -340,6 +391,8 @@ export default function App() {
   const [agentAliases, setAgentAliases] = useState([]);
   const [directoryAvailable, setDirectoryAvailable] = useState(false);
   const [membershipRecords, setMembershipRecords] = useState([]);
+  const [planCodeDirectory, setPlanCodeDirectory] = useState([]);
+  const [planCodesAvailable, setPlanCodesAvailable] = useState(false);
 
   async function loadDirectory(cfg) {
     try {
@@ -350,6 +403,13 @@ export default function App() {
       setDirectoryAvailable(true);
     } catch (e) {
       setDirectoryAvailable(false);
+    }
+    try {
+      const codes = await sbFetch(cfg, "plan_code_directory?select=*&order=carrier.asc");
+      setPlanCodeDirectory((codes || []).map((r) => ({ id: r.id, carrier: r.carrier, pbp: r.pbp, category: r.category })));
+      setPlanCodesAvailable(true);
+    } catch (e) {
+      setPlanCodesAvailable(false);
     }
   }
 
@@ -373,8 +433,8 @@ export default function App() {
     setCarrierMappings(mObj);
     await loadDirectory(cfg);
     try {
-      const mem = await sbFetch(cfg, "membership_updates?select=carrier,client_name,status,imported_at&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, importedAt: r.imported_at })));
+      const mem = await sbFetch(cfg, "membership_updates?select=*&order=imported_at.desc");
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
   }
 
@@ -444,14 +504,14 @@ export default function App() {
   const [planTypeColumn, setPlanTypeColumn] = useState("");
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
-  const [memberMapping, setMemberMapping] = useState({ clientName: "", status: "", agent: "", planName: "", effectiveDate: "", termDate: "" });
+  const [memberMapping, setMemberMapping] = useState({ clientName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
 
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
-    setMemberMapping({ clientName: "", status: "", agent: "", planName: "", effectiveDate: "", termDate: "" });
+    setMemberMapping({ clientName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn("");
   }
@@ -596,6 +656,7 @@ export default function App() {
       status: normalizeStatus(r[memberMapping.status]),
       agent: memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "",
       planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
+      pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
       effectiveDate: memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "",
       termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
     })).filter((r) => r.clientName);
@@ -605,11 +666,11 @@ export default function App() {
     try {
       const toInsertSnake = memberRows.map((r) => ({
         carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
-        plan_name: r.planName || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
+        plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
         upload_batch_id: batchId, source_file: fileName,
       }));
       await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(toInsertSnake) });
-      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, importedAt: new Date().toISOString() })), ...prev]);
+      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, planName: r.planName, pbp: r.pbp, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
 
@@ -629,7 +690,8 @@ export default function App() {
           return statusByKey[key] ? { ...rec, status: statusByKey[key] } : rec;
         }));
       }
-      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated.`);
+      const needsPlanReview = memberRows.filter((r) => !resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).resolved).length;
+      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
       resetImportStaging();
       setView("dashboard");
     } catch (e) {
@@ -854,6 +916,65 @@ export default function App() {
     } catch (e) { showToast("Roster import failed: " + e.message, "error"); }
   }
 
+  // ---------- PLAN CODE DIRECTORY ----------
+  const [planDirTab, setPlanDirTab] = useState("directory");
+  const [newPlanCarrier, setNewPlanCarrier] = useState("");
+  const [newPlanPbp, setNewPlanPbp] = useState("");
+  const [newPlanCategory, setNewPlanCategory] = useState("HMO");
+  const [planCategoryChoice, setPlanCategoryChoice] = useState({});
+
+  const planCodeMap = useMemo(() => {
+    const map = {};
+    planCodeDirectory.forEach((p) => { map[p.carrier + "::" + p.pbp] = p.category; });
+    return map;
+  }, [planCodeDirectory]);
+
+  async function addPlanCode(carrier, pbp, category) {
+    if (!cloudCfg || !carrier.trim() || !pbp.trim()) return;
+    try {
+      await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), category }]) });
+      await loadDirectory(cloudCfg);
+      showToast(`Taught: ${carrier.trim()} PBP ${pbp.trim()} \u2192 ${category}.`);
+    } catch (e) { showToast("Could not save: " + e.message, "error"); }
+  }
+  async function deletePlanCode(id) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `plan_code_directory?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await loadDirectory(cloudCfg);
+    } catch (e) { showToast("Could not delete: " + e.message, "error"); }
+  }
+
+  const unclassifiedPlanCodes = useMemo(() => {
+    const seen = {};
+    membershipRecords.forEach((r) => {
+      if (!r.pbp) return;
+      const result = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap);
+      if (result.resolved) return;
+      const key = r.carrier + "::" + r.pbp;
+      if (!seen[key]) seen[key] = { carrier: r.carrier, pbp: r.pbp, planName: r.planName, count: 0 };
+      seen[key].count += 1;
+    });
+    return Object.values(seen).sort((a, b) => b.count - a.count);
+  }, [membershipRecords, planCodeMap]);
+
+  const PLAN_CATEGORIES = ["HMO", "PPO", "HMO D-SNP", "HMO C-SNP", "PPO D-SNP", "PPO C-SNP", "D-SNP", "C-SNP"];
+
+  const membershipByPlanCategory = useMemo(() => {
+    const latest = {};
+    [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
+      const key = r.carrier + "::" + normalizeNameKey(r.clientName);
+      if (!latest[key]) latest[key] = r;
+    });
+    const counts = {};
+    Object.values(latest).forEach((r) => {
+      if (statusBucket(r.status) !== "active") return;
+      const cat = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).category;
+      counts[cat] = (counts[cat] || 0) + 1;
+    });
+    return Object.entries(counts).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
+  }, [membershipRecords, planCodeMap]);
+
   // ---------- DASHBOARD FILTERS ----------
   const [filterCarrier, setFilterCarrier] = useState("All");
   const [filterAgent, setFilterAgent] = useState("All");
@@ -940,6 +1061,7 @@ export default function App() {
     { key: "import", label: "Import statement", icon: UploadCloud },
     { key: "agents", label: "Agents", icon: Users },
     { key: "directory", label: "Agent directory", icon: Contact },
+    { key: "plantypes", label: "Plan types", icon: Layers },
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
@@ -1522,6 +1644,104 @@ export default function App() {
                     </>
                   )}
                 </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {view === "plantypes" && (
+          <div>
+            <div className="pt-page-head"><div><h1>Plan types</h1><p>Classify plans as HMO, PPO, D-SNP, C-SNP, or a combo \u2014 so you can see where your membership sits.</p></div></div>
+
+            {!cloudCfg ? (
+              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use Plan Types.</p></div>
+            ) : !planCodesAvailable ? (
+              <div className="pt-card">
+                <p className="pt-error">Your database doesn't have the plan code table yet.</p>
+                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
+                <pre className="pt-sql">{MIGRATION_SQL3}</pre>
+              </div>
+            ) : (
+              <>
+                <div className="pt-card">
+                  <h3>Membership by plan type</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Based on your active policies from production/membership statements.</p>
+                  {membershipByPlanCategory.length === 0 ? <p className="pt-hint">No active membership data yet.</p> : (
+                    <table className="pt-table">
+                      <thead><tr><th>Plan type</th><th className="num">Active members</th></tr></thead>
+                      <tbody>
+                        {membershipByPlanCategory.map((c) => <tr key={c.key}><td>{c.key}</td><td className="num">{c.count}</td></tr>)}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="pt-tabs">
+                  <button className={"pt-tab" + (planDirTab === "directory" ? " active" : "")} onClick={() => setPlanDirTab("directory")}>PBP code directory ({planCodeDirectory.length})</button>
+                  <button className={"pt-tab" + (planDirTab === "unclassified" ? " active" : "")} onClick={() => setPlanDirTab("unclassified")}>Unclassified codes ({unclassifiedPlanCodes.length})</button>
+                </div>
+
+                {planDirTab === "directory" && (
+                  <div className="pt-card">
+                    <div className="pt-inline-form">
+                      <input list="carrier-options-plan" placeholder="Carrier (e.g. Humana)" value={newPlanCarrier} onChange={(e) => setNewPlanCarrier(e.target.value)} style={{ maxWidth: 160 }} />
+                      <datalist id="carrier-options-plan">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                      <input placeholder="PBP code" value={newPlanPbp} onChange={(e) => setNewPlanPbp(e.target.value)} style={{ maxWidth: 120 }} />
+                      <select value={newPlanCategory} onChange={(e) => setNewPlanCategory(e.target.value)}>
+                        {PLAN_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <button className="pt-btn primary small" disabled={!newPlanCarrier.trim() || !newPlanPbp.trim()} onClick={() => { addPlanCode(newPlanCarrier, newPlanPbp, newPlanCategory); setNewPlanCarrier(""); setNewPlanPbp(""); }}>Add</button>
+                    </div>
+                    <table className="pt-table" style={{ marginTop: 14 }}>
+                      <thead><tr><th>Carrier</th><th>PBP</th><th>Category</th><th></th></tr></thead>
+                      <tbody>
+                        {planCodeDirectory.map((p) => (
+                          <tr key={p.id}>
+                            <td>{p.carrier}</td>
+                            <td className="mono">{p.pbp}</td>
+                            <td>{p.category}</td>
+                            <td className="num"><button className="pt-btn ghost small" onClick={() => deletePlanCode(p.id)}><X size={12} /></button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {planDirTab === "unclassified" && (
+                  <div className="pt-card">
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>These PBP codes showed up in your imports but plan name alone wasn't specific enough to classify. Teach each one once.</p>
+                    {unclassifiedPlanCodes.length === 0 ? (
+                      <p className="pt-hint">Nothing unclassified right now.</p>
+                    ) : (
+                      <table className="pt-table">
+                        <thead><tr><th>Carrier</th><th>PBP</th><th>Plan name on file</th><th className="num">Records</th><th>Category</th><th></th></tr></thead>
+                        <tbody>
+                          {unclassifiedPlanCodes.map((u) => {
+                            const ukey = u.carrier + "::" + u.pbp;
+                            return (
+                              <tr key={ukey}>
+                                <td>{u.carrier}</td>
+                                <td className="mono">{u.pbp}</td>
+                                <td>{u.planName || "\u2014"}</td>
+                                <td className="num">{u.count}</td>
+                                <td>
+                                  <select value={planCategoryChoice[ukey] || ""} onChange={(e) => setPlanCategoryChoice({ ...planCategoryChoice, [ukey]: e.target.value })} style={{ minWidth: 140 }}>
+                                    <option value="">Choose\u2026</option>
+                                    {PLAN_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                  </select>
+                                </td>
+                                <td className="num">
+                                  <button className="pt-btn ghost small" disabled={!planCategoryChoice[ukey]} onClick={() => addPlanCode(u.carrier, u.pbp, planCategoryChoice[ukey])}>Teach</button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>
