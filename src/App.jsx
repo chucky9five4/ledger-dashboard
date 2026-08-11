@@ -1103,15 +1103,19 @@ export default function App() {
 
   // Cross-tab: base type (HMO/PPO/Unspecified) x SNP type (D-SNP/C-SNP/None), so any
   // combination can be read off directly \u2014 total HMO, total D-SNP, or just HMO+D-SNP.
-  const planCrossTab = useMemo(() => {
-    const latest = {};
+  const membershipLatestByPolicy = useMemo(() => {
+    const map = {};
     [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
       const key = r.carrier + "::" + normalizeClientKey(r.clientName);
-      if (!latest[key]) latest[key] = r;
+      if (!map[key]) map[key] = r;
     });
+    return map;
+  }, [membershipRecords]);
+
+  const planCrossTab = useMemo(() => {
     const grid = {};
     BASE_TYPES.forEach((b) => { grid[b] = {}; SNP_TYPES.forEach((s) => { grid[b][s] = 0; }); });
-    Object.values(latest).forEach((r) => {
+    Object.values(membershipLatestByPolicy).forEach((r) => {
       if (statusBucket(r.status) !== "active") return;
       const result = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap);
       const base = result.base || "Unspecified";
@@ -1120,7 +1124,7 @@ export default function App() {
       grid[base][snp] = (grid[base][snp] || 0) + 1;
     });
     return grid;
-  }, [membershipRecords, planCodeMap]);
+  }, [membershipLatestByPolicy, planCodeMap]);
 
   // ---------- DASHBOARD FILTERS ----------
   const [filterCarrier, setFilterCarrier] = useState("All");
@@ -1149,14 +1153,6 @@ export default function App() {
   const activeCarrierCount = new Set(filteredRecords.map((r) => r.carrier)).size;
   const activeAgentCount = new Set(filteredRecords.map((r) => r.agent)).size;
 
-  const membershipLatestByPolicy = useMemo(() => {
-    const map = {};
-    membershipRecords.forEach((r) => {
-      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
-      if (!map[key]) map[key] = r; // already sorted latest-first
-    });
-    return map;
-  }, [membershipRecords]);
   const activePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "active").length, [membershipLatestByPolicy]);
   const inactivePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "inactive").length, [membershipLatestByPolicy]);
   const pendingPolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "pending").length, [membershipLatestByPolicy]);
