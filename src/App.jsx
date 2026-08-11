@@ -532,7 +532,7 @@ export default function App() {
     showToast("Switched to local (browser-only) storage.");
   }
 
-  const carriersList = useMemo(() => [...new Set(records.map((r) => r.carrier))].sort(), [records]);
+  const carriersList = useMemo(() => [...new Set([...records.map((r) => r.carrier), ...membershipRecords.map((r) => r.carrier)])].sort(), [records, membershipRecords]);
   const agentsListAll = useMemo(() => [...new Set(records.map((r) => r.agent))].sort(), [records]);
   const planTypesListAll = useMemo(() => [...new Set(records.map((r) => r.planType))].sort(), [records]);
   const totalAllRevenue = useMemo(() => records.reduce((s, r) => s + r.commissionAmount, 0), [records]);
@@ -1194,8 +1194,20 @@ export default function App() {
 
   const [carrierSearch, setCarrierSearch] = useState("");
   const [selectedCarrier, setSelectedCarrier] = useState(null);
-  const carrierSummary = useMemo(() => groupBy(records, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue)
-    .filter((c) => c.key.toLowerCase().includes(carrierSearch.toLowerCase())), [records, carrierSearch]);
+  const carrierSummary = useMemo(() => {
+    const commissionByCarrier = {};
+    groupBy(records, (r) => r.carrier).forEach((g) => { commissionByCarrier[g.key] = g; });
+    return carriersList
+      .map((c) => {
+        const commission = commissionByCarrier[c] || { revenue: 0, count: 0 };
+        const members = Object.values(membershipLatestByPolicy).filter((r) => r.carrier === c);
+        const activeMembers = members.filter((r) => statusBucket(r.status) === "active").length;
+        const inactiveMembers = members.filter((r) => statusBucket(r.status) === "inactive").length;
+        return { key: c, revenue: commission.revenue, count: commission.count, activeMembers, inactiveMembers };
+      })
+      .filter((c) => c.key.toLowerCase().includes(carrierSearch.toLowerCase()))
+      .sort((a, b) => b.revenue - a.revenue || b.activeMembers - a.activeMembers);
+  }, [records, membershipLatestByPolicy, carriersList, carrierSearch]);
   const selectedCarrierRecords = useMemo(() => records.filter((r) => r.carrier === selectedCarrier), [records, selectedCarrier]);
   const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
   const selectedCarrierByPlanType = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
@@ -1583,19 +1595,21 @@ export default function App() {
 
         {view === "carriers" && (
           <div>
-            <div className="pt-page-head"><div><h1>Carriers</h1><p>Production by carrier, across every agent.</p></div></div>
-            {records.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
+            <div className="pt-page-head"><div><h1>Carriers</h1><p>Production and membership by carrier, across every agent.</p></div></div>
+            {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
               <div className="pt-grid-list">
                 <div className="pt-card">
                   <input className="pt-search" placeholder="Search carriers\u2026" value={carrierSearch} onChange={(e) => setCarrierSearch(e.target.value)} />
                   <table className="pt-table">
-                    <thead><tr><th>Carrier</th><th className="num">Policies</th><th className="num">Revenue</th></tr></thead>
+                    <thead><tr><th>Carrier</th><th className="num">Policies</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                     <tbody>
                       {carrierSummary.map((c) => (
                         <tr key={c.key} className={"pt-clickable" + (selectedCarrier === c.key ? " selected" : "")} onClick={() => setSelectedCarrier(c.key)}>
                           <td>{c.key}</td>
                           <td className="num">{c.count}</td>
                           <td className="num mono">{<Money v={c.revenue} />}</td>
+                          <td className="num">{c.activeMembers}</td>
+                          <td className="num">{c.inactiveMembers}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1607,6 +1621,9 @@ export default function App() {
                       <h3>{selectedCarrier}</h3>
                       <button className="pt-btn ghost" onClick={() => exportCSV(selectedCarrierRecords, selectedCarrier.replace(/\s+/g, "_") + ".csv")}><Download size={14} /> Export</button>
                     </div>
+                    <div className="pt-mini-row" style={{ marginBottom: 10 }}><span>Active members</span><span className="mono">{carrierSummary.find((c) => c.key === selectedCarrier)?.activeMembers || 0}</span></div>
+                    <div className="pt-mini-row" style={{ marginBottom: 10 }}><span>Inactive members</span><span className="mono">{carrierSummary.find((c) => c.key === selectedCarrier)?.inactiveMembers || 0}</span></div>
+                    {selectedCarrierRecords.length === 0 && <p className="pt-hint" style={{ marginBottom: 10 }}>No commission data imported yet for this carrier.</p>}
                     <div className="pt-mini-grid">
                       <div>
                         <div className="pt-mini-label">By agent</div>
