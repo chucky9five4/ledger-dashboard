@@ -97,8 +97,8 @@ function toCamelRow(row) {
     agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "",
   };
 }
-function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission" }; }
-function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission" }; }
+function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null }; }
+function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "" }; }
 function normalizeStatus(raw) {
   if (!raw) return "Active";
   const s = String(raw).toLowerCase();
@@ -158,6 +158,27 @@ async function sbFetchAll(cfg, basePath, pageSize = 1000) {
   }
   return all;
 }
+async function sbUploadFile(cfg, path, file) {
+  const res = await fetch(cfg.url.replace(/\/$/, "") + "/storage/v1/object/imports/" + path, {
+    method: "POST",
+    headers: { apikey: cfg.key, Authorization: "Bearer " + cfg.key, "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" },
+    body: file,
+  });
+  if (!res.ok) throw new Error("Storage upload failed: " + res.status);
+  return path;
+}
+async function sbDownloadFile(cfg, path, downloadName) {
+  const res = await fetch(cfg.url.replace(/\/$/, "") + "/storage/v1/object/imports/" + path, {
+    headers: { apikey: cfg.key, Authorization: "Bearer " + cfg.key },
+  });
+  if (!res.ok) throw new Error("Could not fetch the original file (it may not have been saved, or storage isn't set up yet).");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = downloadName;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 const SETUP_SQL = `create table policies (
   id uuid primary key default gen_random_uuid(),
   carrier text not null,
@@ -184,7 +205,8 @@ create table upload_batches (
   file_name text,
   uploaded_at timestamptz default now(),
   row_count int,
-  batch_type text default 'commission'
+  batch_type text default 'commission',
+  storage_path text
 );
 
 create table membership_updates (
@@ -288,7 +310,17 @@ alter table plan_code_directory drop column if exists category;
 
 alter table plan_code_directory enable row level security;
 drop policy if exists "allow all - solo use" on plan_code_directory;
-create policy "allow all - solo use" on plan_code_directory for all using (true) with check (true);`;
+create policy "allow all - solo use" on plan_code_directory for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public) values ('imports', 'imports', false) on conflict (id) do nothing;
+drop policy if exists "allow all - solo use imports" on storage.objects;
+create policy "allow all - solo use imports" on storage.objects for all using (bucket_id = 'imports') with check (bucket_id = 'imports');`;
+
+const MIGRATION_SQL5 = `alter table upload_batches add column if not exists storage_path text;
+
+insert into storage.buckets (id, name, public) values ('imports', 'imports', false) on conflict (id) do nothing;
+drop policy if exists "allow all - solo use imports" on storage.objects;
+create policy "allow all - solo use imports" on storage.objects for all using (bucket_id = 'imports') with check (bucket_id = 'imports');`;
 
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
 
@@ -551,13 +583,14 @@ export default function App() {
   const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
+  const [rawFileObject, setRawFileObject] = useState(null);
 
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
-    setCarrierMode("fixed"); setCarrierColumn("");
+    setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
   }
 
   function handleFile(e) {
@@ -577,6 +610,7 @@ export default function App() {
         setHeaders(hdrs);
         setRawRows(json);
         setFileName(file.name);
+        setRawFileObject(file);
       } catch (err) {
         setImportError("Couldn't read that file. Make sure it's a .xlsx, .xls, or .csv export.");
       }
@@ -656,6 +690,9 @@ export default function App() {
 
     if (cloudCfg) {
       try {
+        if (rawFileObject) {
+          try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+        }
         const inserted = await sbFetch(cloudCfg, "policies", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(newRecords.map(toSnakeRow)) });
         setRecords((prev) => [...prev, ...(inserted || []).map(toCamelRow)]);
         await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
@@ -721,6 +758,9 @@ export default function App() {
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
     try {
+      if (rawFileObject) {
+        try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+      }
       // Insert the raw rows in chunks (safer than one giant request for large files).
       const toInsertSnake = memberRows.map((r) => ({
         carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
@@ -2099,7 +2139,12 @@ export default function App() {
                                   <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
                                 </span>
                               ) : (
-                                <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(b.id)}><Trash2 size={13} /></button>
+                                <span className="pt-btn-row">
+                                  {b.storagePath && (
+                                    <button className="pt-btn ghost small" title="Download original file" onClick={() => sbDownloadFile(cloudCfg, b.storagePath, b.fileName).catch((err) => showToast(err.message, "error"))}><Download size={13} /></button>
+                                  )}
+                                  <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(b.id)}><Trash2 size={13} /></button>
+                                </span>
                               )}
                             </td>
                           </tr>
