@@ -51,7 +51,9 @@ function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
 const MEMBER_MAPPING_FIELDS = [
-  { key: "clientName", label: "Client name", required: true },
+  { key: "clientName", label: "Client name (combined \u2014 skip if using First/Last below)", required: false },
+  { key: "clientFirstName", label: "Client first name (if separate columns)", required: false },
+  { key: "clientLastName", label: "Client last name (if separate columns)", required: false },
   { key: "status", label: "Status (Active/Inactive/Termed)", required: true },
   { key: "agent", label: "Agent name", required: false },
   { key: "planName", label: "Plan name", required: false },
@@ -59,6 +61,12 @@ const MEMBER_MAPPING_FIELDS = [
   { key: "effectiveDate", label: "Effective date", required: false },
   { key: "termDate", label: "Term date", required: false },
 ];
+function combineName(first, last) {
+  const f = String(first || "").trim();
+  const l = String(last || "").trim();
+  if (l && f) return `${l}, ${f}`;
+  return l || f;
+}
 
 const FIELD_TO_COLUMN = {
   carrier: "carrier", agent: "agent", planType: "plan_type", product: "product",
@@ -522,14 +530,14 @@ export default function App() {
   const [planTypeColumn, setPlanTypeColumn] = useState("");
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
-  const [memberMapping, setMemberMapping] = useState({ clientName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+  const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
 
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
-    setMemberMapping({ clientName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+    setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn("");
   }
@@ -662,7 +670,7 @@ export default function App() {
     }
   }
 
-  const memberMappingValid = carrierInput.trim() && memberMapping.clientName && memberMapping.status && (carrierMode === "fixed" || carrierColumn);
+  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && memberMapping.status && (carrierMode === "fixed" || carrierColumn);
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
@@ -682,7 +690,7 @@ export default function App() {
     const carrier = carrierInput.trim();
     const memberRows = rawRows.map((r) => ({
       carrier: carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier,
-      clientName: String(r[memberMapping.clientName] ?? "").trim(),
+      clientName: memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]),
       status: normalizeStatus(r[memberMapping.status]),
       agent: memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "",
       planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
@@ -1492,7 +1500,7 @@ export default function App() {
                 ) : (
                   <div className="pt-row-between">
                     <div>
-                      {!memberMappingValid && <p className="pt-error">Set the carrier name and map client name and status to continue.</p>}
+                      {!memberMappingValid && <p className="pt-error">Set the carrier name, map Status, and map either Client name or both First/Last name.</p>}
                       {importing && <p className="pt-hint">{importProgress || "Working\u2026"}</p>}
                     </div>
                     <button className="pt-btn primary" disabled={!memberMappingValid || importing} onClick={commitMembershipImport}>
