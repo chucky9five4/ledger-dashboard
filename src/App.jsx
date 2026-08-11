@@ -104,27 +104,21 @@ function statusBucket(status) {
   return "pending";
 }
 function classifyPlanFromName(raw) {
-  if (!raw) return "";
+  if (!raw) return { base: "", snp: "" };
   const s = String(raw).toLowerCase();
   const isDSnp = /d[\s-]?snp|dual/.test(s);
   const isCSnp = /c[\s-]?snp|chronic/.test(s);
   const isHmo = /\bhmo\b/.test(s);
   const isPpo = /\bppo\b/.test(s);
-  const base = isHmo ? "HMO" : isPpo ? "PPO" : "";
-  const snp = isDSnp ? "D-SNP" : isCSnp ? "C-SNP" : "";
-  if (base && snp) return base + " " + snp;
-  if (snp) return snp;
-  if (base) return base;
-  return "";
+  return { base: isHmo ? "HMO" : isPpo ? "PPO" : "", snp: isDSnp ? "D-SNP" : isCSnp ? "C-SNP" : "" };
 }
 function resolvePlanCategory(carrier, planName, pbp, planCodeMap) {
   const key = (carrier || "") + "::" + String(pbp || "").trim();
-  if (pbp && planCodeMap[key]) return { category: planCodeMap[key], resolved: true };
-  const textResult = classifyPlanFromName(planName);
-  const specificEnough = textResult.includes("SNP");
-  if (specificEnough) return { category: textResult, resolved: true };
-  if (pbp && String(pbp).trim()) return { category: textResult || "Unclassified", resolved: false };
-  return { category: textResult || "Unspecified", resolved: true };
+  if (pbp && planCodeMap[key]) return { base: planCodeMap[key].base || "", snp: planCodeMap[key].snp || "", resolved: true };
+  const text = classifyPlanFromName(planName);
+  if (text.snp) return { base: text.base, snp: text.snp, resolved: true };
+  if (pbp && String(pbp).trim()) return { base: text.base, snp: text.snp, resolved: false };
+  return { base: text.base, snp: text.snp, resolved: true };
 }
 async function sbFetch(cfg, path, options = {}) {
   const res = await fetch(cfg.url.replace(/\/$/, "") + "/rest/v1/" + path, {
@@ -186,7 +180,8 @@ create table plan_code_directory (
   id uuid primary key default gen_random_uuid(),
   carrier text not null,
   pbp text not null,
-  category text not null,
+  base_type text,
+  snp_type text,
   created_at timestamptz default now(),
   unique (carrier, pbp)
 );
@@ -237,10 +232,15 @@ create table if not exists plan_code_directory (
   id uuid primary key default gen_random_uuid(),
   carrier text not null,
   pbp text not null,
-  category text not null,
+  base_type text,
+  snp_type text,
   created_at timestamptz default now(),
   unique (carrier, pbp)
 );
+
+alter table plan_code_directory add column if not exists base_type text;
+alter table plan_code_directory add column if not exists snp_type text;
+alter table plan_code_directory drop column if exists category;
 
 alter table plan_code_directory enable row level security;
 drop policy if exists "allow all - solo use" on plan_code_directory;
@@ -406,7 +406,7 @@ export default function App() {
     }
     try {
       const codes = await sbFetch(cfg, "plan_code_directory?select=*&order=carrier.asc");
-      setPlanCodeDirectory((codes || []).map((r) => ({ id: r.id, carrier: r.carrier, pbp: r.pbp, category: r.category })));
+      setPlanCodeDirectory((codes || []).map((r) => ({ id: r.id, carrier: r.carrier, pbp: r.pbp, baseType: r.base_type || "", snpType: r.snp_type || "" })));
       setPlanCodesAvailable(true);
     } catch (e) {
       setPlanCodesAvailable(false);
@@ -920,21 +920,25 @@ export default function App() {
   const [planDirTab, setPlanDirTab] = useState("directory");
   const [newPlanCarrier, setNewPlanCarrier] = useState("");
   const [newPlanPbp, setNewPlanPbp] = useState("");
-  const [newPlanCategory, setNewPlanCategory] = useState("HMO");
-  const [planCategoryChoice, setPlanCategoryChoice] = useState({});
+  const [newPlanBase, setNewPlanBase] = useState("HMO");
+  const [newPlanSnp, setNewPlanSnp] = useState("None");
+  const [planChoice, setPlanChoice] = useState({});
+
+  const BASE_TYPES = ["HMO", "PPO", "Unspecified"];
+  const SNP_TYPES = ["D-SNP", "C-SNP", "None"];
 
   const planCodeMap = useMemo(() => {
     const map = {};
-    planCodeDirectory.forEach((p) => { map[p.carrier + "::" + p.pbp] = p.category; });
+    planCodeDirectory.forEach((p) => { map[p.carrier + "::" + p.pbp] = { base: p.baseType, snp: p.snpType }; });
     return map;
   }, [planCodeDirectory]);
 
-  async function addPlanCode(carrier, pbp, category) {
+  async function addPlanCode(carrier, pbp, base, snp) {
     if (!cloudCfg || !carrier.trim() || !pbp.trim()) return;
     try {
-      await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), category }]) });
+      await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), base_type: base === "Unspecified" ? null : base, snp_type: snp === "None" ? null : snp }]) });
       await loadDirectory(cloudCfg);
-      showToast(`Taught: ${carrier.trim()} PBP ${pbp.trim()} \u2192 ${category}.`);
+      showToast(`Taught: ${carrier.trim()} PBP ${pbp.trim()} \u2192 ${base}${snp !== "None" ? " " + snp : ""}.`);
     } catch (e) { showToast("Could not save: " + e.message, "error"); }
   }
   async function deletePlanCode(id) {
@@ -958,21 +962,25 @@ export default function App() {
     return Object.values(seen).sort((a, b) => b.count - a.count);
   }, [membershipRecords, planCodeMap]);
 
-  const PLAN_CATEGORIES = ["HMO", "PPO", "HMO D-SNP", "HMO C-SNP", "PPO D-SNP", "PPO C-SNP", "D-SNP", "C-SNP"];
-
-  const membershipByPlanCategory = useMemo(() => {
+  // Cross-tab: base type (HMO/PPO/Unspecified) x SNP type (D-SNP/C-SNP/None), so any
+  // combination can be read off directly \u2014 total HMO, total D-SNP, or just HMO+D-SNP.
+  const planCrossTab = useMemo(() => {
     const latest = {};
     [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
       const key = r.carrier + "::" + normalizeNameKey(r.clientName);
       if (!latest[key]) latest[key] = r;
     });
-    const counts = {};
+    const grid = {};
+    BASE_TYPES.forEach((b) => { grid[b] = {}; SNP_TYPES.forEach((s) => { grid[b][s] = 0; }); });
     Object.values(latest).forEach((r) => {
       if (statusBucket(r.status) !== "active") return;
-      const cat = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).category;
-      counts[cat] = (counts[cat] || 0) + 1;
+      const result = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap);
+      const base = result.base || "Unspecified";
+      const snp = result.snp || "None";
+      if (!grid[base]) grid[base] = {}; SNP_TYPES.forEach((s) => { if (grid[base][s] === undefined) grid[base][s] = 0; });
+      grid[base][snp] = (grid[base][snp] || 0) + 1;
     });
-    return Object.entries(counts).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
+    return grid;
   }, [membershipRecords, planCodeMap]);
 
   // ---------- DASHBOARD FILTERS ----------
@@ -1651,13 +1659,13 @@ export default function App() {
 
         {view === "plantypes" && (
           <div>
-            <div className="pt-page-head"><div><h1>Plan types</h1><p>Classify plans as HMO, PPO, D-SNP, C-SNP, or a combo \u2014 so you can see where your membership sits.</p></div></div>
+            <div className="pt-page-head"><div><h1>Plan types</h1><p>Track base type (HMO/PPO) and SNP type (D-SNP/C-SNP) independently, so you can see any total or cross-section you want.</p></div></div>
 
             {!cloudCfg ? (
               <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use Plan Types.</p></div>
             ) : !planCodesAvailable ? (
               <div className="pt-card">
-                <p className="pt-error">Your database doesn't have the plan code table yet.</p>
+                <p className="pt-error">Your database doesn't have the plan code table yet (or it's using an older version of it).</p>
                 <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
                 <pre className="pt-sql">{MIGRATION_SQL3}</pre>
               </div>
@@ -1665,15 +1673,36 @@ export default function App() {
               <>
                 <div className="pt-card">
                   <h3>Membership by plan type</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Based on your active policies from production/membership statements.</p>
-                  {membershipByPlanCategory.length === 0 ? <p className="pt-hint">No active membership data yet.</p> : (
-                    <table className="pt-table">
-                      <thead><tr><th>Plan type</th><th className="num">Active members</th></tr></thead>
-                      <tbody>
-                        {membershipByPlanCategory.map((c) => <tr key={c.key}><td>{c.key}</td><td className="num">{c.count}</td></tr>)}
-                      </tbody>
-                    </table>
-                  )}
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Based on your active policies from production/membership statements. Row and column totals give you HMO/PPO and D-SNP/C-SNP overall; each cell is the specific cross-section.</p>
+                  <table className="pt-table">
+                    <thead>
+                      <tr>
+                        <th></th>
+                        {SNP_TYPES.map((s) => <th key={s} className="num">{s}</th>)}
+                        <th className="num">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {BASE_TYPES.map((b) => {
+                        const rowTotal = SNP_TYPES.reduce((sum, s) => sum + (planCrossTab[b]?.[s] || 0), 0);
+                        return (
+                          <tr key={b}>
+                            <td>{b}</td>
+                            {SNP_TYPES.map((s) => <td key={s} className="num">{planCrossTab[b]?.[s] || 0}</td>)}
+                            <td className="num" style={{ fontWeight: 600 }}>{rowTotal}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr>
+                        <td style={{ fontWeight: 600 }}>Total</td>
+                        {SNP_TYPES.map((s) => {
+                          const colTotal = BASE_TYPES.reduce((sum, b) => sum + (planCrossTab[b]?.[s] || 0), 0);
+                          return <td key={s} className="num" style={{ fontWeight: 600 }}>{colTotal}</td>;
+                        })}
+                        <td className="num" style={{ fontWeight: 700 }}>{BASE_TYPES.reduce((sum, b) => sum + SNP_TYPES.reduce((s2, s) => s2 + (planCrossTab[b]?.[s] || 0), 0), 0)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
                 <div className="pt-tabs">
@@ -1684,22 +1713,26 @@ export default function App() {
                 {planDirTab === "directory" && (
                   <div className="pt-card">
                     <div className="pt-inline-form">
-                      <input list="carrier-options-plan" placeholder="Carrier (e.g. Humana)" value={newPlanCarrier} onChange={(e) => setNewPlanCarrier(e.target.value)} style={{ maxWidth: 160 }} />
+                      <input list="carrier-options-plan" placeholder="Carrier (e.g. Humana)" value={newPlanCarrier} onChange={(e) => setNewPlanCarrier(e.target.value)} style={{ maxWidth: 150 }} />
                       <datalist id="carrier-options-plan">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
-                      <input placeholder="PBP code" value={newPlanPbp} onChange={(e) => setNewPlanPbp(e.target.value)} style={{ maxWidth: 120 }} />
-                      <select value={newPlanCategory} onChange={(e) => setNewPlanCategory(e.target.value)}>
-                        {PLAN_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                      <input placeholder="PBP code" value={newPlanPbp} onChange={(e) => setNewPlanPbp(e.target.value)} style={{ maxWidth: 100 }} />
+                      <select value={newPlanBase} onChange={(e) => setNewPlanBase(e.target.value)}>
+                        {BASE_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
-                      <button className="pt-btn primary small" disabled={!newPlanCarrier.trim() || !newPlanPbp.trim()} onClick={() => { addPlanCode(newPlanCarrier, newPlanPbp, newPlanCategory); setNewPlanCarrier(""); setNewPlanPbp(""); }}>Add</button>
+                      <select value={newPlanSnp} onChange={(e) => setNewPlanSnp(e.target.value)}>
+                        {SNP_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <button className="pt-btn primary small" disabled={!newPlanCarrier.trim() || !newPlanPbp.trim()} onClick={() => { addPlanCode(newPlanCarrier, newPlanPbp, newPlanBase, newPlanSnp); setNewPlanCarrier(""); setNewPlanPbp(""); }}>Add</button>
                     </div>
                     <table className="pt-table" style={{ marginTop: 14 }}>
-                      <thead><tr><th>Carrier</th><th>PBP</th><th>Category</th><th></th></tr></thead>
+                      <thead><tr><th>Carrier</th><th>PBP</th><th>Base type</th><th>SNP type</th><th></th></tr></thead>
                       <tbody>
                         {planCodeDirectory.map((p) => (
                           <tr key={p.id}>
                             <td>{p.carrier}</td>
                             <td className="mono">{p.pbp}</td>
-                            <td>{p.category}</td>
+                            <td>{p.baseType || "Unspecified"}</td>
+                            <td>{p.snpType || "None"}</td>
                             <td className="num"><button className="pt-btn ghost small" onClick={() => deletePlanCode(p.id)}><X size={12} /></button></td>
                           </tr>
                         ))}
@@ -1710,15 +1743,16 @@ export default function App() {
 
                 {planDirTab === "unclassified" && (
                   <div className="pt-card">
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>These PBP codes showed up in your imports but plan name alone wasn't specific enough to classify. Teach each one once.</p>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>These PBP codes showed up in your imports but plan name alone wasn't specific enough to classify. Teach each one once, picking a base type and SNP type separately.</p>
                     {unclassifiedPlanCodes.length === 0 ? (
                       <p className="pt-hint">Nothing unclassified right now.</p>
                     ) : (
                       <table className="pt-table">
-                        <thead><tr><th>Carrier</th><th>PBP</th><th>Plan name on file</th><th className="num">Records</th><th>Category</th><th></th></tr></thead>
+                        <thead><tr><th>Carrier</th><th>PBP</th><th>Plan name on file</th><th className="num">Records</th><th>Base type</th><th>SNP type</th><th></th></tr></thead>
                         <tbody>
                           {unclassifiedPlanCodes.map((u) => {
                             const ukey = u.carrier + "::" + u.pbp;
+                            const choice = planChoice[ukey] || { base: "HMO", snp: "None" };
                             return (
                               <tr key={ukey}>
                                 <td>{u.carrier}</td>
@@ -1726,13 +1760,17 @@ export default function App() {
                                 <td>{u.planName || "\u2014"}</td>
                                 <td className="num">{u.count}</td>
                                 <td>
-                                  <select value={planCategoryChoice[ukey] || ""} onChange={(e) => setPlanCategoryChoice({ ...planCategoryChoice, [ukey]: e.target.value })} style={{ minWidth: 140 }}>
-                                    <option value="">Choose\u2026</option>
-                                    {PLAN_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                  <select value={choice.base} onChange={(e) => setPlanChoice({ ...planChoice, [ukey]: { ...choice, base: e.target.value } })} style={{ minWidth: 110 }}>
+                                    {BASE_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                  </select>
+                                </td>
+                                <td>
+                                  <select value={choice.snp} onChange={(e) => setPlanChoice({ ...planChoice, [ukey]: { ...choice, snp: e.target.value } })} style={{ minWidth: 100 }}>
+                                    {SNP_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
                                   </select>
                                 </td>
                                 <td className="num">
-                                  <button className="pt-btn ghost small" disabled={!planCategoryChoice[ukey]} onClick={() => addPlanCode(u.carrier, u.pbp, planCategoryChoice[ukey])}>Teach</button>
+                                  <button className="pt-btn ghost small" onClick={() => addPlanCode(u.carrier, u.pbp, choice.base, choice.snp)}>Teach</button>
                                 </td>
                               </tr>
                             );
