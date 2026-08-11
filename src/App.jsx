@@ -989,6 +989,68 @@ export default function App() {
     } catch (e) { showToast("Could not delete: " + e.message, "error"); }
   }
 
+  // ---------- BULK PBP CODE IMPORT ----------
+  const [pbpFileName, setPbpFileName] = useState("");
+  const [pbpHeaders, setPbpHeaders] = useState([]);
+  const [pbpRows, setPbpRows] = useState([]);
+  const [pbpCarrierCol, setPbpCarrierCol] = useState("");
+  const [pbpPbpCol, setPbpPbpCol] = useState("");
+  const [pbpBaseCol, setPbpBaseCol] = useState("");
+  const [pbpSnpCol, setPbpSnpCol] = useState("");
+
+  function handlePbpFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!json.length) return;
+        setPbpHeaders(Object.keys(json[0]));
+        setPbpRows(json);
+        setPbpFileName(file.name);
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function normalizeBaseInput(raw) {
+    const s = String(raw || "").toLowerCase();
+    if (s.includes("hmo")) return "HMO";
+    if (s.includes("ppo")) return "PPO";
+    return null;
+  }
+  function normalizeSnpInput(raw) {
+    const s = String(raw || "").toLowerCase();
+    if (s.includes("d-snp") || s.includes("dsnp") || s.includes("dual")) return "D-SNP";
+    if (s.includes("c-snp") || s.includes("csnp") || s.includes("chronic")) return "C-SNP";
+    return null;
+  }
+  async function commitPbpImport() {
+    if (!pbpCarrierCol || !pbpPbpCol || !cloudCfg) return;
+    try {
+      const toInsert = pbpRows
+        .map((r) => ({
+          carrier: String(r[pbpCarrierCol] ?? "").trim(),
+          pbp: String(r[pbpPbpCol] ?? "").trim(),
+          base_type: pbpBaseCol ? normalizeBaseInput(r[pbpBaseCol]) : null,
+          snp_type: pbpSnpCol ? normalizeSnpInput(r[pbpSnpCol]) : null,
+        }))
+        .filter((r) => r.carrier && r.pbp);
+      if (!toInsert.length) { showToast("No valid rows found \u2014 check your column mapping.", "error"); return; }
+      const chunks = [];
+      for (let i = 0; i < toInsert.length; i += 500) chunks.push(toInsert.slice(i, i + 500));
+      for (const chunk of chunks) {
+        await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(chunk) });
+      }
+      await loadDirectory(cloudCfg);
+      showToast(`Taught ${toInsert.length} PBP code(s).`);
+      setPbpFileName(""); setPbpHeaders([]); setPbpRows([]); setPbpCarrierCol(""); setPbpPbpCol(""); setPbpBaseCol(""); setPbpSnpCol("");
+    } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
+  }
+
   const unclassifiedPlanCodes = useMemo(() => {
     const seen = {};
     membershipRecords.forEach((r) => {
@@ -1781,6 +1843,58 @@ export default function App() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {planDirTab === "directory" && (
+                  <div className="pt-card">
+                    <h3>Bulk import PBP codes</h3>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>Have a spreadsheet with a list of codes? Upload it and map the columns once \u2014 much faster than adding them one at a time.</p>
+                    {!pbpFileName ? (
+                      <label className="pt-btn ghost">
+                        Choose file
+                        <input type="file" accept=".xlsx,.xls,.csv" onChange={handlePbpFile} style={{ display: "none" }} />
+                      </label>
+                    ) : (
+                      <>
+                        <div className="pt-file-chip"><FileSpreadsheet size={14} /> {pbpFileName} \u00b7 {pbpRows.length} rows</div>
+                        <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
+                          <div className="pt-field">
+                            <label>Carrier column *</label>
+                            <select value={pbpCarrierCol} onChange={(e) => setPbpCarrierCol(e.target.value)}>
+                              <option value="">\u2014 choose \u2014</option>
+                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                          <div className="pt-field">
+                            <label>PBP column *</label>
+                            <select value={pbpPbpCol} onChange={(e) => setPbpPbpCol(e.target.value)}>
+                              <option value="">\u2014 choose \u2014</option>
+                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                          <div className="pt-field">
+                            <label>Base type column (HMO/PPO)</label>
+                            <select value={pbpBaseCol} onChange={(e) => setPbpBaseCol(e.target.value)}>
+                              <option value="">\u2014 not in file \u2014</option>
+                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                          <div className="pt-field">
+                            <label>SNP type column (D-SNP/C-SNP)</label>
+                            <select value={pbpSnpCol} onChange={(e) => setPbpSnpCol(e.target.value)}>
+                              <option value="">\u2014 not in file \u2014</option>
+                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <p className="pt-hint" style={{ marginTop: 8 }}>Base/SNP columns can hold free text like "HMO," "D-SNP," "Dual," etc. \u2014 they're read automatically. Leave either blank if your list doesn't separate them, and teach those from the Unclassified tab instead.</p>
+                        <div className="pt-btn-row" style={{ marginTop: 10 }}>
+                          <button className="pt-btn primary" disabled={!pbpCarrierCol || !pbpPbpCol} onClick={commitPbpImport}>Import {pbpRows.length} codes</button>
+                          <button className="pt-btn ghost" onClick={() => { setPbpFileName(""); setPbpHeaders([]); setPbpRows([]); }}>Cancel</button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
