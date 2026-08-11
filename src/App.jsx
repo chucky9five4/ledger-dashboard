@@ -1166,9 +1166,15 @@ export default function App() {
   const activeCarrierCount = new Set(filteredRecords.map((r) => r.carrier)).size;
   const activeAgentCount = new Set(filteredRecords.map((r) => r.agent)).size;
 
-  const activePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "active").length, [membershipLatestByPolicy]);
-  const inactivePolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "inactive").length, [membershipLatestByPolicy]);
-  const pendingPolicyCount = useMemo(() => Object.values(membershipLatestByPolicy).filter((r) => statusBucket(r.status) === "pending").length, [membershipLatestByPolicy]);
+  const filteredMembershipLatest = useMemo(() => {
+    return Object.values(membershipLatestByPolicy).filter((r) =>
+      (filterCarrier === "All" || r.carrier === filterCarrier) &&
+      (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent)))
+    );
+  }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
+  const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
+  const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
+  const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
   const clientStatusAcrossCarriers = useMemo(() => {
     const byName = {};
