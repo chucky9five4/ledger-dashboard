@@ -1186,8 +1186,17 @@ export default function App() {
   // ---------- AGENTS / CARRIERS ----------
   const [agentSearch, setAgentSearch] = useState("");
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const agentSummary = useMemo(() => groupBy(records, (r) => r.agent).sort((a, b) => b.revenue - a.revenue)
-    .filter((a) => a.key.toLowerCase().includes(agentSearch.toLowerCase())), [records, agentSearch]);
+  const agentSummary = useMemo(() => {
+    return groupBy(records, (r) => r.agent)
+      .map((a) => {
+        const members = Object.values(membershipLatestByPolicy).filter((r) => r.agent && normalizeClientKey(r.agent) === normalizeClientKey(a.key));
+        const activeMembers = members.filter((r) => statusBucket(r.status) === "active").length;
+        const inactiveMembers = members.filter((r) => statusBucket(r.status) === "inactive").length;
+        return { ...a, activeMembers, inactiveMembers };
+      })
+      .filter((a) => a.key.toLowerCase().includes(agentSearch.toLowerCase()))
+      .sort((a, b) => b.revenue - a.revenue);
+  }, [records, membershipLatestByPolicy, agentSearch]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => r.agent === selectedAgent), [records, selectedAgent]);
   const selectedAgentByCarrier = useMemo(() => groupBy(selectedAgentRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
   const selectedAgentByPlanType = useMemo(() => groupBy(selectedAgentRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
@@ -1371,7 +1380,7 @@ export default function App() {
                 <div className="pt-card">
                   <h3>Top agents in this view</h3>
                   <table className="pt-table">
-                    <thead><tr><th>Agent</th><th className="num">Policies</th><th className="num">Revenue</th></tr></thead>
+                    <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
                       {byAgent.slice(0, 10).map((a) => (
                         <tr key={a.key}>
@@ -1542,22 +1551,25 @@ export default function App() {
         {view === "agents" && (
           <div>
             <div className="pt-page-head"><div><h1>Agents</h1><p>Production by agent, across every carrier.</p></div></div>
-            {records.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
+            {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
               <div className="pt-grid-list">
                 <div className="pt-card">
                   <input className="pt-search" placeholder="Search agents\u2026" value={agentSearch} onChange={(e) => setAgentSearch(e.target.value)} />
                   <table className="pt-table">
-                    <thead><tr><th>Agent</th><th className="num">Policies</th><th className="num">Revenue</th></tr></thead>
+                    <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                     <tbody>
                       {agentSummary.map((a) => (
                         <tr key={a.key} className={"pt-clickable" + (selectedAgent === a.key ? " selected" : "")} onClick={() => setSelectedAgent(a.key)}>
                           <td>{a.key}</td>
                           <td className="num">{a.count}</td>
                           <td className="num mono">{<Money v={a.revenue} />}</td>
+                          <td className="num">{a.activeMembers}</td>
+                          <td className="num">{a.inactiveMembers}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import \u2014 it's optional, so some may show 0 even for agents with real membership.</p>
                 </div>
                 {selectedAgent && (
                   <div className="pt-card">
@@ -1601,7 +1613,7 @@ export default function App() {
                 <div className="pt-card">
                   <input className="pt-search" placeholder="Search carriers\u2026" value={carrierSearch} onChange={(e) => setCarrierSearch(e.target.value)} />
                   <table className="pt-table">
-                    <thead><tr><th>Carrier</th><th className="num">Policies</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
+                    <thead><tr><th>Carrier</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                     <tbody>
                       {carrierSummary.map((c) => (
                         <tr key={c.key} className={"pt-clickable" + (selectedCarrier === c.key ? " selected" : "")} onClick={() => setSelectedCarrier(c.key)}>
