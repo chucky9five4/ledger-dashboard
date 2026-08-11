@@ -646,6 +646,18 @@ export default function App() {
 
   const memberMappingValid = carrierInput.trim() && memberMapping.clientName && memberMapping.status && (carrierMode === "fixed" || carrierColumn);
 
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState("");
+
+  function chunkArray(arr, size) {
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+  function pgInList(values) {
+    return "in.(" + values.map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(",") + ")";
+  }
+
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
     const batchId = "b_" + Date.now();
@@ -663,24 +675,50 @@ export default function App() {
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
+    setImporting(true);
     try {
+      // Insert the raw rows in chunks (safer than one giant request for large files).
       const toInsertSnake = memberRows.map((r) => ({
         carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
         plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
         upload_batch_id: batchId, source_file: fileName,
       }));
-      await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(toInsertSnake) });
+      const insertChunks = chunkArray(toInsertSnake, 500);
+      for (let i = 0; i < insertChunks.length; i++) {
+        setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
+        await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
+      }
       setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, planName: r.planName, pbp: r.pbp, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
 
-      // Apply each client's latest reported status to every matching commission record for that client's own carrier.
+      // Group matching clients by carrier + status, then update each group in
+      // one request (chunked) instead of one request per client \u2014 this is
+      // the part that used to take thousands of round-trips for a big file.
+      const groups = {};
       let updatedCount = 0;
-      for (const r of memberRows) {
+      memberRows.forEach((r) => {
         const matches = records.filter((rec) => rec.carrier === r.carrier && normalizeNameKey(rec.clientName) === normalizeNameKey(r.clientName));
-        if (matches.length === 0) continue;
-        await sbFetch(cloudCfg, `policies?carrier=eq.${encodeURIComponent(r.carrier)}&client_name=ilike.${encodeURIComponent(r.clientName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: r.status }) });
+        if (matches.length === 0) return;
+        if (!groups[r.carrier]) groups[r.carrier] = {};
+        if (!groups[r.carrier][r.status]) groups[r.carrier][r.status] = new Set();
+        matches.forEach((m) => groups[r.carrier][r.status].add(m.clientName));
         updatedCount += matches.length;
+      });
+      const groupCarriers = Object.keys(groups);
+      for (let gi = 0; gi < groupCarriers.length; gi++) {
+        const grpCarrier = groupCarriers[gi];
+        const statuses = Object.keys(groups[grpCarrier]);
+        for (const grpStatus of statuses) {
+          const names = Array.from(groups[grpCarrier][grpStatus]);
+          const nameChunks = chunkArray(names, 100);
+          for (let ci = 0; ci < nameChunks.length; ci++) {
+            setImportProgress(`Updating policy statuses \u2014 ${grpCarrier} (${grpStatus})\u2026`);
+            const filterValue = pgInList(nameChunks[ci]);
+            const url = `policies?carrier=eq.${encodeURIComponent(grpCarrier)}&client_name=${encodeURIComponent(filterValue)}`;
+            await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: grpStatus }) });
+          }
+        }
       }
       if (updatedCount > 0) {
         const statusByKey = {};
@@ -697,6 +735,8 @@ export default function App() {
     } catch (e) {
       showToast("Membership import failed: " + e.message, "error");
     }
+    setImporting(false);
+    setImportProgress("");
   }
 
   // ---------- MANAGE DATA ----------
@@ -1365,9 +1405,12 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="pt-row-between">
-                    <div>{!memberMappingValid && <p className="pt-error">Set the carrier name and map client name and status to continue.</p>}</div>
-                    <button className="pt-btn primary" disabled={!memberMappingValid} onClick={commitMembershipImport}>
-                      Apply {rawRows.length} status updates
+                    <div>
+                      {!memberMappingValid && <p className="pt-error">Set the carrier name and map client name and status to continue.</p>}
+                      {importing && <p className="pt-hint">{importProgress || "Working\u2026"}</p>}
+                    </div>
+                    <button className="pt-btn primary" disabled={!memberMappingValid || importing} onClick={commitMembershipImport}>
+                      {importing ? "Importing\u2026" : `Apply ${rawRows.length} status updates`}
                     </button>
                   </div>
                 )}
