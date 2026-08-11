@@ -50,6 +50,11 @@ const MAPPING_FIELDS = [
 function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
+function normalizeClientKey(s) {
+  const cleaned = String(s || "").toUpperCase().replace(/[,.]/g, " ").trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean).sort();
+  return tokens.join(" ");
+}
 const MEMBER_MAPPING_FIELDS = [
   { key: "clientName", label: "Client name (combined \u2014 skip if using First/Last below)", required: false },
   { key: "clientFirstName", label: "Client first name (if separate columns)", required: false },
@@ -724,7 +729,7 @@ export default function App() {
       const groups = {};
       let updatedCount = 0;
       memberRows.forEach((r) => {
-        const matches = records.filter((rec) => rec.carrier === r.carrier && normalizeNameKey(rec.clientName) === normalizeNameKey(r.clientName));
+        const matches = records.filter((rec) => rec.carrier === r.carrier && normalizeClientKey(rec.clientName) === normalizeClientKey(r.clientName));
         if (matches.length === 0) return;
         if (!groups[r.carrier]) groups[r.carrier] = {};
         if (!groups[r.carrier][r.status]) groups[r.carrier][r.status] = new Set();
@@ -748,9 +753,9 @@ export default function App() {
       }
       if (updatedCount > 0) {
         const statusByKey = {};
-        memberRows.forEach((r) => { statusByKey[r.carrier + "::" + normalizeNameKey(r.clientName)] = r.status; });
+        memberRows.forEach((r) => { statusByKey[r.carrier + "::" + normalizeClientKey(r.clientName)] = r.status; });
         setRecords((prev) => prev.map((rec) => {
-          const key = rec.carrier + "::" + normalizeNameKey(rec.clientName);
+          const key = rec.carrier + "::" + normalizeClientKey(rec.clientName);
           return statusByKey[key] ? { ...rec, status: statusByKey[key] } : rec;
         }));
       }
@@ -1101,7 +1106,7 @@ export default function App() {
   const planCrossTab = useMemo(() => {
     const latest = {};
     [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
-      const key = r.carrier + "::" + normalizeNameKey(r.clientName);
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
       if (!latest[key]) latest[key] = r;
     });
     const grid = {};
@@ -1147,7 +1152,7 @@ export default function App() {
   const membershipLatestByPolicy = useMemo(() => {
     const map = {};
     membershipRecords.forEach((r) => {
-      const key = r.carrier + "::" + normalizeNameKey(r.clientName);
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
       if (!map[key]) map[key] = r; // already sorted latest-first
     });
     return map;
@@ -1159,7 +1164,7 @@ export default function App() {
   const clientStatusAcrossCarriers = useMemo(() => {
     const byName = {};
     Object.values(membershipLatestByPolicy).forEach((r) => {
-      const key = normalizeNameKey(r.clientName);
+      const key = normalizeClientKey(r.clientName);
       if (!byName[key]) byName[key] = [];
       byName[key].push({ carrier: r.carrier, status: r.status, clientName: r.clientName });
     });
@@ -1991,7 +1996,7 @@ export default function App() {
                         batchDetailRows.forEach((r) => {
                           memberByCarrier[r.carrier] = (memberByCarrier[r.carrier] || 0) + 1;
                           memberByStatus[r.status] = (memberByStatus[r.status] || 0) + 1;
-                          const matched = records.some((rec) => rec.carrier === r.carrier && normalizeNameKey(rec.clientName) === normalizeNameKey(r.clientName));
+                          const matched = records.some((rec) => rec.carrier === r.carrier && normalizeClientKey(rec.clientName) === normalizeClientKey(r.clientName));
                           if (!matched) unmatchedCount += 1;
                         });
                       }
