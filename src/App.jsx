@@ -478,7 +478,7 @@ export default function App() {
     await loadDirectory(cfg);
     try {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
   }
 
@@ -732,7 +732,7 @@ export default function App() {
         setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
         await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
       }
-      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, planName: r.planName, pbp: r.pbp, importedAt: new Date().toISOString() })), ...prev]);
+      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
 
