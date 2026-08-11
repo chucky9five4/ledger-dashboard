@@ -1227,6 +1227,24 @@ export default function App() {
   const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
   const selectedCarrierByPlanType = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
 
+  const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
+  const [confirmMergeCarrier, setConfirmMergeCarrier] = useState(false);
+  async function mergeCarrier(fromCarrier, toCarrier) {
+    if (!cloudCfg || !fromCarrier || !toCarrier || fromCarrier === toCarrier) return;
+    try {
+      await sbFetch(cloudCfg, `policies?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
+      await sbFetch(cloudCfg, `membership_updates?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
+      await sbFetch(cloudCfg, `upload_batches?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
+      setRecords((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
+      setMembershipRecords((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
+      setBatches((prev) => prev.map((b) => (b.carrier === fromCarrier ? { ...b, carrier: toCarrier } : b)));
+      setSelectedCarrier(toCarrier);
+      setMergeTargetCarrier("");
+      setConfirmMergeCarrier(false);
+      showToast(`Merged "${fromCarrier}" into "${toCarrier}". Note: any PBP codes taught under "${fromCarrier}" in Plan Types will need re-teaching under "${toCarrier}".`);
+    } catch (e) { showToast("Could not merge: " + e.message, "error"); }
+  }
+
   // ---------- CLIENT LOOKUP ----------
   const [clientSearch, setClientSearch] = useState("");
   const clientMatches = useMemo(() => {
@@ -1642,6 +1660,26 @@ export default function App() {
                     <div className="pt-mini-row" style={{ marginBottom: 10 }}><span>Active members</span><span className="mono">{carrierSummary.find((c) => c.key === selectedCarrier)?.activeMembers || 0}</span></div>
                     <div className="pt-mini-row" style={{ marginBottom: 10 }}><span>Inactive members</span><span className="mono">{carrierSummary.find((c) => c.key === selectedCarrier)?.inactiveMembers || 0}</span></div>
                     {selectedCarrierRecords.length === 0 && <p className="pt-hint" style={{ marginBottom: 10 }}>No commission data imported yet for this carrier.</p>}
+
+                    <div className="pt-plantype-block" style={{ marginTop: 0, marginBottom: 16 }}>
+                      <label>Is this the same carrier as another entry? (e.g. "Aetna" vs "Aetna Health Insurance Plans")</label>
+                      {confirmMergeCarrier ? (
+                        <span className="pt-confirm-inline">
+                          Merge "{selectedCarrier}" into "{mergeTargetCarrier}"? This moves all its data and can't be undone.
+                          <button className="pt-btn danger small" onClick={() => mergeCarrier(selectedCarrier, mergeTargetCarrier)}>Yes, merge</button>
+                          <button className="pt-btn ghost small" onClick={() => setConfirmMergeCarrier(false)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <div className="pt-inline-form">
+                          <select value={mergeTargetCarrier} onChange={(e) => setMergeTargetCarrier(e.target.value)} style={{ minWidth: 200 }}>
+                            <option value="">Merge into\u2026</option>
+                            {carriersList.filter((c) => c !== selectedCarrier).map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                          <button className="pt-btn ghost small" disabled={!mergeTargetCarrier} onClick={() => setConfirmMergeCarrier(true)}>Merge</button>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="pt-mini-grid">
                       <div>
                         <div className="pt-mini-label">By agent</div>
