@@ -226,7 +226,25 @@ create policy "allow all - solo use" on agent_aliases for all using (true) with 
 create policy "allow all - solo use" on membership_updates for all using (true) with check (true);
 create policy "allow all - solo use" on plan_code_directory for all using (true) with check (true);`;
 
-const MIGRATION_SQL3 = `alter table membership_updates add column if not exists pbp text;
+const MIGRATION_SQL3 = `create table if not exists membership_updates (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  client_name text not null,
+  agent text,
+  plan_name text,
+  status text not null,
+  effective_date date,
+  term_date date,
+  upload_batch_id text,
+  source_file text,
+  imported_at timestamptz default now()
+);
+alter table membership_updates add column if not exists pbp text;
+alter table membership_updates enable row level security;
+drop policy if exists "allow all - solo use" on membership_updates;
+create policy "allow all - solo use" on membership_updates for all using (true) with check (true);
+
+alter table upload_batches add column if not exists batch_type text default 'commission';
 
 create table if not exists plan_code_directory (
   id uuid primary key default gen_random_uuid(),
@@ -976,7 +994,7 @@ export default function App() {
   async function addPlanCode(carrier, pbp, base, snp) {
     if (!cloudCfg || !carrier.trim() || !pbp.trim()) return;
     try {
-      await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), base_type: base === "Unspecified" ? null : base, snp_type: snp === "None" ? null : snp }]) });
+      await sbFetch(cloudCfg, "plan_code_directory?on_conflict=carrier,pbp", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), base_type: base === "Unspecified" ? null : base, snp_type: snp === "None" ? null : snp }]) });
       await loadDirectory(cloudCfg);
       showToast(`Taught: ${carrier.trim()} PBP ${pbp.trim()} \u2192 ${base}${snp !== "None" ? " " + snp : ""}.`);
     } catch (e) { showToast("Could not save: " + e.message, "error"); }
@@ -1031,7 +1049,7 @@ export default function App() {
   async function commitPbpImport() {
     if (!pbpCarrierCol || !pbpPbpCol || !cloudCfg) return;
     try {
-      const toInsert = pbpRows
+      const rawRowsMapped = pbpRows
         .map((r) => ({
           carrier: String(r[pbpCarrierCol] ?? "").trim(),
           pbp: String(r[pbpPbpCol] ?? "").trim(),
@@ -1039,14 +1057,20 @@ export default function App() {
           snp_type: pbpSnpCol ? normalizeSnpInput(r[pbpSnpCol]) : null,
         }))
         .filter((r) => r.carrier && r.pbp);
+      // Dedupe by carrier+pbp (last one wins) \u2014 Postgres can't apply an
+      // upsert to the same key twice within a single insert statement.
+      const dedupMap = {};
+      rawRowsMapped.forEach((r) => { dedupMap[r.carrier + "::" + r.pbp] = r; });
+      const toInsert = Object.values(dedupMap);
       if (!toInsert.length) { showToast("No valid rows found \u2014 check your column mapping.", "error"); return; }
       const chunks = [];
       for (let i = 0; i < toInsert.length; i += 500) chunks.push(toInsert.slice(i, i + 500));
       for (const chunk of chunks) {
-        await sbFetch(cloudCfg, "plan_code_directory", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(chunk) });
+        await sbFetch(cloudCfg, "plan_code_directory?on_conflict=carrier,pbp", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(chunk) });
       }
       await loadDirectory(cloudCfg);
-      showToast(`Taught ${toInsert.length} PBP code(s).`);
+      const skipped = rawRowsMapped.length - toInsert.length;
+      showToast(`Taught ${toInsert.length} unique PBP code(s)${skipped ? ` (${skipped} duplicate row(s) in your file were combined)` : ""}.`);
       setPbpFileName(""); setPbpHeaders([]); setPbpRows([]); setPbpCarrierCol(""); setPbpPbpCol(""); setPbpBaseCol(""); setPbpSnpCol("");
     } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
   }
