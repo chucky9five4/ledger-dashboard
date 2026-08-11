@@ -145,6 +145,19 @@ async function sbFetch(cfg, path, options = {}) {
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : null;
 }
+async function sbFetchAll(cfg, basePath, pageSize = 1000) {
+  let all = [];
+  let offset = 0;
+  while (true) {
+    const sep = basePath.includes("?") ? "&" : "?";
+    const page = await sbFetch(cfg, `${basePath}${sep}limit=${pageSize}&offset=${offset}`);
+    if (!page || page.length === 0) break;
+    all = all.concat(page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
 const SETUP_SQL = `create table policies (
   id uuid primary key default gen_random_uuid(),
   carrier text not null,
@@ -450,9 +463,9 @@ export default function App() {
     try { const m = await storage.get("carrier-mappings", false); setCarrierMappings(m ? JSON.parse(m.value) : {}); } catch (e) { setCarrierMappings({}); }
   }
   async function loadFromCloud(cfg) {
-    const pol = await sbFetch(cfg, "policies?select=*&order=imported_at.desc");
+    const pol = await sbFetchAll(cfg, "policies?select=*&order=imported_at.desc");
     setRecords((pol || []).map(toCamelRow));
-    const bat = await sbFetch(cfg, "upload_batches?select=*&order=uploaded_at.desc");
+    const bat = await sbFetchAll(cfg, "upload_batches?select=*&order=uploaded_at.desc");
     setBatches((bat || []).map(toCamelBatch));
     const maps = await sbFetch(cfg, "carrier_mappings?select=*");
     const mObj = {};
@@ -464,7 +477,7 @@ export default function App() {
     setCarrierMappings(mObj);
     await loadDirectory(cfg);
     try {
-      const mem = await sbFetch(cfg, "membership_updates?select=*&order=imported_at.desc");
+      const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
       setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
   }
@@ -783,7 +796,7 @@ export default function App() {
     if (b.batchType === "membership" && cloudCfg) {
       setBatchDetailLoading(true);
       try {
-        const rows = await sbFetch(cloudCfg, `membership_updates?select=*&upload_batch_id=eq.${encodeURIComponent(b.id)}`);
+        const rows = await sbFetchAll(cloudCfg, `membership_updates?select=*&upload_batch_id=eq.${encodeURIComponent(b.id)}`);
         setBatchDetailRows((rows || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status })));
       } catch (e) { showToast("Could not load import detail.", "error"); }
       setBatchDetailLoading(false);
