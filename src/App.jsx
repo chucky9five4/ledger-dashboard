@@ -1222,8 +1222,13 @@ export default function App() {
 
   const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const chargebacks = useMemo(() => filteredRecords.filter((r) => r.commissionAmount < 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const grossRevenue = useMemo(() => filteredRecords.filter((r) => r.commissionAmount > 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const firstYearRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "First Year").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const renewalRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Renewal").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const distinctPaidMonths = useMemo(() => new Set(filteredRecords.filter((r) => r.paymentDate).map((r) => r.paymentDate.slice(0, 7))).size, [filteredRecords]);
+  const avgNetPerMonth = distinctPaidMonths ? netRevenue / distinctPaidMonths : 0;
+  const avgFirstYearPerMonth = distinctPaidMonths ? firstYearRevenue / distinctPaidMonths : 0;
+  const avgRenewalPerMonth = distinctPaidMonths ? renewalRevenue / distinctPaidMonths : 0;
   const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
@@ -1419,17 +1424,40 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="pt-cards">
-                  <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} />
-                  <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} />
-                  <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} />
-                  <StatCard label="Commission rows" value={filteredRecords.length.toLocaleString()} tone="ink" />
-                  <StatCard label="Avg per row" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} money={filteredRecords.length ? netRevenue / filteredRecords.length : 0} />
-                  <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
-                  <StatCard label="Active policies" value={activePolicyCount.toLocaleString()} tone="ink" />
-                  <StatCard label="Inactive policies" value={inactivePolicyCount.toLocaleString()} tone="ink" />
-                  <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
-                  <StatCard label="Agents" value={activeAgentCount} tone="ink" />
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Cash flow</div>
+                  <div className="pt-cards pt-cards-3">
+                    <StatCard label="Gross revenue" value={fmtMoneyShort(grossRevenue)} money={grossRevenue} />
+                    <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
+                    <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" />
+                  </div>
+                </div>
+
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Revenue breakdown</div>
+                  <div className="pt-cards pt-cards-2">
+                    <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" />
+                    <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" />
+                  </div>
+                </div>
+
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">\u2014 across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
+                  <div className="pt-cards pt-cards-3">
+                    <StatCard label="Avg net" value={fmtMoneyShort(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" />
+                    <StatCard label="Avg first year" value={fmtMoneyShort(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" />
+                    <StatCard label="Avg renewal" value={fmtMoneyShort(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" />
+                  </div>
+                </div>
+
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Book of business</div>
+                  <div className="pt-cards pt-cards-4">
+                    <StatCard label="Active policies" value={activePolicyCount.toLocaleString()} tone="ink" />
+                    <StatCard label="Inactive policies" value={inactivePolicyCount.toLocaleString()} tone="ink" />
+                    <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
+                    <StatCard label="Agents" value={activeAgentCount} tone="ink" />
+                  </div>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
@@ -2316,11 +2344,12 @@ function MoneyShort({ v }) {
   const n = Number(v) || 0;
   return <span className={moneyClass(n)}>{fmtMoneyShort(n)}</span>;
 }
-function StatCard({ label, value, tone, money }) {
+function StatCard({ label, value, tone, money, caption }) {
   return (
     <div className="pt-stat-card">
       <div className="pt-stat-label">{label}</div>
       <div className={"pt-stat-value " + (money !== undefined ? moneyClass(money) : tone)}>{value}</div>
+      {caption && <div className="pt-stat-caption">{caption}</div>}
     </div>
   );
 }
@@ -2427,6 +2456,13 @@ const CSS = `
 .pt-card h3 { font-size: 14.5px; margin: 0 0 14px; font-weight: 600; color: var(--ink); }
 
 .pt-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.pt-cards-2 { grid-template-columns: repeat(2, 1fr); }
+.pt-cards-3 { grid-template-columns: repeat(3, 1fr); }
+.pt-cards-4 { grid-template-columns: repeat(4, 1fr); }
+.pt-stat-section { margin-bottom: 6px; }
+.pt-stat-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+.pt-stat-section-sub { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); font-size: 11px; }
+.pt-stat-caption { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.3; }
 .pt-stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .pt-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
 .pt-stat-value { font-family: "SF Mono", monospace; font-size: 20px; letter-spacing: -0.01em; border-bottom: 2px solid var(--gold-soft); padding-bottom: 2px; display: inline-block; }
@@ -2490,7 +2526,7 @@ const CSS = `
 .pt-error { font-size: 12.5px; color: var(--rose); margin: 8px 0 0; }
 
 @media (max-width: 900px) {
-  .pt-cards { grid-template-columns: repeat(2, 1fr); }
+  .pt-cards, .pt-cards-2, .pt-cards-3, .pt-cards-4 { grid-template-columns: repeat(2, 1fr); }
   .pt-grid-2, .pt-grid-list, .pt-mapping-grid, .pt-mini-grid { grid-template-columns: 1fr; }
 }
 `;
