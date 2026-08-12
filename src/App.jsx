@@ -1190,8 +1190,8 @@ export default function App() {
     (filterCarrier === "All" || r.carrier === filterCarrier) &&
     (filterAgent === "All" || r.agent === filterAgent) &&
     (filterPlanType === "All" || r.planType === filterPlanType) &&
-    (!dateFrom || (r.saleDate && r.saleDate >= dateFrom)) &&
-    (!dateTo || (r.saleDate && r.saleDate <= dateTo))
+    (!dateFrom || (r.paymentDate && r.paymentDate >= dateFrom)) &&
+    (!dateTo || (r.paymentDate && r.paymentDate <= dateTo))
   ), [records, filterCarrier, filterAgent, filterPlanType, dateFrom, dateTo]);
 
   const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
@@ -1200,7 +1200,7 @@ export default function App() {
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byMonth = useMemo(() => {
-    const grouped = groupBy(filteredRecords.filter((r) => r.saleDate), (r) => r.saleDate.slice(0, 7));
+    const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
     return grouped.sort((a, b) => a.key.localeCompare(b.key));
   }, [filteredRecords]);
   const activeCarrierCount = new Set(filteredRecords.map((r) => r.carrier)).size;
@@ -1370,11 +1370,11 @@ export default function App() {
                   <FilterSelect label="Agent" value={filterAgent} onChange={setFilterAgent} options={agentsListAll} />
                   <FilterSelect label="Plan type" value={filterPlanType} onChange={setFilterPlanType} options={planTypesListAll} />
                   <div className="pt-filter">
-                    <label>From</label>
+                    <label>Paid from</label>
                     <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
                   </div>
                   <div className="pt-filter">
-                    <label>To</label>
+                    <label>Paid to</label>
                     <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
                   </div>
                   {(filterCarrier !== "All" || filterAgent !== "All" || filterPlanType !== "All" || dateFrom || dateTo) && (
@@ -1429,7 +1429,7 @@ export default function App() {
                 </div>
 
                 <div className="pt-card">
-                  <h3>Monthly trend</h3>
+                  <h3>Monthly trend (by payment date)</h3>
                   <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={byMonth} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
