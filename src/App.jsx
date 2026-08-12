@@ -104,11 +104,12 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
   if (raw === "F") return "First Year";
   if (raw === "R") return "Renewal";
   const lower = raw.toLowerCase().replace(/-/g, " ");
+  // Check Renewal first \u2014 protects "Renewal"/"Renewal Chargeback" from ever being
+  // mistaken for First Year, even though "reNEWal" contains "new" as a substring.
   if (lower.includes("renew")) return "Renewal";
   if (
-    lower.includes("new business") ||
+    lower.includes("new") || // covers "New", "New Chargeback", "New Business", "PRONEW"
     lower.includes("pro rata payment") ||
-    lower.includes("pronew") ||
     lower.includes("rapid disenroll") ||
     lower.includes("pro rata disenroll") ||
     lower.includes("first") ||
