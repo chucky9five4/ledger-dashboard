@@ -103,9 +103,18 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
   const raw = String(commissionType || "").trim().toUpperCase();
   if (raw === "F") return "First Year";
   if (raw === "R") return "Renewal";
-  const lower = raw.toLowerCase();
+  const lower = raw.toLowerCase().replace(/-/g, " ");
   if (lower.includes("renew")) return "Renewal";
-  if (lower.includes("first") || lower.includes("initial")) return "First Year";
+  if (
+    lower.includes("new business") ||
+    lower.includes("pro rata payment") ||
+    lower.includes("pronew") ||
+    lower.includes("rapid disenroll") ||
+    lower.includes("pro rata disenroll") ||
+    lower.includes("first") ||
+    lower.includes("initial")
+  ) return "First Year";
+  // Anything unrecognized (e.g. "CMS Trueup reversal") falls through to the date-based rule below.
   if (effectiveDate && paymentDate) {
     const effYear = effectiveDate.slice(0, 4);
     const payYear = paymentDate.slice(0, 4);
