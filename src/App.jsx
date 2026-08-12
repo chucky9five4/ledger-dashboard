@@ -38,7 +38,7 @@ const MAPPING_FIELDS = [
   { key: "agent", label: "Agent name", required: true },
   { key: "agentNpn", label: "Agent NPN (National Producer Number)", required: false },
   { key: "agentCarrierId", label: "Agent ID (this carrier's own agent #, e.g. Humana ID)", required: false },
-  { key: "product", label: "Plan / product name", required: true },
+  { key: "product", label: "Plan / product name", required: false },
   { key: "commissionAmount", label: "Commission amount", required: true },
   { key: "clientName", label: "Client name", required: false },
   { key: "saleDate", label: "Sale / write date", required: false },
@@ -648,7 +648,7 @@ export default function App() {
     }
   }
 
-  const mappingValid = carrierInput.trim() && mapping.agent && mapping.product && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn);
+  const mappingValid = carrierInput.trim() && mapping.agent && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn);
 
   const agentLookupMaps = useMemo(() => {
     const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
@@ -1622,7 +1622,7 @@ export default function App() {
 
                 {importMode === "commission" ? (
                   <div className="pt-row-between">
-                    <div>{!mappingValid && <p className="pt-error">Set the carrier name and map agent, product, and commission amount to continue.</p>}</div>
+                    <div>{!mappingValid && <p className="pt-error">Set the carrier name and map agent and commission amount to continue.</p>}</div>
                     <button className="pt-btn primary" disabled={!mappingValid} onClick={commitImport}>
                       Import {rawRows.length} rows
                     </button>
