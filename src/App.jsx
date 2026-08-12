@@ -1478,7 +1478,7 @@ export default function App() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
                         <XAxis dataKey="key" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
                         <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
-                        <Tooltip formatter={(v) => fmtMoney(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #E2E4E9" }} />
+                        <Tooltip content={<CarrierRevenueTooltip />} />
                         <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -2358,6 +2358,16 @@ function StatusBadge({ status }) {
   const bucket = statusBucket(status);
   const cls = bucket === "active" ? (status === "Future Disenrollment" ? "pt-status-amber" : "pt-status-green") : bucket === "inactive" ? "pt-status-red" : "pt-status-gray";
   return <span className={"pt-status-chip " + cls}>{status || "Active"}</span>;
+}
+function CarrierRevenueTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const value = payload[0].value;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E2E4E9", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+      <div style={{ color: "#1E2A3A", marginBottom: 2, fontWeight: 600 }}>{label}</div>
+      <div className={moneyClass(value)}>revenue : {fmtMoney(value)}</div>
+    </div>
+  );
 }
 function FilterSelect({ label, value, onChange, options }) {
   return (
