@@ -99,6 +99,23 @@ function toCamelRow(row) {
 }
 function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null }; }
 function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "" }; }
+function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) {
+  const raw = String(commissionType || "").trim().toUpperCase();
+  if (raw === "F") return "First Year";
+  if (raw === "R") return "Renewal";
+  const lower = raw.toLowerCase();
+  if (lower.includes("renew")) return "Renewal";
+  if (lower.includes("first") || lower.includes("initial")) return "First Year";
+  if (effectiveDate && paymentDate) {
+    const effYear = effectiveDate.slice(0, 4);
+    const payYear = paymentDate.slice(0, 4);
+    if (effYear && payYear) {
+      if (payYear === effYear) return "First Year";
+      if (payYear > effYear) return "Renewal";
+    }
+  }
+  return "Unclassified";
+}
 function normalizeStatus(raw) {
   if (!raw) return "Active";
   const s = String(raw).toLowerCase();
@@ -1196,6 +1213,9 @@ export default function App() {
 
   const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const chargebacks = useMemo(() => filteredRecords.filter((r) => r.commissionAmount < 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const firstYearRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "First Year").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const renewalRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Renewal").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
@@ -1203,7 +1223,13 @@ export default function App() {
     const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
     return grouped.sort((a, b) => a.key.localeCompare(b.key));
   }, [filteredRecords]);
-  const activeCarrierCount = new Set(filteredRecords.map((r) => r.carrier)).size;
+  const activeCarrierCount = useMemo(() => {
+    const commissionCarriers = filteredRecords.map((r) => r.carrier);
+    const membershipCarriers = membershipRecords
+      .filter((r) => (filterCarrier === "All" || r.carrier === filterCarrier) && (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent))))
+      .map((r) => r.carrier);
+    return new Set([...commissionCarriers, ...membershipCarriers]).size;
+  }, [filteredRecords, membershipRecords, filterCarrier, filterAgent]);
   const activeAgentCount = new Set(filteredRecords.map((r) => r.agent)).size;
 
   const filteredMembershipLatest = useMemo(() => {
@@ -1386,6 +1412,8 @@ export default function App() {
 
                 <div className="pt-cards">
                   <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} />
+                  <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} />
+                  <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} />
                   <StatCard label="Commission rows" value={filteredRecords.length.toLocaleString()} tone="ink" />
                   <StatCard label="Avg per row" value={fmtMoneyShort(filteredRecords.length ? netRevenue / filteredRecords.length : 0)} money={filteredRecords.length ? netRevenue / filteredRecords.length : 0} />
                   <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
@@ -1394,6 +1422,9 @@ export default function App() {
                   <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
                   <StatCard label="Agents" value={activeAgentCount} tone="ink" />
                 </div>
+                {unclassifiedCommissionCount > 0 && (
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
+                )}
                 {membershipRecords.length === 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Active/Inactive policy counts will populate once you import a production/membership statement.</p>
                 )}
