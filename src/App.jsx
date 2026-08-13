@@ -106,16 +106,19 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
   const lower = raw.toLowerCase().replace(/-/g, " ");
   // Check Renewal first \u2014 protects "Renewal"/"Renewal Chargeback" from ever being
   // mistaken for First Year, even though "reNEWal" contains "new" as a substring.
-  if (lower.includes("renew")) return "Renewal";
+  // ACA/PMPM is a real override: these carriers pay residual-style even in year
+  // one, so this must win regardless of what the date comparison would say.
+  if (lower.includes("renew") || lower.includes("carry over") || lower.includes("aca") || lower.includes("pmpm")) return "Renewal";
   if (
-    lower.includes("new") || // covers "New", "New Chargeback", "New Business", "PRONEW"
+    lower.includes("new") || // covers "New", "New Chargeback", "New Business", "PRONEW", "New Sale"
     lower.includes("pro rata payment") ||
     lower.includes("rapid disenroll") ||
     lower.includes("pro rata disenroll") ||
+    lower.includes("agent on record") ||
     lower.includes("first") ||
     lower.includes("initial")
   ) return "First Year";
-  // Anything unrecognized (e.g. "CMS Trueup reversal") falls through to the date-based rule below.
+  // Anything unrecognized (e.g. "CMS Trueup reversal", "Term", "ADP", "None - Info Only") falls through to the date-based rule below.
   if (effectiveDate && paymentDate) {
     const effYear = effectiveDate.slice(0, 4);
     const payYear = paymentDate.slice(0, 4);
