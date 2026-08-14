@@ -115,16 +115,22 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
     lower.includes("rapid disenroll") ||
     lower.includes("pro rata disenroll") ||
     lower.includes("agent on record") ||
+    lower.includes("channel change") ||
+    lower.includes("hra") ||
     lower.includes("first") ||
     lower.includes("initial")
   ) return "First Year";
-  // Anything unrecognized (e.g. "CMS Trueup reversal", "Term", "ADP", "None - Info Only") falls through to the date-based rule below.
+  // Anything unrecognized (Exception, CMS Trueup/reversal, Term, ADP, None - Info Only, etc.)
+  // falls through to the date-based rule below.
   if (effectiveDate && paymentDate) {
     const effYear = effectiveDate.slice(0, 4);
     const payYear = paymentDate.slice(0, 4);
     if (effYear && payYear) {
-      if (payYear === effYear) return "First Year";
-      if (payYear > effYear) return "Renewal";
+      // Paid at or before the effective year covers same-year AND AEP-style early
+      // payments (e.g. paid Nov 2025 for a Jan 2026 effective date) \u2014 both are
+      // still First Year. Only a payment in a later year than effective is a Renewal.
+      if (payYear <= effYear) return "First Year";
+      return "Renewal";
     }
   }
   return "Unclassified";
