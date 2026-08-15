@@ -1426,21 +1426,38 @@ export default function App() {
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipLatestByPolicy, agentSearch, agentLookupMaps]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
-  const [agentSalesSortCol, setAgentSalesSortCol] = useState("effectiveDate");
-  const [agentSalesSortDir, setAgentSalesSortDir] = useState("desc");
+  const agentSalesCarrierOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.carrier))].sort(), [selectedAgentRecords]);
+  const agentSalesStatusOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.status || "Active"))].sort(), [selectedAgentRecords]);
+  const [agentSalesFilters, setAgentSalesFilters] = useState({ name: "", carrier: "", status: "", dateFrom: "", dateTo: "", amountMin: "", amountMax: "" });
+  const [agentSalesSort, setAgentSalesSort] = useState({ col: "effectiveDate", dir: "desc" });
   function toggleAgentSalesSort(col) {
-    if (agentSalesSortCol === col) setAgentSalesSortDir(agentSalesSortDir === "asc" ? "desc" : "asc");
-    else { setAgentSalesSortCol(col); setAgentSalesSortDir("asc"); }
+    setAgentSalesSort((prev) => (prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" }));
   }
-  const selectedAgentRecordsSorted = useMemo(() => {
-    const dir = agentSalesSortDir === "asc" ? 1 : -1;
-    return [...selectedAgentRecords].sort((a, b) => {
-      if (agentSalesSortCol === "amount") return (a.commissionAmount - b.commissionAmount) * dir;
-      const av = (agentSalesSortCol === "clientName" ? a.clientName : agentSalesSortCol === "carrier" ? a.carrier : agentSalesSortCol === "status" ? a.status : a.effectiveDate) || "";
-      const bv = (agentSalesSortCol === "clientName" ? b.clientName : agentSalesSortCol === "carrier" ? b.carrier : agentSalesSortCol === "status" ? b.status : b.effectiveDate) || "";
+  function clearAgentSalesFilters() {
+    setAgentSalesFilters({ name: "", carrier: "", status: "", dateFrom: "", dateTo: "", amountMin: "", amountMax: "" });
+  }
+  const agentSalesFiltersActive = Object.values(agentSalesFilters).some((v) => v !== "");
+  const selectedAgentRecordsView = useMemo(() => {
+    const f = agentSalesFilters;
+    let rows = selectedAgentRecords.filter((r) =>
+      (!f.name || (r.clientName || "").toLowerCase().includes(f.name.toLowerCase())) &&
+      (!f.carrier || r.carrier === f.carrier) &&
+      (!f.status || (r.status || "Active") === f.status) &&
+      (!f.dateFrom || (r.effectiveDate && r.effectiveDate >= f.dateFrom)) &&
+      (!f.dateTo || (r.effectiveDate && r.effectiveDate <= f.dateTo)) &&
+      (!f.amountMin || r.commissionAmount >= Number(f.amountMin)) &&
+      (!f.amountMax || r.commissionAmount <= Number(f.amountMax))
+    );
+    const dir = agentSalesSort.dir === "asc" ? 1 : -1;
+    const col = agentSalesSort.col;
+    rows = [...rows].sort((a, b) => {
+      if (col === "amount") return (a.commissionAmount - b.commissionAmount) * dir;
+      const av = String((col === "clientName" ? a.clientName : col === "carrier" ? a.carrier : col === "status" ? a.status : a.effectiveDate) || "");
+      const bv = String((col === "clientName" ? b.clientName : col === "carrier" ? b.carrier : col === "status" ? b.status : b.effectiveDate) || "");
       return av.localeCompare(bv) * dir;
     });
-  }, [selectedAgentRecords, agentSalesSortCol, agentSalesSortDir]);
+    return rows;
+  }, [selectedAgentRecords, agentSalesFilters, agentSalesSort]);
   const selectedAgentByCarrier = useMemo(() => groupBy(selectedAgentRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
   const selectedAgentByPlanType = useMemo(() => groupBy(selectedAgentRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
 
@@ -2236,20 +2253,61 @@ export default function App() {
                         {selectedAgentByPlanType.map((p) => <div key={p.key} className="pt-mini-row"><span>{p.key}</span><span className="mono">{<Money v={p.revenue} />}</span></div>)}
                       </div>
                     </div>
-                    <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedAgentRecords.length})</div>
+                    <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 4 }}>
+                      <div className="pt-mini-label" style={{ marginTop: 0 }}>All sales ({selectedAgentRecordsView.length} of {selectedAgentRecords.length})</div>
+                      {agentSalesFiltersActive && <button className="pt-btn ghost small" onClick={clearAgentSalesFilters}>Clear filters</button>}
+                    </div>
+                    <div className="pt-mapping-grid" style={{ marginBottom: 10 }}>
+                      <div className="pt-field">
+                        <label>Member name</label>
+                        <input value={agentSalesFilters.name} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, name: e.target.value }))} placeholder="Search\u2026" />
+                      </div>
+                      <div className="pt-field">
+                        <label>Carrier</label>
+                        <select value={agentSalesFilters.carrier} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, carrier: e.target.value }))}>
+                          <option value="">All</option>
+                          {agentSalesCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div className="pt-field">
+                        <label>Status</label>
+                        <select value={agentSalesFilters.status} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, status: e.target.value }))}>
+                          <option value="">All</option>
+                          {agentSalesStatusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                      <div className="pt-field">
+                        <label>Effective date from</label>
+                        <input type="date" value={agentSalesFilters.dateFrom} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateFrom: e.target.value }))} />
+                      </div>
+                      <div className="pt-field">
+                        <label>Effective date to</label>
+                        <input type="date" value={agentSalesFilters.dateTo} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateTo: e.target.value }))} />
+                      </div>
+                      <div className="pt-field">
+                        <label>Amount min</label>
+                        <input type="number" step="0.01" value={agentSalesFilters.amountMin} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMin: e.target.value }))} placeholder="0" />
+                      </div>
+                      <div className="pt-field">
+                        <label>Amount max</label>
+                        <input type="number" step="0.01" value={agentSalesFilters.amountMax} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMax: e.target.value }))} placeholder="1000" />
+                      </div>
+                    </div>
                     <div className="pt-preview-scroll">
                       <table className="pt-table">
                         <thead>
                           <tr>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSortCol === "clientName" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSortCol === "carrier" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSortCol === "effectiveDate" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSortCol === "status" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSortCol === "amount" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSort.col === "clientName" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSort.col === "carrier" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSort.col === "effectiveDate" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSort.col === "status" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSort.col === "amount" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedAgentRecordsSorted.map((r) => (
+                          {selectedAgentRecordsView.length === 0 ? (
+                            <tr><td colSpan={5} className="pt-hint">No rows match these filters.</td></tr>
+                          ) : selectedAgentRecordsView.map((r) => (
                             <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td>{r.carrier}</td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
