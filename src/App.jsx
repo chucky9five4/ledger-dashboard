@@ -1802,13 +1802,14 @@ export default function App() {
   }, [owedByAgentThisMonth, selectedPayableAgent]);
   const selectedPayableAgentByClient = useMemo(() => {
     if (!selectedPayableAgent) return [];
+    const recordById = {};
+    records.forEach((r) => { recordById[r.id] = r; });
     const scoped = payableLedger.filter((l) => resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
-    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => (l.clientName || "Unknown") + " \u2014 " + l.carrier);
-    return grouped.map((g) => {
-      const [clientName, carrier] = g.key.split(" \u2014 ");
-      return { ...g, clientName, carrier };
-    }).sort((a, b) => b.revenue - a.revenue);
-  }, [payableLedger, selectedPayableAgent, payablesMonth, agentLookupMaps]);
+    return scoped.map((l) => {
+      const rec = recordById[l.policyId];
+      return { id: l.id, clientName: l.clientName || "Unknown", carrier: l.carrier, amount: l.amount, effectiveDate: rec ? rec.effectiveDate : "", transactionDate: l.transactionDate };
+    }).sort((a, b) => (a.clientName || "").localeCompare(b.clientName || "") || (a.effectiveDate || "").localeCompare(b.effectiveDate || ""));
+  }, [payableLedger, selectedPayableAgent, payablesMonth, agentLookupMaps, records]);
 
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
@@ -2851,13 +2852,13 @@ export default function App() {
                           {selectedPayableAgentByCarrier.map((c) => <div key={c.carrier} className="pt-mini-row"><span>{c.carrier}</span><span className="mono"><Money v={c.revenue} /></span></div>)}
                         </div>
                       </div>
-                      <div className="pt-mini-label" style={{ marginTop: 16 }}>Who this comes from ({selectedPayableAgentByClient.length})</div>
+                      <div className="pt-mini-label" style={{ marginTop: 16 }}>Who this comes from ({selectedPayableAgentByClient.length} transaction{selectedPayableAgentByClient.length === 1 ? "" : "s"})</div>
                       <div className="pt-preview-scroll">
                         <table className="pt-table">
-                          <thead><tr><th>Client</th><th>Carrier</th><th className="num">Amount owed</th></tr></thead>
+                          <thead><tr><th>Client</th><th>Carrier</th><th>Effective date</th><th className="num">Amount owed</th></tr></thead>
                           <tbody>
                             {selectedPayableAgentByClient.map((c) => (
-                              <tr key={c.key}><td>{c.clientName}</td><td>{c.carrier}</td><td className="num"><Money v={c.revenue} /></td></tr>
+                              <tr key={c.id}><td>{c.clientName}</td><td>{c.carrier}</td><td>{c.effectiveDate ? fmtDate(c.effectiveDate) : "\u2014"}</td><td className="num"><Money v={c.amount} /></td></tr>
                             ))}
                           </tbody>
                         </table>
