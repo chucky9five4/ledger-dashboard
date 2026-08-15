@@ -687,8 +687,29 @@ export default function App() {
     showToast("Switched to local (browser-only) storage.");
   }
 
+  const agentLookupMaps = useMemo(() => {
+    const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
+    agentDirectory.forEach((a) => { agentById[a.id] = a.canonicalName; });
+    agentAliases.forEach((a) => {
+      if (a.aliasType === "npn") npnMap[a.aliasValue] = a.agentId;
+      else if (a.aliasType === "carrier_id") carrierIdMap[(a.carrier || "") + "::" + a.aliasValue] = a.agentId;
+      else if (a.aliasType === "name_text") nameTextMap[a.aliasValue] = a.agentId;
+    });
+    agentDirectory.forEach((a) => { nameTextMap[normalizeNameKey(a.canonicalName)] = a.id; });
+    return { npnMap, carrierIdMap, nameTextMap, agentById };
+  }, [agentDirectory, agentAliases]);
+
+  function resolveAgentName(rawName, npn, carrierId, carrier) {
+    const { npnMap, carrierIdMap, nameTextMap, agentById } = agentLookupMaps;
+    if (npn && npnMap[npn]) return agentById[npnMap[npn]] || rawName;
+    if (carrierId && carrierIdMap[(carrier || "") + "::" + carrierId]) return agentById[carrierIdMap[(carrier || "") + "::" + carrierId]] || rawName;
+    const key = normalizeNameKey(rawName);
+    if (nameTextMap[key]) return agentById[nameTextMap[key]] || rawName;
+    return rawName;
+  }
+
   const carriersList = useMemo(() => [...new Set([...records.map((r) => r.carrier), ...membershipRecords.map((r) => r.carrier)])].sort(), [records, membershipRecords]);
-  const agentsListAll = useMemo(() => [...new Set(records.map((r) => r.agent))].sort(), [records]);
+  const agentsListAll = useMemo(() => [...new Set(records.map((r) => resolveAgentName(r.agent, "", "", "")))].sort(), [records, agentLookupMaps]);
   const planTypesListAll = useMemo(() => [...new Set(records.map((r) => r.planType))].sort(), [records]);
   const totalAllRevenue = useMemo(() => records.reduce((s, r) => s + r.commissionAmount, 0), [records]);
 
@@ -756,27 +777,6 @@ export default function App() {
 
   const isAetnaImport = carrierMode === "fixed" && carrierInput.trim().toLowerCase().includes("aetna");
   const mappingValid = carrierInput.trim() && mapping.agent && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn) && (!isAetnaImport || mapping.termDate);
-
-  const agentLookupMaps = useMemo(() => {
-    const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
-    agentDirectory.forEach((a) => { agentById[a.id] = a.canonicalName; });
-    agentAliases.forEach((a) => {
-      if (a.aliasType === "npn") npnMap[a.aliasValue] = a.agentId;
-      else if (a.aliasType === "carrier_id") carrierIdMap[(a.carrier || "") + "::" + a.aliasValue] = a.agentId;
-      else if (a.aliasType === "name_text") nameTextMap[a.aliasValue] = a.agentId;
-    });
-    agentDirectory.forEach((a) => { nameTextMap[normalizeNameKey(a.canonicalName)] = a.id; });
-    return { npnMap, carrierIdMap, nameTextMap, agentById };
-  }, [agentDirectory, agentAliases]);
-
-  function resolveAgentName(rawName, npn, carrierId, carrier) {
-    const { npnMap, carrierIdMap, nameTextMap, agentById } = agentLookupMaps;
-    if (npn && npnMap[npn]) return agentById[npnMap[npn]] || rawName;
-    if (carrierId && carrierIdMap[(carrier || "") + "::" + carrierId]) return agentById[carrierIdMap[(carrier || "") + "::" + carrierId]] || rawName;
-    const key = normalizeNameKey(rawName);
-    if (nameTextMap[key]) return agentById[nameTextMap[key]] || rawName;
-    return rawName;
-  }
 
   async function commitImport() {
     if (!mappingValid) return;
@@ -1356,11 +1356,11 @@ export default function App() {
 
   const filteredRecords = useMemo(() => records.filter((r) =>
     (filterCarrier === "All" || r.carrier === filterCarrier) &&
-    (filterAgent === "All" || r.agent === filterAgent) &&
+    (filterAgent === "All" || resolveAgentName(r.agent, "", "", "") === filterAgent) &&
     (filterPlanType === "All" || r.planType === filterPlanType) &&
     (!dateFrom || (r.paymentDate && r.paymentDate >= dateFrom)) &&
     (!dateTo || (r.paymentDate && r.paymentDate <= dateTo))
-  ), [records, filterCarrier, filterAgent, filterPlanType, dateFrom, dateTo]);
+  ), [records, filterCarrier, filterAgent, filterPlanType, dateFrom, dateTo, agentLookupMaps]);
 
   const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const chargebacks = useMemo(() => filteredRecords.filter((r) => r.commissionAmount < 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
@@ -1373,7 +1373,7 @@ export default function App() {
   const avgRenewalPerMonth = distinctPaidMonths ? renewalRevenue / distinctPaidMonths : 0;
   const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
-  const byAgent = useMemo(() => groupBy(filteredRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
+  const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byMonth = useMemo(() => {
     const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
@@ -1386,7 +1386,7 @@ export default function App() {
       .map((r) => r.carrier);
     return new Set([...commissionCarriers, ...membershipCarriers]).size;
   }, [filteredRecords, membershipRecords, filterCarrier, filterAgent]);
-  const activeAgentCount = new Set(filteredRecords.map((r) => r.agent)).size;
+  const activeAgentCount = new Set(filteredRecords.map((r) => resolveAgentName(r.agent, "", "", ""))).size;
 
   const filteredMembershipLatest = useMemo(() => {
     return Object.values(membershipLatestByPolicy).filter((r) =>
@@ -1415,7 +1415,7 @@ export default function App() {
   const [agentSearch, setAgentSearch] = useState("");
   const [selectedAgent, setSelectedAgent] = useState(null);
   const agentSummary = useMemo(() => {
-    return groupBy(records, (r) => r.agent)
+    return groupBy(records, (r) => resolveAgentName(r.agent, "", "", ""))
       .map((a) => {
         const members = Object.values(membershipLatestByPolicy).filter((r) => r.agent && normalizeClientKey(r.agent) === normalizeClientKey(a.key));
         const activeMembers = members.filter((r) => statusBucket(r.status) === "active").length;
@@ -1424,8 +1424,8 @@ export default function App() {
       })
       .filter((a) => a.key.toLowerCase().includes(agentSearch.toLowerCase()))
       .sort((a, b) => b.revenue - a.revenue);
-  }, [records, membershipLatestByPolicy, agentSearch]);
-  const selectedAgentRecords = useMemo(() => records.filter((r) => r.agent === selectedAgent), [records, selectedAgent]);
+  }, [records, membershipLatestByPolicy, agentSearch, agentLookupMaps]);
+  const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
   const selectedAgentByCarrier = useMemo(() => groupBy(selectedAgentRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
   const selectedAgentByPlanType = useMemo(() => groupBy(selectedAgentRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
 
@@ -1446,7 +1446,7 @@ export default function App() {
       .sort((a, b) => b.revenue - a.revenue || b.activeMembers - a.activeMembers);
   }, [records, membershipLatestByPolicy, carriersList, carrierSearch]);
   const selectedCarrierRecords = useMemo(() => records.filter((r) => r.carrier === selectedCarrier), [records, selectedCarrier]);
-  const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.agent).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
+  const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords, agentLookupMaps]);
   const selectedCarrierByPlanType = useMemo(() => groupBy(selectedCarrierRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords]);
 
   const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
@@ -1787,12 +1787,12 @@ export default function App() {
       (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)) &&
       (!payablesCarrierFilter || l.carrier === payablesCarrierFilter)
     );
-    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => l.agentName + " \u2014 " + l.carrier);
+    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " \u2014 " + l.carrier);
     return grouped.map((g) => {
       const [agentName, carrier] = g.key.split(" \u2014 ");
       return { ...g, agentName, carrier };
     }).sort((a, b) => b.revenue - a.revenue);
-  }, [payableLedger, payablesMonth, payablesCarrierFilter]);
+  }, [payableLedger, payablesMonth, payablesCarrierFilter, agentLookupMaps]);
 
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
