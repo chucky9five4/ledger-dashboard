@@ -2224,10 +2224,10 @@ export default function App() {
                     <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedAgentRecords.length})</div>
                     <div className="pt-preview-scroll">
                       <table className="pt-table">
-                        <thead><tr><th>Member name</th><th>Effective date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                        <thead><tr><th>Member name</th><th>Carrier</th><th>Effective date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                         <tbody>
                           {selectedAgentRecords.map((r) => (
-                            <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                            <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td>{r.carrier}</td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
                       </table>
