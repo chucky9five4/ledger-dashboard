@@ -1588,11 +1588,20 @@ export default function App() {
   }
 
   const [payablesMonth, setPayablesMonth] = useState("");
+  const [payablesCarrierFilter, setPayablesCarrierFilter] = useState("");
   const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
+  const payablesCarriersAvailable = useMemo(() => [...new Set(payableLedger.map((l) => l.carrier))].sort(), [payableLedger]);
   const owedByAgentThisMonth = useMemo(() => {
-    const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
-    return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => l.agentName).sort((a, b) => b.revenue - a.revenue);
-  }, [payableLedger, payablesMonth]);
+    const scoped = payableLedger.filter((l) =>
+      (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)) &&
+      (!payablesCarrierFilter || l.carrier === payablesCarrierFilter)
+    );
+    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => l.agentName + " \u2014 " + l.carrier);
+    return grouped.map((g) => {
+      const [agentName, carrier] = g.key.split(" \u2014 ");
+      return { ...g, agentName, carrier };
+    }).sort((a, b) => b.revenue - a.revenue);
+  }, [payableLedger, payablesMonth, payablesCarrierFilter]);
 
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
@@ -2578,21 +2587,27 @@ export default function App() {
               <>
                 <div className="pt-card">
                   <div className="pt-row-between">
-                    <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
-                    <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
-                      <option value="">All time</option>
-                      {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
+                    <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}{payablesCarrierFilter ? ` \u2014 ${payablesCarrierFilter}` : ""}</h3>
+                    <div className="pt-btn-row">
+                      <select value={payablesCarrierFilter} onChange={(e) => setPayablesCarrierFilter(e.target.value)} style={{ minWidth: 160 }}>
+                        <option value="">All carriers</option>
+                        {payablesCarriersAvailable.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
+                        <option value="">All time</option>
+                        {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
                   </div>
                   <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid.</p>
                   {owedByAgentThisMonth.length === 0 ? (
                     <p className="pt-hint">Nothing recognized for this period.</p>
                   ) : (
                     <table className="pt-table">
-                      <thead><tr><th>Agent</th><th className="num">Amount recognized</th></tr></thead>
+                      <thead><tr><th>Agent</th><th>Carrier</th><th className="num">Amount recognized</th></tr></thead>
                       <tbody>
                         {owedByAgentThisMonth.map((a) => (
-                          <tr key={a.key}><td>{a.key}</td><td className="num"><Money v={a.revenue} /></td></tr>
+                          <tr key={a.key}><td>{a.agentName}</td><td>{a.carrier}</td><td className="num"><Money v={a.revenue} /></td></tr>
                         ))}
                       </tbody>
                     </table>
