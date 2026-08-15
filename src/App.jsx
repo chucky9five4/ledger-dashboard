@@ -1793,6 +1793,13 @@ export default function App() {
       return { ...g, agentName, carrier };
     }).sort((a, b) => b.revenue - a.revenue);
   }, [payableLedger, payablesMonth, payablesCarrierFilter, agentLookupMaps]);
+  // Always the true grand total per agent for the selected month, regardless of
+  // the carrier filter above \u2014 so you can see "everything owed to me" even
+  // while the breakdown table is narrowed to one company.
+  const totalOwedByAgentThisMonth = useMemo(() => {
+    const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
+    return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "")).sort((a, b) => b.revenue - a.revenue);
+  }, [payableLedger, payablesMonth, agentLookupMaps]);
 
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
@@ -2801,19 +2808,36 @@ export default function App() {
               <>
                 <div className="pt-card">
                   <div className="pt-row-between">
-                    <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}{payablesCarrierFilter ? ` \u2014 ${payablesCarrierFilter}` : ""}</h3>
-                    <div className="pt-btn-row">
-                      <select value={payablesCarrierFilter} onChange={(e) => setPayablesCarrierFilter(e.target.value)} style={{ minWidth: 160 }}>
-                        <option value="">All carriers</option>
-                        {payablesCarriersAvailable.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                      <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
-                        <option value="">All time</option>
-                        {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
+                    <h3>Total owed per agent{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
+                    <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
+                      <option value="">All time</option>
+                      {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
                   </div>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Everything owed to each agent, combined across every carrier they sell for. This always shows the full picture, even if you narrow the breakdown below to one company.</p>
+                  {totalOwedByAgentThisMonth.length === 0 ? (
+                    <p className="pt-hint">Nothing recognized for this period.</p>
+                  ) : (
+                    <table className="pt-table">
+                      <thead><tr><th>Agent</th><th className="num">Total owed</th></tr></thead>
+                      <tbody>
+                        {totalOwedByAgentThisMonth.map((a) => (
+                          <tr key={a.key}><td>{a.key}</td><td className="num"><Money v={a.revenue} /></td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="pt-card">
+                  <div className="pt-row-between">
+                    <h3>Breakdown by carrier{payablesCarrierFilter ? ` \u2014 ${payablesCarrierFilter}` : ""}</h3>
+                    <select value={payablesCarrierFilter} onChange={(e) => setPayablesCarrierFilter(e.target.value)} style={{ minWidth: 160 }}>
+                      <option value="">All carriers</option>
+                      {payablesCarriersAvailable.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Same numbers as above, split out by which company each amount comes from \u2014 recalculated fresh every time, not a running balance. You decide what's already been paid.</p>
                   {owedByAgentThisMonth.length === 0 ? (
                     <p className="pt-hint">Nothing recognized for this period.</p>
                   ) : (
