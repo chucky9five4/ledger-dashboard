@@ -754,7 +754,7 @@ export default function App() {
     }
   }
 
-  const isAetnaImport = carrierMode === "fixed" && carrierInput.trim().toLowerCase() === "aetna";
+  const isAetnaImport = carrierMode === "fixed" && carrierInput.trim().toLowerCase().includes("aetna");
   const mappingValid = carrierInput.trim() && mapping.agent && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn) && (!isAetnaImport || mapping.termDate);
 
   const agentLookupMaps = useMemo(() => {
@@ -2098,7 +2098,7 @@ export default function App() {
                   <div className="pt-row-between">
                     <div>{!mappingValid && (
                       isAetnaImport && !mapping.termDate ? (
-                        <p className="pt-error">Map Term date to continue \u2014 required for Aetna specifically, since it's what lets the system tell a full chargeback (disenrolled within 3 months) apart from a prorated one, and calculate what's owed to the agent correctly on First Year sales.</p>
+                        <p className="pt-error">Map Term date to continue \u2014 required for Aetna specifically, so Charles Vazquez's commissions calculate correctly. It's what lets the system tell a full chargeback (disenrolled within 3 months) apart from a prorated one, and calculate what's owed to him correctly on First Year sales.</p>
                       ) : (
                         <p className="pt-error">Set the carrier name and map agent and commission amount to continue.</p>
                       )
