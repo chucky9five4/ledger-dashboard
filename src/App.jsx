@@ -754,7 +754,8 @@ export default function App() {
     }
   }
 
-  const mappingValid = carrierInput.trim() && mapping.agent && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn);
+  const isAetnaImport = carrierMode === "fixed" && carrierInput.trim().toLowerCase() === "aetna";
+  const mappingValid = carrierInput.trim() && mapping.agent && mapping.commissionAmount && (carrierMode === "fixed" || carrierColumn) && (!isAetnaImport || mapping.termDate);
 
   const agentLookupMaps = useMemo(() => {
     const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
@@ -2095,7 +2096,13 @@ export default function App() {
 
                 {importMode === "commission" ? (
                   <div className="pt-row-between">
-                    <div>{!mappingValid && <p className="pt-error">Set the carrier name and map agent and commission amount to continue.</p>}</div>
+                    <div>{!mappingValid && (
+                      isAetnaImport && !mapping.termDate ? (
+                        <p className="pt-error">Map Term date to continue \u2014 required for Aetna specifically, since it's what lets the system tell a full chargeback (disenrolled within 3 months) apart from a prorated one, and calculate what's owed to the agent correctly on First Year sales.</p>
+                      ) : (
+                        <p className="pt-error">Set the carrier name and map agent and commission amount to continue.</p>
+                      )
+                    )}</div>
                     <button className="pt-btn primary" disabled={!mappingValid} onClick={commitImport}>
                       Import {rawRows.length} rows
                     </button>
