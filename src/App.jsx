@@ -46,6 +46,7 @@ const MAPPING_FIELDS = [
   { key: "status", label: "Status (active / termed)", required: false },
   { key: "commissionType", label: "Commission type (initial / renewal)", required: false },
   { key: "paymentDate", label: "Payment date", required: false },
+  { key: "termDate", label: "Term date (for prorated chargeback math)", required: false },
 ];
 function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
@@ -78,12 +79,12 @@ const FIELD_TO_COLUMN = {
   clientName: "client_name", saleDate: "sale_date", effectiveDate: "effective_date",
   status: "status", commissionAmount: "commission_amount", commissionType: "commission_type",
   paymentDate: "payment_date", uploadBatchId: "upload_batch_id", sourceFile: "source_file", importedAt: "imported_at",
-  agentNpn: "agent_npn", agentCarrierId: "carrier_agent_id",
+  agentNpn: "agent_npn", agentCarrierId: "carrier_agent_id", termDate: "term_date",
 };
 function toSnakeRow(rec) {
   const out = {};
   Object.keys(rec).forEach((k) => { if (FIELD_TO_COLUMN[k]) out[FIELD_TO_COLUMN[k]] = rec[k]; });
-  ["sale_date", "effective_date", "payment_date"].forEach((col) => { if (out[col] === "") out[col] = null; });
+  ["sale_date", "effective_date", "payment_date", "term_date"].forEach((col) => { if (out[col] === "") out[col] = null; });
   return out;
 }
 function toCamelRow(row) {
@@ -94,7 +95,7 @@ function toCamelRow(row) {
     commissionAmount: Number(row.commission_amount) || 0, commissionType: row.commission_type || "",
     paymentDate: row.payment_date || "", uploadBatchId: row.upload_batch_id,
     sourceFile: row.source_file, importedAt: row.imported_at,
-    agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "",
+    agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "", termDate: row.term_date || "",
   };
 }
 function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null }; }
@@ -134,6 +135,27 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
     }
   }
   return "Unclassified";
+}
+function classifyDisenrollType(commissionType) {
+  const lower = String(commissionType || "").toLowerCase().replace(/-/g, " ");
+  if (lower.includes("rapid disenroll")) return "rapid";
+  if (lower.includes("pro rata disenroll")) return "prorata";
+  return null;
+}
+function monthsRemainingInYear(effectiveDate) {
+  if (!effectiveDate) return null;
+  const month = parseInt(effectiveDate.slice(5, 7), 10);
+  if (!month || month < 1 || month > 12) return null;
+  return 13 - month;
+}
+function monthsActuallyStayed(effectiveDate, termDate) {
+  if (!effectiveDate || !termDate) return null;
+  const effYear = effectiveDate.slice(0, 4);
+  const effMonth = parseInt(effectiveDate.slice(5, 7), 10);
+  const termYear = termDate.slice(0, 4);
+  const termMonth = parseInt(termDate.slice(5, 7), 10);
+  if (termYear !== effYear) return 13 - effMonth; // termed in a later year = stayed the whole first year
+  return Math.max(0, (termMonth - effMonth) + 1); // inclusive: both the start month and the term month count as "used"
 }
 function normalizeStatus(raw) {
   if (!raw) return "Active";
@@ -371,9 +393,20 @@ const MIGRATION_SQL6 = `create table if not exists agent_payable_rules (
 alter table agent_payable_rules add column if not exists active boolean default true;
 alter table agent_payable_rules add column if not exists effective_date date;
 
+create table if not exists agent_comp_rules (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  agent_name text not null,
+  renewal_amount numeric not null,
+  first_year_amount_per_month numeric not null,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+
 create table if not exists agent_payable_ledger (
   id uuid primary key default gen_random_uuid(),
-  rule_id uuid references agent_payable_rules(id) on delete cascade,
+  rule_id uuid,
+  source_type text default 'client_rule',
   carrier text,
   client_name text,
   agent_name text,
@@ -385,12 +418,18 @@ create table if not exists agent_payable_ledger (
   created_at timestamptz default now()
 );
 alter table agent_payable_ledger add column if not exists transaction_date date;
+alter table agent_payable_ledger add column if not exists source_type text default 'client_rule';
+alter table agent_payable_ledger drop constraint if exists agent_payable_ledger_rule_id_fkey;
+alter table policies add column if not exists term_date date;
 
 alter table agent_payable_rules enable row level security;
+alter table agent_comp_rules enable row level security;
 alter table agent_payable_ledger enable row level security;
 drop policy if exists "allow all - solo use" on agent_payable_rules;
+drop policy if exists "allow all - solo use" on agent_comp_rules;
 drop policy if exists "allow all - solo use" on agent_payable_ledger;
 create policy "allow all - solo use" on agent_payable_rules for all using (true) with check (true);
+create policy "allow all - solo use" on agent_comp_rules for all using (true) with check (true);
 create policy "allow all - solo use" on agent_payable_ledger for all using (true) with check (true);`;
 
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
@@ -589,10 +628,13 @@ export default function App() {
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
       setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false })));
+      const compRules = await sbFetchAll(cfg, "agent_comp_rules?select=*&order=created_at.desc");
+      setAgentCompRules((compRules || []).map((r) => ({ id: r.id, carrier: r.carrier, agentName: r.agent_name, renewalAmount: Number(r.renewal_amount), firstYearAmountPerMonth: Number(r.first_year_amount_per_month), active: r.active !== false })));
       const ledger = await sbFetchAll(cfg, "agent_payable_ledger?select=*&order=created_at.desc");
-      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
+      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, sourceType: r.source_type || "client_rule", carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
       setPayablesAvailable(true);
-    } catch (e) { setPayablesAvailable(false); }
+      setCompAvailable(true);
+    } catch (e) { setPayablesAvailable(false); setCompAvailable(false); }
   }
 
   useEffect(() => {
@@ -746,18 +788,36 @@ export default function App() {
       const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
       const rowClientName = mapping.clientName ? String(r[mapping.clientName] ?? "").trim() : "";
       const rowEffectiveDate = mapping.effectiveDate ? parseDateValue(r[mapping.effectiveDate]) : "";
+      const rowTermDate = mapping.termDate ? parseDateValue(r[mapping.termDate]) : "";
+      const rowCommissionType = mapping.commissionType ? String(r[mapping.commissionType] ?? "").trim() : "";
+      const rowPaymentDate = mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "";
+      const resolvedAgent = resolveAgentName(rawAgent, agentNpn, agentCarrierId, rowCarrier);
       const rawCommissionAmount = parseMoney(r[mapping.commissionAmount]);
-      const rule = rowClientName ? findPayableRule(rowCarrier, rowClientName, rowEffectiveDate) : null;
       // Same fixed amount splits off either direction: a positive payment sends
       // it to the agent; a negative chargeback reverses that same amount back
       // out of what's owed to them, so both sides are charged back together.
       const direction = rawCommissionAmount >= 0 ? 1 : -1;
-      const agentPortion = rule ? direction * rule.amountPerTransaction : 0;
-      const finalCommissionAmount = rule ? rawCommissionAmount - agentPortion : rawCommissionAmount;
+      // The specific-client migration rule always wins if it matches; the
+      // permanent agent-level compensation rule only fills in otherwise, so a
+      // migrated client never gets double-adjusted by both.
+      const clientRule = rowClientName ? findPayableRule(rowCarrier, rowClientName, rowEffectiveDate) : null;
+      let agentPortion = 0, matchedRuleId = null, matchedAgentName = "", matchedSourceType = "";
+      if (clientRule) {
+        agentPortion = direction * clientRule.amountPerTransaction;
+        matchedRuleId = clientRule.id; matchedAgentName = clientRule.agentName; matchedSourceType = "client_rule";
+      } else {
+        const compRule = findAgentCompRule(rowCarrier, resolvedAgent);
+        if (compRule) {
+          const category = classifyCommissionCategory(rowCommissionType, rowEffectiveDate, rowPaymentDate);
+          agentPortion = calcAgentCompPortion(compRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+          if (agentPortion !== 0) { matchedRuleId = compRule.id; matchedAgentName = compRule.agentName; matchedSourceType = "agent_comp"; }
+        }
+      }
+      const finalCommissionAmount = matchedRuleId ? rawCommissionAmount - agentPortion : rawCommissionAmount;
       return {
         id: batchId + "_" + i,
         carrier: rowCarrier,
-        agent: resolveAgentName(rawAgent, agentNpn, agentCarrierId, rowCarrier),
+        agent: resolvedAgent,
         agentNpn,
         agentCarrierId,
         planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
@@ -765,13 +825,15 @@ export default function App() {
         clientName: rowClientName,
         saleDate: mapping.saleDate ? parseDateValue(r[mapping.saleDate]) : "",
         effectiveDate: rowEffectiveDate,
+        termDate: rowTermDate,
         status: mapping.status ? (String(r[mapping.status] ?? "").trim() || "Active") : "Active",
         commissionAmount: finalCommissionAmount,
-        payableRuleId: rule ? rule.id : null,
-        payableAmount: rule ? agentPortion : 0,
-        payableAgentName: rule ? rule.agentName : "",
-        commissionType: mapping.commissionType ? String(r[mapping.commissionType] ?? "").trim() : "",
-        paymentDate: mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "",
+        payableRuleId: matchedRuleId,
+        payableAmount: agentPortion,
+        payableAgentName: matchedAgentName,
+        payableSourceType: matchedSourceType,
+        commissionType: rowCommissionType,
+        paymentDate: rowPaymentDate,
         uploadBatchId: batchId,
         sourceFile: fileName,
         importedAt: new Date().toISOString(),
@@ -792,7 +854,7 @@ export default function App() {
         const ledgerToInsert = [];
         newRecords.forEach((rec, idx) => {
           if (rec.payableRuleId && inserted && inserted[idx]) {
-            ledgerToInsert.push({ rule_id: rec.payableRuleId, carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.payableAgentName, amount: rec.payableAmount, policy_id: inserted[idx].id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+            ledgerToInsert.push({ rule_id: rec.payableRuleId, source_type: rec.payableSourceType || "client_rule", carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.payableAgentName, amount: rec.payableAmount, policy_id: inserted[idx].id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
           }
         });
         if (ledgerToInsert.length) {
@@ -1448,6 +1510,38 @@ export default function App() {
     return payableRules.find((r) => r.active && r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate && effectiveDate && r.effectiveDate === effectiveDate);
   }
 
+  // ---------- AGENT COMPENSATION RULES ----------
+  // Different from the client-specific rules above: this applies permanently to
+  // every sale where a given agent is on record for a given carrier, not tied to
+  // one client or one effective date. Renewal is a flat amount per transaction,
+  // same as before. First Year is a lump sum: months remaining in the calendar
+  // year (from the effective date) times a per-month rate \u2014 and when a Term
+  // Date shows up, that's read as a disenrollment and reversed the same way the
+  // agency's own chargeback is prorated (or fully reversed if within 3 months).
+  const [agentCompRules, setAgentCompRules] = useState([]);
+  const [compAvailable, setCompAvailable] = useState(false);
+
+  function findAgentCompRule(carrier, agentName) {
+    const key = normalizeNameKey(agentName);
+    return agentCompRules.find((r) => r.active && r.carrier === carrier && normalizeNameKey(r.agentName) === key);
+  }
+
+  function calcAgentCompPortion(compRule, category, rawAmount, effectiveDate, termDate) {
+    const direction = rawAmount >= 0 ? 1 : -1;
+    if (category === "Renewal") return direction * compRule.renewalAmount;
+    if (category === "First Year") {
+      const totalMonths = monthsRemainingInYear(effectiveDate);
+      if (totalMonths === null) return 0; // can't compute without an effective date
+      if (termDate) {
+        const used = monthsActuallyStayed(effectiveDate, termDate);
+        const unusedMonths = used <= 3 ? totalMonths : Math.max(0, totalMonths - used);
+        return -(unusedMonths * compRule.firstYearAmountPerMonth);
+      }
+      return totalMonths * compRule.firstYearAmountPerMonth;
+    }
+    return 0; // Unclassified \u2014 don't guess
+  }
+
   const [payableClientName, setPayableClientName] = useState("");
   const [payableCarrier, setPayableCarrier] = useState("");
   const [payableAgentName, setPayableAgentName] = useState("");
@@ -1479,6 +1573,76 @@ export default function App() {
     matches.forEach((rec) => { const direction = rec.commissionAmount >= 0 ? 1 : -1; matchAdjustments[rec.id] = direction * amt; });
     setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
     return matches.length;
+  }
+
+  async function createAgentCompRuleAndApply(cfg, carrier, agentName, renewalAmount, firstYearAmountPerMonth) {
+    const inserted = await sbFetch(cfg, "agent_comp_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, agent_name: agentName, renewal_amount: renewalAmount, first_year_amount_per_month: firstYearAmountPerMonth }]) });
+    const rule = inserted[0];
+    const compRule = { renewalAmount, firstYearAmountPerMonth };
+    const agentKey = normalizeNameKey(agentName);
+    // Skip anything already covered by a specific client rule \u2014 that one always
+    // wins, so this permanent rule only fills in the rest.
+    const matches = records.filter((r) => {
+      if (r.carrier !== carrier || normalizeNameKey(r.agent) !== agentKey || r.commissionAmount === 0) return false;
+      const covered = findPayableRule(r.carrier, r.clientName, r.effectiveDate);
+      return !covered;
+    });
+    const ledgerToInsert = [];
+    const matchAdjustments = {};
+    let appliedCount = 0;
+    for (const rec of matches) {
+      const category = classifyCommissionCategory(rec.commissionType, rec.effectiveDate, rec.paymentDate);
+      const agentPortion = calcAgentCompPortion(compRule, category, rec.commissionAmount, rec.effectiveDate, rec.termDate);
+      if (agentPortion === 0) continue;
+      const newAmount = rec.commissionAmount - agentPortion;
+      await sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+      ledgerToInsert.push({ rule_id: rule.id, source_type: "agent_comp", carrier: rec.carrier, client_name: rec.clientName, agent_name: agentName, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+      matchAdjustments[rec.id] = agentPortion;
+      appliedCount++;
+    }
+    if (ledgerToInsert.length) {
+      await sbFetch(cfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
+    }
+    setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
+    return appliedCount;
+  }
+
+  const [compCarrier, setCompCarrier] = useState("");
+  const [compAgentName, setCompAgentName] = useState("");
+  const [compRenewalAmount, setCompRenewalAmount] = useState("");
+  const [compFirstYearAmount, setCompFirstYearAmount] = useState("");
+  const [addingCompRule, setAddingCompRule] = useState(false);
+
+  async function addAgentCompRule() {
+    if (!cloudCfg || !compCarrier.trim() || !compAgentName.trim() || !compRenewalAmount || !compFirstYearAmount) return;
+    setAddingCompRule(true);
+    try {
+      const renewalAmt = Number(compRenewalAmount);
+      const firstYearAmt = Number(compFirstYearAmount);
+      const count = await createAgentCompRuleAndApply(cloudCfg, compCarrier.trim(), compAgentName.trim(), renewalAmt, firstYearAmt);
+      await loadFromCloud(cloudCfg);
+      showToast(`Compensation rule added for ${compAgentName.trim()} on ${compCarrier.trim()} \u2014 corrected ${count} existing record(s).`);
+      setCompCarrier(""); setCompAgentName(""); setCompRenewalAmount(""); setCompFirstYearAmount("");
+    } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
+    setAddingCompRule(false);
+  }
+
+  async function toggleCompRuleActive(ruleId, currentlyActive) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_comp_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
+      setAgentCompRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, active: !currentlyActive } : r)));
+      showToast(currentlyActive ? "Rule paused." : "Rule reactivated.");
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+
+  async function deleteAgentCompRule(ruleId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_comp_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast("Rule removed. Note: dollar amounts already corrected on past records are not reverted automatically.");
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
   }
 
   async function addPayableRule() {
@@ -2703,6 +2867,55 @@ export default function App() {
                         </div>
                       </div>
                     </>
+                  )}
+                </div>
+
+                <div className="pt-card">
+                  <h3>Agent compensation rules</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Different from the rules below \u2014 this applies permanently to every sale where this agent is on record for this carrier, not tied to one client. Renewal is a flat amount per transaction. First Year is months remaining in the calendar year (from the effective date) times a per-month rate, reversed automatically (fully if termed within 3 months, prorated after) whenever a Term Date shows up.</p>
+                  <div className="pt-mapping-grid">
+                    <div className="pt-field">
+                      <label>Carrier</label>
+                      <input list="carrier-options-comp" value={compCarrier} onChange={(e) => setCompCarrier(e.target.value)} placeholder="e.g. Aetna" />
+                      <datalist id="carrier-options-comp">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                    </div>
+                    <div className="pt-field">
+                      <label>Agent name</label>
+                      <input value={compAgentName} onChange={(e) => setCompAgentName(e.target.value)} placeholder="e.g. Charles Vazquez" />
+                    </div>
+                    <div className="pt-field">
+                      <label>Renewal $ per transaction</label>
+                      <input type="number" step="0.01" value={compRenewalAmount} onChange={(e) => setCompRenewalAmount(e.target.value)} placeholder="28.92" />
+                    </div>
+                    <div className="pt-field">
+                      <label>First year $ per month</label>
+                      <input type="number" step="0.01" value={compFirstYearAmount} onChange={(e) => setCompFirstYearAmount(e.target.value)} placeholder="28.92" />
+                    </div>
+                  </div>
+                  <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingCompRule || !compCarrier.trim() || !compAgentName.trim() || !compRenewalAmount || !compFirstYearAmount} onClick={addAgentCompRule}>
+                    {addingCompRule ? "Applying\u2026" : "Add rule"}
+                  </button>
+                  {agentCompRules.length > 0 && (
+                    <table className="pt-table" style={{ marginTop: 16 }}>
+                      <thead><tr><th>Status</th><th>Carrier</th><th>Agent</th><th className="num">Renewal/txn</th><th className="num">First year/mo</th><th></th></tr></thead>
+                      <tbody>
+                        {agentCompRules.map((rule) => (
+                          <tr key={rule.id}>
+                            <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
+                            <td>{rule.carrier}</td>
+                            <td>{rule.agentName}</td>
+                            <td className="num mono">{fmtMoney(rule.renewalAmount)}</td>
+                            <td className="num mono">{fmtMoney(rule.firstYearAmountPerMonth)}</td>
+                            <td className="num">
+                              <div className="pt-btn-row">
+                                <button className="pt-btn ghost small" onClick={() => toggleCompRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                <button className="pt-btn ghost small" onClick={() => deleteAgentCompRule(rule.id)}><X size={12} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   )}
                 </div>
 
