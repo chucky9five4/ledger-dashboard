@@ -1537,6 +1537,7 @@ export default function App() {
         const unusedMonths = used <= 3 ? totalMonths : Math.max(0, totalMonths - used);
         return -(unusedMonths * compRule.firstYearAmountPerMonth);
       }
+      if (rawAmount < 0) return 0; // a negative First Year row with no Term Date can't be safely calculated \u2014 skip rather than guess
       return totalMonths * compRule.firstYearAmountPerMonth;
     }
     return 0; // Unclassified \u2014 don't guess
