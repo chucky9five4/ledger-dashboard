@@ -1426,6 +1426,21 @@ export default function App() {
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipLatestByPolicy, agentSearch, agentLookupMaps]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
+  const [agentSalesSortCol, setAgentSalesSortCol] = useState("effectiveDate");
+  const [agentSalesSortDir, setAgentSalesSortDir] = useState("desc");
+  function toggleAgentSalesSort(col) {
+    if (agentSalesSortCol === col) setAgentSalesSortDir(agentSalesSortDir === "asc" ? "desc" : "asc");
+    else { setAgentSalesSortCol(col); setAgentSalesSortDir("asc"); }
+  }
+  const selectedAgentRecordsSorted = useMemo(() => {
+    const dir = agentSalesSortDir === "asc" ? 1 : -1;
+    return [...selectedAgentRecords].sort((a, b) => {
+      if (agentSalesSortCol === "amount") return (a.commissionAmount - b.commissionAmount) * dir;
+      const av = (agentSalesSortCol === "clientName" ? a.clientName : agentSalesSortCol === "carrier" ? a.carrier : agentSalesSortCol === "status" ? a.status : a.effectiveDate) || "";
+      const bv = (agentSalesSortCol === "clientName" ? b.clientName : agentSalesSortCol === "carrier" ? b.carrier : agentSalesSortCol === "status" ? b.status : b.effectiveDate) || "";
+      return av.localeCompare(bv) * dir;
+    });
+  }, [selectedAgentRecords, agentSalesSortCol, agentSalesSortDir]);
   const selectedAgentByCarrier = useMemo(() => groupBy(selectedAgentRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
   const selectedAgentByPlanType = useMemo(() => groupBy(selectedAgentRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [selectedAgentRecords]);
 
@@ -2224,9 +2239,17 @@ export default function App() {
                     <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedAgentRecords.length})</div>
                     <div className="pt-preview-scroll">
                       <table className="pt-table">
-                        <thead><tr><th>Member name</th><th>Carrier</th><th>Effective date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                        <thead>
+                          <tr>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSortCol === "clientName" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSortCol === "carrier" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSortCol === "effectiveDate" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSortCol === "status" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                            <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSortCol === "amount" ? (agentSalesSortDir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                          </tr>
+                        </thead>
                         <tbody>
-                          {selectedAgentRecords.map((r) => (
+                          {selectedAgentRecordsSorted.map((r) => (
                             <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td>{r.carrier}</td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                           ))}
                         </tbody>
