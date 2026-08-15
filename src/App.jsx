@@ -1795,11 +1795,20 @@ export default function App() {
     const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
     return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "")).sort((a, b) => b.revenue - a.revenue);
   }, [payableLedger, payablesMonth, agentLookupMaps]);
-  const [expandedPayableAgent, setExpandedPayableAgent] = useState(null);
-  const expandedPayableAgentBreakdown = useMemo(() => {
-    if (!expandedPayableAgent) return [];
-    return owedByAgentThisMonth.filter((a) => a.agentName === expandedPayableAgent);
-  }, [owedByAgentThisMonth, expandedPayableAgent]);
+  const [selectedPayableAgent, setSelectedPayableAgent] = useState(null);
+  const selectedPayableAgentByCarrier = useMemo(() => {
+    if (!selectedPayableAgent) return [];
+    return owedByAgentThisMonth.filter((a) => a.agentName === selectedPayableAgent);
+  }, [owedByAgentThisMonth, selectedPayableAgent]);
+  const selectedPayableAgentByClient = useMemo(() => {
+    if (!selectedPayableAgent) return [];
+    const scoped = payableLedger.filter((l) => resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
+    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => (l.clientName || "Unknown") + " \u2014 " + l.carrier);
+    return grouped.map((g) => {
+      const [clientName, carrier] = g.key.split(" \u2014 ");
+      return { ...g, clientName, carrier };
+    }).sort((a, b) => b.revenue - a.revenue);
+  }, [payableLedger, selectedPayableAgent, payablesMonth, agentLookupMaps]);
 
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
@@ -2806,46 +2815,54 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div className="pt-card">
-                  <div className="pt-row-between">
-                    <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
-                    <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
-                      <option value="">All time</option>
-                      {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </div>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid. Click the arrow to see the breakdown by carrier.</p>
-                  {totalOwedByAgentThisMonth.length === 0 ? (
-                    <p className="pt-hint">Nothing recognized for this period.</p>
-                  ) : (
-                    <table className="pt-table">
-                      <thead><tr><th></th><th>Agent</th><th className="num">Total owed</th></tr></thead>
-                      <tbody>
-                        {totalOwedByAgentThisMonth.map((a) => (
-                          <React.Fragment key={a.key}>
-                            <tr className="pt-clickable" onClick={() => setExpandedPayableAgent(expandedPayableAgent === a.key ? null : a.key)}>
-                              <td style={{ width: 24 }}>
-                                <span style={{ display: "inline-block", transition: "transform 0.15s", transform: expandedPayableAgent === a.key ? "rotate(0deg)" : "rotate(-90deg)" }}>\u25be</span>
-                              </td>
+                <div className="pt-grid-list">
+                  <div className="pt-card">
+                    <div className="pt-row-between">
+                      <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
+                      <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
+                        <option value="">All time</option>
+                        {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid. Click an agent to see exactly who this is coming from.</p>
+                    {totalOwedByAgentThisMonth.length === 0 ? (
+                      <p className="pt-hint">Nothing recognized for this period.</p>
+                    ) : (
+                      <table className="pt-table">
+                        <thead><tr><th>Agent</th><th className="num">Total owed</th></tr></thead>
+                        <tbody>
+                          {totalOwedByAgentThisMonth.map((a) => (
+                            <tr key={a.key} className={"pt-clickable" + (selectedPayableAgent === a.key ? " selected" : "")} onClick={() => setSelectedPayableAgent(a.key)}>
                               <td>{a.key}</td>
                               <td className="num"><Money v={a.revenue} /></td>
                             </tr>
-                            {expandedPayableAgent === a.key && (
-                              <tr>
-                                <td></td>
-                                <td colSpan={2} style={{ paddingTop: 0, paddingBottom: 12 }}>
-                                  <div className="pt-mini-grid" style={{ gridTemplateColumns: "1fr" }}>
-                                    {expandedPayableAgentBreakdown.map((c) => (
-                                      <div key={c.carrier} className="pt-mini-row"><span>{c.carrier}</span><span className="mono"><Money v={c.revenue} /></span></div>
-                                    ))}
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        ))}
-                      </tbody>
-                    </table>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  {selectedPayableAgent && (
+                    <div className="pt-card">
+                      <h3>{selectedPayableAgent}</h3>
+                      <div className="pt-mini-grid">
+                        <div>
+                          <div className="pt-mini-label">By carrier</div>
+                          {selectedPayableAgentByCarrier.map((c) => <div key={c.carrier} className="pt-mini-row"><span>{c.carrier}</span><span className="mono"><Money v={c.revenue} /></span></div>)}
+                        </div>
+                      </div>
+                      <div className="pt-mini-label" style={{ marginTop: 16 }}>Who this comes from ({selectedPayableAgentByClient.length})</div>
+                      <div className="pt-preview-scroll">
+                        <table className="pt-table">
+                          <thead><tr><th>Client</th><th>Carrier</th><th className="num">Amount owed</th></tr></thead>
+                          <tbody>
+                            {selectedPayableAgentByClient.map((c) => (
+                              <tr key={c.key}><td>{c.clientName}</td><td>{c.carrier}</td><td className="num"><Money v={c.revenue} /></td></tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   )}
                 </div>
 
