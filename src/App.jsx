@@ -358,6 +358,41 @@ insert into storage.buckets (id, name, public) values ('imports', 'imports', fal
 drop policy if exists "allow all - solo use imports" on storage.objects;
 create policy "allow all - solo use imports" on storage.objects for all using (bucket_id = 'imports') with check (bucket_id = 'imports');`;
 
+const MIGRATION_SQL6 = `create table if not exists agent_payable_rules (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  client_name text not null,
+  agent_name text not null,
+  amount_per_transaction numeric not null,
+  effective_date date,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+alter table agent_payable_rules add column if not exists active boolean default true;
+alter table agent_payable_rules add column if not exists effective_date date;
+
+create table if not exists agent_payable_ledger (
+  id uuid primary key default gen_random_uuid(),
+  rule_id uuid references agent_payable_rules(id) on delete cascade,
+  carrier text,
+  client_name text,
+  agent_name text,
+  amount numeric not null,
+  policy_id uuid,
+  transaction_date date,
+  paid boolean default false,
+  paid_date date,
+  created_at timestamptz default now()
+);
+alter table agent_payable_ledger add column if not exists transaction_date date;
+
+alter table agent_payable_rules enable row level security;
+alter table agent_payable_ledger enable row level security;
+drop policy if exists "allow all - solo use" on agent_payable_rules;
+drop policy if exists "allow all - solo use" on agent_payable_ledger;
+create policy "allow all - solo use" on agent_payable_rules for all using (true) with check (true);
+create policy "allow all - solo use" on agent_payable_ledger for all using (true) with check (true);`;
+
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
 
 create table if not exists membership_updates (
@@ -503,6 +538,9 @@ export default function App() {
   const [agentAliases, setAgentAliases] = useState([]);
   const [directoryAvailable, setDirectoryAvailable] = useState(false);
   const [membershipRecords, setMembershipRecords] = useState([]);
+  const [payableRules, setPayableRules] = useState([]);
+  const [payableLedger, setPayableLedger] = useState([]);
+  const [payablesAvailable, setPayablesAvailable] = useState(false);
   const [planCodeDirectory, setPlanCodeDirectory] = useState([]);
   const [planCodesAvailable, setPlanCodesAvailable] = useState(false);
 
@@ -548,6 +586,13 @@ export default function App() {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
       setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
+    try {
+      const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
+      setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false })));
+      const ledger = await sbFetchAll(cfg, "agent_payable_ledger?select=*&order=created_at.desc");
+      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
+      setPayablesAvailable(true);
+    } catch (e) { setPayablesAvailable(false); }
   }
 
   useEffect(() => {
@@ -699,6 +744,16 @@ export default function App() {
       const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
       const agentNpn = mapping.agentNpn ? String(r[mapping.agentNpn] ?? "").trim() : "";
       const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
+      const rowClientName = mapping.clientName ? String(r[mapping.clientName] ?? "").trim() : "";
+      const rowEffectiveDate = mapping.effectiveDate ? parseDateValue(r[mapping.effectiveDate]) : "";
+      const rawCommissionAmount = parseMoney(r[mapping.commissionAmount]);
+      const rule = rowClientName ? findPayableRule(rowCarrier, rowClientName, rowEffectiveDate) : null;
+      // Same fixed amount splits off either direction: a positive payment sends
+      // it to the agent; a negative chargeback reverses that same amount back
+      // out of what's owed to them, so both sides are charged back together.
+      const direction = rawCommissionAmount >= 0 ? 1 : -1;
+      const agentPortion = rule ? direction * rule.amountPerTransaction : 0;
+      const finalCommissionAmount = rule ? rawCommissionAmount - agentPortion : rawCommissionAmount;
       return {
         id: batchId + "_" + i,
         carrier: rowCarrier,
@@ -707,11 +762,14 @@ export default function App() {
         agentCarrierId,
         planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
         product: String(r[mapping.product] ?? "").trim() || "Unspecified",
-        clientName: mapping.clientName ? String(r[mapping.clientName] ?? "").trim() : "",
+        clientName: rowClientName,
         saleDate: mapping.saleDate ? parseDateValue(r[mapping.saleDate]) : "",
-        effectiveDate: mapping.effectiveDate ? parseDateValue(r[mapping.effectiveDate]) : "",
+        effectiveDate: rowEffectiveDate,
         status: mapping.status ? (String(r[mapping.status] ?? "").trim() || "Active") : "Active",
-        commissionAmount: parseMoney(r[mapping.commissionAmount]),
+        commissionAmount: finalCommissionAmount,
+        payableRuleId: rule ? rule.id : null,
+        payableAmount: rule ? agentPortion : 0,
+        payableAgentName: rule ? rule.agentName : "",
         commissionType: mapping.commissionType ? String(r[mapping.commissionType] ?? "").trim() : "",
         paymentDate: mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "",
         uploadBatchId: batchId,
@@ -731,6 +789,15 @@ export default function App() {
         }
         const inserted = await sbFetch(cloudCfg, "policies", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(newRecords.map(toSnakeRow)) });
         setRecords((prev) => [...prev, ...(inserted || []).map(toCamelRow)]);
+        const ledgerToInsert = [];
+        newRecords.forEach((rec, idx) => {
+          if (rec.payableRuleId && inserted && inserted[idx]) {
+            ledgerToInsert.push({ rule_id: rec.payableRuleId, carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.payableAgentName, amount: rec.payableAmount, policy_id: inserted[idx].id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+          }
+        });
+        if (ledgerToInsert.length) {
+          try { await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) }); } catch (e) { /* payables table may not be set up yet */ }
+        }
         await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
         setBatches((prev) => [...prev, batchEntry]);
         await sbFetch(cloudCfg, "carrier_mappings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier, mapping: { ...mappingPreset.mapping, __carrierMode: carrierMode, __carrierColumn: carrierColumn }, plan_type_mode: mappingPreset.planTypeMode, plan_type_column: mappingPreset.planTypeColumn, plan_type_fixed: mappingPreset.planTypeFixed }]) });
@@ -751,12 +818,14 @@ export default function App() {
       } catch (e) { showToast("Could not save locally.", "error"); }
     }
     resetImportStaging();
+    const payableAppliedCount = newRecords.filter((r) => r.payableRuleId).length;
+    const payableNote = payableAppliedCount > 0 ? ` ${payableAppliedCount} row(s) had agent payable rules applied.` : "";
     if (cloudCfg && newAgentsInBatch.length > 0) {
-      showToast(`Imported ${newRecords.length} rows from ${carrier} \u2014 ${newAgentsInBatch.length} agent name(s) need review.`, "success");
+      showToast(`Imported ${newRecords.length} rows from ${carrier} \u2014 ${newAgentsInBatch.length} agent name(s) need review.${payableNote}`, "success");
       setView("directory");
       setDirectoryTab("unmatched");
     } else {
-      showToast(`Imported ${newRecords.length} rows from ${carrier}.`);
+      showToast(`Imported ${newRecords.length} rows from ${carrier}.${payableNote}`);
       setView("dashboard");
     }
   }
@@ -1343,6 +1412,120 @@ export default function App() {
     return records.filter((r) => r.clientName && r.clientName.toLowerCase().includes(q));
   }, [records, clientSearch]);
 
+  const [reassignCarrier, setReassignCarrier] = useState("");
+  const [reassignNewAgent, setReassignNewAgent] = useState("");
+  const [confirmReassign, setConfirmReassign] = useState(false);
+  const reassignCarriersAvailable = useMemo(() => [...new Set(clientMatches.map((r) => r.carrier))].sort(), [clientMatches]);
+  const reassignTargetCount = useMemo(() => clientMatches.filter((r) => !reassignCarrier || r.carrier === reassignCarrier).length, [clientMatches, reassignCarrier]);
+
+  async function reassignClientAgent() {
+    if (!cloudCfg || !reassignNewAgent.trim() || clientMatches.length === 0) return;
+    try {
+      const scoped = clientMatches.filter((r) => !reassignCarrier || r.carrier === reassignCarrier);
+      const byCarrier = {};
+      scoped.forEach((r) => { if (!byCarrier[r.carrier]) byCarrier[r.carrier] = new Set(); byCarrier[r.carrier].add(r.clientName); });
+      for (const carrier of Object.keys(byCarrier)) {
+        const names = Array.from(byCarrier[carrier]);
+        const filterValue = pgInList(names);
+        const url = `policies?carrier=eq.${encodeURIComponent(carrier)}&client_name=${encodeURIComponent(filterValue)}`;
+        await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: reassignNewAgent.trim() }) });
+      }
+      const scopedIds = new Set(scoped.map((r) => r.id));
+      setRecords((prev) => prev.map((r) => (scopedIds.has(r.id) ? { ...r, agent: reassignNewAgent.trim() } : r)));
+      showToast(`Reassigned ${scoped.length} record(s) to ${reassignNewAgent.trim()}.`);
+      setReassignNewAgent(""); setReassignCarrier(""); setConfirmReassign(false);
+    } catch (e) { showToast("Could not reassign: " + e.message, "error"); }
+  }
+
+  // ---------- AGENT PAYABLE RULES ----------
+  // A rule means: for this client, on this carrier, every positive commission
+  // payment actually includes an amount that belongs to the true agent, not
+  // the agency. We correct the stored dollar amount at the source (so every
+  // revenue figure everywhere is automatically right) and keep a ledger of
+  // what's been carved out, so it can be tracked and paid out monthly.
+  function findPayableRule(carrier, clientName, effectiveDate) {
+    const key = normalizeClientKey(clientName);
+    return payableRules.find((r) => r.active && r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate && effectiveDate && r.effectiveDate === effectiveDate);
+  }
+
+  const [payableClientName, setPayableClientName] = useState("");
+  const [payableCarrier, setPayableCarrier] = useState("");
+  const [payableAgentName, setPayableAgentName] = useState("");
+  const [payableAmount, setPayableAmount] = useState("");
+  const [payableEffectiveDate, setPayableEffectiveDate] = useState("");
+  const [addingPayableRule, setAddingPayableRule] = useState(false);
+
+  async function addPayableRule() {
+    if (!cloudCfg || !payableClientName.trim() || !payableCarrier.trim() || !payableAgentName.trim() || !payableAmount || Number(payableAmount) <= 0 || !payableEffectiveDate) return;
+    setAddingPayableRule(true);
+    try {
+      const amt = Number(payableAmount);
+      const inserted = await sbFetch(cloudCfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier: payableCarrier.trim(), client_name: payableClientName.trim(), agent_name: payableAgentName.trim(), amount_per_transaction: amt, effective_date: payableEffectiveDate }]) });
+      const rule = inserted[0];
+
+      // Retroactively adjust every existing matching record (payments AND
+      // chargebacks) at this exact effective date \u2014 if this client already has
+      // records under a different (newer) effective date, those are a separate
+      // enrollment and must not be touched.
+      const key = normalizeClientKey(payableClientName);
+      const matches = records.filter((r) => r.carrier === payableCarrier.trim() && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === payableEffectiveDate);
+      const ledgerToInsert = [];
+      for (const rec of matches) {
+        const direction = rec.commissionAmount >= 0 ? 1 : -1;
+        const agentPortion = direction * amt;
+        const newAmount = rec.commissionAmount - agentPortion;
+        await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+        ledgerToInsert.push({ rule_id: rule.id, carrier: rec.carrier, client_name: rec.clientName, agent_name: payableAgentName.trim(), amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+      }
+      if (ledgerToInsert.length) {
+        await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
+      }
+      const matchAdjustments = {};
+      matches.forEach((rec) => { const direction = rec.commissionAmount >= 0 ? 1 : -1; matchAdjustments[rec.id] = direction * amt; });
+      setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
+      await loadFromCloud(cloudCfg);
+      showToast(`Rule added for effective date ${payableEffectiveDate} \u2014 corrected ${matches.length} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
+      setPayableClientName(""); setPayableCarrier(""); setPayableAgentName(""); setPayableAmount(""); setPayableEffectiveDate("");
+    } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
+    setAddingPayableRule(false);
+  }
+
+  async function deletePayableRule(ruleId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_payable_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast("Rule removed. Note: dollar amounts already corrected on past records are not reverted automatically.");
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
+  }
+
+  async function togglePayableRuleActive(ruleId, currentlyActive) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_payable_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
+      setPayableRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, active: !currentlyActive } : r)));
+      showToast(currentlyActive ? "Rule paused \u2014 future imports for this client won't be adjusted anymore." : "Rule reactivated.");
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+
+  async function markLedgerPaid(ids) {
+    if (!cloudCfg || !ids.length) return;
+    try {
+      const filterValue = pgInList(ids);
+      await sbFetch(cloudCfg, `agent_payable_ledger?id=${encodeURIComponent(filterValue)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ paid: true, paid_date: new Date().toISOString().slice(0, 10) }) });
+      const idSet = new Set(ids);
+      setPayableLedger((prev) => prev.map((l) => (idSet.has(l.id) ? { ...l, paid: true, paidDate: new Date().toISOString().slice(0, 10) } : l)));
+      showToast(`Marked ${ids.length} payment(s) as paid.`);
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+
+  const [payablesMonth, setPayablesMonth] = useState("");
+  const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
+  const owedByAgentThisMonth = useMemo(() => {
+    const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
+    return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => l.agentName).sort((a, b) => b.revenue - a.revenue);
+  }, [payableLedger, payablesMonth]);
+
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
   }
@@ -1356,6 +1539,7 @@ export default function App() {
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
+    { key: "payables", label: "Agent payables", icon: UserPlus },
     { key: "settings", label: "Database connection", icon: Settings },
   ];
 
@@ -1835,14 +2019,36 @@ export default function App() {
                 clientMatches.length === 0 ? (
                   <p className="pt-hint" style={{ marginTop: 12 }}>No matches. Note: client name only shows if you mapped that column during import.</p>
                 ) : (
-                  <table className="pt-table" style={{ marginTop: 12 }}>
-                    <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
-                    <tbody>
-                      {clientMatches.map((r) => (
-                        <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <>
+                    <table className="pt-table" style={{ marginTop: 12 }}>
+                      <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                      <tbody>
+                        {clientMatches.map((r) => (
+                          <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="pt-plantype-block">
+                      <label>Wrong agent on record? Reassign these records to the true agent.</label>
+                      <p className="pt-hint" style={{ marginBottom: 8 }}>Applies to every record matching this search. Narrow to one carrier if this client has records under multiple carriers you don't want to touch.</p>
+                      {confirmReassign ? (
+                        <span className="pt-confirm-inline">
+                          Reassign {reassignTargetCount} record(s) to "{reassignNewAgent}"? This can't be undone automatically.
+                          <button className="pt-btn danger small" onClick={reassignClientAgent}>Yes, reassign</button>
+                          <button className="pt-btn ghost small" onClick={() => setConfirmReassign(false)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <div className="pt-inline-form">
+                          <select value={reassignCarrier} onChange={(e) => setReassignCarrier(e.target.value)} style={{ minWidth: 160 }}>
+                            <option value="">All carriers ({clientMatches.length} records)</option>
+                            {reassignCarriersAvailable.map((c) => <option key={c} value={c}>{c} only</option>)}
+                          </select>
+                          <input placeholder="True agent's name" value={reassignNewAgent} onChange={(e) => setReassignNewAgent(e.target.value)} style={{ minWidth: 180 }} />
+                          <button className="pt-btn ghost small" disabled={!reassignNewAgent.trim()} onClick={() => setConfirmReassign(true)}>Reassign {reassignTargetCount} record(s)</button>
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )
               )}
             </div>
@@ -2287,6 +2493,112 @@ export default function App() {
             )}
           </div>
         )}
+
+        {view === "payables" && (
+          <div>
+            <div className="pt-page-head"><div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record.</p></div></div>
+
+            {!cloudCfg ? (
+              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use Agent Payables.</p></div>
+            ) : !payablesAvailable ? (
+              <div className="pt-card">
+                <p className="pt-error">Your database doesn't have the payables tables yet.</p>
+                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
+                <pre className="pt-sql">{MIGRATION_SQL6}</pre>
+              </div>
+            ) : (
+              <>
+                <div className="pt-card">
+                  <div className="pt-row-between">
+                    <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
+                    <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
+                      <option value="">All time</option>
+                      {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid.</p>
+                  {owedByAgentThisMonth.length === 0 ? (
+                    <p className="pt-hint">Nothing recognized for this period.</p>
+                  ) : (
+                    <table className="pt-table">
+                      <thead><tr><th>Agent</th><th className="num">Amount recognized</th></tr></thead>
+                      <tbody>
+                        {owedByAgentThisMonth.map((a) => (
+                          <tr key={a.key}><td>{a.key}</td><td className="num"><Money v={a.revenue} /></td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="pt-card">
+                  <h3>Add a payable rule</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Tied to this exact effective date \u2014 as soon as this client shows up with a different (new) effective date, that's a fresh enrollment under their true agent, and this rule automatically stops applying to it. No need to turn anything off by hand.</p>
+                  <div className="pt-mapping-grid">
+                    <div className="pt-field">
+                      <label>Carrier</label>
+                      <input list="carrier-options-payable" value={payableCarrier} onChange={(e) => setPayableCarrier(e.target.value)} placeholder="e.g. United Healthcare" />
+                      <datalist id="carrier-options-payable">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                    </div>
+                    <div className="pt-field">
+                      <label>Client name</label>
+                      <input value={payableClientName} onChange={(e) => setPayableClientName(e.target.value)} placeholder="e.g. Charles Vazquez" />
+                    </div>
+                    <div className="pt-field">
+                      <label>Effective date</label>
+                      <input type="date" value={payableEffectiveDate} onChange={(e) => setPayableEffectiveDate(e.target.value)} />
+                    </div>
+                    <div className="pt-field">
+                      <label>True agent</label>
+                      <input value={payableAgentName} onChange={(e) => setPayableAgentName(e.target.value)} placeholder="Who this is owed to" />
+                    </div>
+                    <div className="pt-field">
+                      <label>Amount owed per payment ($)</label>
+                      <input type="number" step="0.01" value={payableAmount} onChange={(e) => setPayableAmount(e.target.value)} placeholder="28.92" />
+                    </div>
+                  </div>
+                  <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingPayableRule || !payableCarrier.trim() || !payableClientName.trim() || !payableAgentName.trim() || !payableAmount || !payableEffectiveDate} onClick={addPayableRule}>
+                    {addingPayableRule ? "Applying\u2026" : "Add rule"}
+                  </button>
+                </div>
+
+                <div className="pt-card">
+                  <h3>Rules</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one.</p>
+                  {payableRules.length === 0 ? <p className="pt-hint">No payable rules yet.</p> : (
+                    <table className="pt-table">
+                      <thead><tr><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>Owed to</th><th className="num">Per payment</th><th className="num">Total recognized</th><th></th></tr></thead>
+                      <tbody>
+                        {payableRules.map((rule) => {
+                          const entries = payableLedger.filter((l) => l.ruleId === rule.id);
+                          const total = entries.reduce((s, l) => s + l.amount, 0);
+                          return (
+                            <tr key={rule.id}>
+                              <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
+                              <td>{rule.clientName}</td>
+                              <td>{rule.carrier}</td>
+                              <td>{fmtDate(rule.effectiveDate)}</td>
+                              <td>{rule.agentName}</td>
+                              <td className="num mono">{fmtMoney(rule.amountPerTransaction)}</td>
+                              <td className="num"><Money v={total} /></td>
+                              <td className="num">
+                                <div className="pt-btn-row">
+                                  <button className="pt-btn ghost small" onClick={() => togglePayableRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                  <button className="pt-btn ghost small" onClick={() => deletePayableRule(rule.id)}><X size={12} /></button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {view === "settings" && (
           <div>
             <div className="pt-page-head">
