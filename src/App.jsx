@@ -1451,6 +1451,8 @@ export default function App() {
 
   const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
   const [confirmMergeCarrier, setConfirmMergeCarrier] = useState(false);
+  const [mergeTargetAgent, setMergeTargetAgent] = useState("");
+  const [confirmMergeAgent, setConfirmMergeAgent] = useState(false);
   async function mergeCarrier(fromCarrier, toCarrier) {
     if (!cloudCfg || !fromCarrier || !toCarrier || fromCarrier === toCarrier) return;
     try {
@@ -1464,6 +1466,26 @@ export default function App() {
       setMergeTargetCarrier("");
       setConfirmMergeCarrier(false);
       showToast(`Merged "${fromCarrier}" into "${toCarrier}". Note: any PBP codes taught under "${fromCarrier}" in Plan Types will need re-teaching under "${toCarrier}".`);
+    } catch (e) { showToast("Could not merge: " + e.message, "error"); }
+  }
+
+  async function mergeAgent(fromAgent, toAgent) {
+    if (!cloudCfg || !fromAgent || !toAgent || fromAgent === toAgent) return;
+    try {
+      await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(fromAgent)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: toAgent }) });
+      await sbFetch(cloudCfg, `membership_updates?agent=eq.${encodeURIComponent(fromAgent)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: toAgent }) });
+      try { await sbFetch(cloudCfg, `agent_payable_rules?agent_name=eq.${encodeURIComponent(fromAgent)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent_name: toAgent }) }); } catch (e) {}
+      try { await sbFetch(cloudCfg, `agent_comp_rules?agent_name=eq.${encodeURIComponent(fromAgent)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent_name: toAgent }) }); } catch (e) {}
+      try { await sbFetch(cloudCfg, `agent_payable_ledger?agent_name=eq.${encodeURIComponent(fromAgent)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent_name: toAgent }) }); } catch (e) {}
+      setRecords((prev) => prev.map((r) => (r.agent === fromAgent ? { ...r, agent: toAgent } : r)));
+      setMembershipRecords((prev) => prev.map((r) => (r.agent === fromAgent ? { ...r, agent: toAgent } : r)));
+      setPayableRules((prev) => prev.map((r) => (r.agentName === fromAgent ? { ...r, agentName: toAgent } : r)));
+      setAgentCompRules((prev) => prev.map((r) => (r.agentName === fromAgent ? { ...r, agentName: toAgent } : r)));
+      setPayableLedger((prev) => prev.map((l) => (l.agentName === fromAgent ? { ...l, agentName: toAgent } : l)));
+      setSelectedAgent(toAgent);
+      setMergeTargetAgent("");
+      setConfirmMergeAgent(false);
+      showToast(`Merged "${fromAgent}" into "${toAgent}".`);
     } catch (e) { showToast("Could not merge: " + e.message, "error"); }
   }
 
@@ -1484,6 +1506,7 @@ export default function App() {
   async function reassignClientAgent() {
     if (!cloudCfg || !reassignNewAgent.trim() || clientMatches.length === 0) return;
     try {
+      const resolvedAgent = resolveAgentName(reassignNewAgent.trim(), "", "", "");
       const scoped = clientMatches.filter((r) => !reassignCarrier || r.carrier === reassignCarrier);
       const byCarrier = {};
       scoped.forEach((r) => { if (!byCarrier[r.carrier]) byCarrier[r.carrier] = new Set(); byCarrier[r.carrier].add(r.clientName); });
@@ -1491,11 +1514,11 @@ export default function App() {
         const names = Array.from(byCarrier[carrier]);
         const filterValue = pgInList(names);
         const url = `policies?carrier=eq.${encodeURIComponent(carrier)}&client_name=${encodeURIComponent(filterValue)}`;
-        await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: reassignNewAgent.trim() }) });
+        await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: resolvedAgent }) });
       }
       const scopedIds = new Set(scoped.map((r) => r.id));
-      setRecords((prev) => prev.map((r) => (scopedIds.has(r.id) ? { ...r, agent: reassignNewAgent.trim() } : r)));
-      showToast(`Reassigned ${scoped.length} record(s) to ${reassignNewAgent.trim()}.`);
+      setRecords((prev) => prev.map((r) => (scopedIds.has(r.id) ? { ...r, agent: resolvedAgent } : r)));
+      showToast(`Reassigned ${scoped.length} record(s) to ${resolvedAgent}.`);
       setReassignNewAgent(""); setReassignCarrier(""); setConfirmReassign(false);
     } catch (e) { showToast("Could not reassign: " + e.message, "error"); }
   }
@@ -1551,7 +1574,8 @@ export default function App() {
   const [payableEffectiveDate, setPayableEffectiveDate] = useState("");
   const [addingPayableRule, setAddingPayableRule] = useState(false);
 
-  async function createPayableRuleAndApply(cfg, carrier, clientName, agentName, amt, effectiveDate) {
+  async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate) {
+    const agentName = resolveAgentName(agentNameRaw, "", "", "");
     const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate }]) });
     const rule = inserted[0];
     // Retroactively adjust every existing matching record (payments AND
@@ -1577,7 +1601,8 @@ export default function App() {
     return matches.length;
   }
 
-  async function createAgentCompRuleAndApply(cfg, carrier, agentName, renewalAmount, firstYearAmountPerMonth) {
+  async function createAgentCompRuleAndApply(cfg, carrier, agentNameRaw, renewalAmount, firstYearAmountPerMonth) {
+    const agentName = resolveAgentName(agentNameRaw, "", "", "");
     const inserted = await sbFetch(cfg, "agent_comp_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, agent_name: agentName, renewal_amount: renewalAmount, first_year_amount_per_month: firstYearAmountPerMonth }]) });
     const rule = inserted[0];
     const compRule = { renewalAmount, firstYearAmountPerMonth };
@@ -2151,6 +2176,23 @@ export default function App() {
                     <div className="pt-row-between">
                       <h3>{selectedAgent}</h3>
                       <button className="pt-btn ghost" onClick={() => exportCSV(selectedAgentRecords, selectedAgent.replace(/\s+/g, "_") + ".csv")}><Download size={14} /> Export</button>
+                    </div>
+                    <div style={{ marginBottom: 14 }}>
+                      {confirmMergeAgent ? (
+                        <span className="pt-confirm-inline">
+                          Merge "{selectedAgent}" into "{mergeTargetAgent}"? This moves all its data (including payable rules) and can't be undone.
+                          <button className="pt-btn danger small" onClick={() => mergeAgent(selectedAgent, mergeTargetAgent)}>Yes, merge</button>
+                          <button className="pt-btn ghost small" onClick={() => setConfirmMergeAgent(false)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <div className="pt-inline-form">
+                          <select value={mergeTargetAgent} onChange={(e) => setMergeTargetAgent(e.target.value)} style={{ minWidth: 200 }}>
+                            <option value="">Merge into\u2026</option>
+                            {agentSummary.map((a) => a.key).filter((k) => k !== selectedAgent).map((k) => <option key={k} value={k}>{k}</option>)}
+                          </select>
+                          <button className="pt-btn ghost small" disabled={!mergeTargetAgent} onClick={() => setConfirmMergeAgent(true)}>Merge duplicate spelling</button>
+                        </div>
+                      )}
                     </div>
                     <div className="pt-mini-grid">
                       <div>
