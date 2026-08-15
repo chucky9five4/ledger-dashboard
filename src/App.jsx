@@ -1455,39 +1455,107 @@ export default function App() {
   const [payableEffectiveDate, setPayableEffectiveDate] = useState("");
   const [addingPayableRule, setAddingPayableRule] = useState(false);
 
+  async function createPayableRuleAndApply(cfg, carrier, clientName, agentName, amt, effectiveDate) {
+    const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate }]) });
+    const rule = inserted[0];
+    // Retroactively adjust every existing matching record (payments AND
+    // chargebacks) at this exact effective date \u2014 if this client already has
+    // records under a different (newer) effective date, those are a separate
+    // enrollment and must not be touched.
+    const key = normalizeClientKey(clientName);
+    const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
+    const ledgerToInsert = [];
+    for (const rec of matches) {
+      const direction = rec.commissionAmount >= 0 ? 1 : -1;
+      const agentPortion = direction * amt;
+      const newAmount = rec.commissionAmount - agentPortion;
+      await sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+      ledgerToInsert.push({ rule_id: rule.id, carrier: rec.carrier, client_name: rec.clientName, agent_name: agentName, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+    }
+    if (ledgerToInsert.length) {
+      await sbFetch(cfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
+    }
+    const matchAdjustments = {};
+    matches.forEach((rec) => { const direction = rec.commissionAmount >= 0 ? 1 : -1; matchAdjustments[rec.id] = direction * amt; });
+    setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
+    return matches.length;
+  }
+
   async function addPayableRule() {
     if (!cloudCfg || !payableClientName.trim() || !payableCarrier.trim() || !payableAgentName.trim() || !payableAmount || Number(payableAmount) <= 0 || !payableEffectiveDate) return;
     setAddingPayableRule(true);
     try {
       const amt = Number(payableAmount);
-      const inserted = await sbFetch(cloudCfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier: payableCarrier.trim(), client_name: payableClientName.trim(), agent_name: payableAgentName.trim(), amount_per_transaction: amt, effective_date: payableEffectiveDate }]) });
-      const rule = inserted[0];
-
-      // Retroactively adjust every existing matching record (payments AND
-      // chargebacks) at this exact effective date \u2014 if this client already has
-      // records under a different (newer) effective date, those are a separate
-      // enrollment and must not be touched.
-      const key = normalizeClientKey(payableClientName);
-      const matches = records.filter((r) => r.carrier === payableCarrier.trim() && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === payableEffectiveDate);
-      const ledgerToInsert = [];
-      for (const rec of matches) {
-        const direction = rec.commissionAmount >= 0 ? 1 : -1;
-        const agentPortion = direction * amt;
-        const newAmount = rec.commissionAmount - agentPortion;
-        await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
-        ledgerToInsert.push({ rule_id: rule.id, carrier: rec.carrier, client_name: rec.clientName, agent_name: payableAgentName.trim(), amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
-      }
-      if (ledgerToInsert.length) {
-        await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
-      }
-      const matchAdjustments = {};
-      matches.forEach((rec) => { const direction = rec.commissionAmount >= 0 ? 1 : -1; matchAdjustments[rec.id] = direction * amt; });
-      setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
+      const matchCount = await createPayableRuleAndApply(cloudCfg, payableCarrier.trim(), payableClientName.trim(), payableAgentName.trim(), amt, payableEffectiveDate);
       await loadFromCloud(cloudCfg);
-      showToast(`Rule added for effective date ${payableEffectiveDate} \u2014 corrected ${matches.length} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
+      showToast(`Rule added for effective date ${payableEffectiveDate} \u2014 corrected ${matchCount} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
       setPayableClientName(""); setPayableCarrier(""); setPayableAgentName(""); setPayableAmount(""); setPayableEffectiveDate("");
     } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
     setAddingPayableRule(false);
+  }
+
+  // ---------- BULK PAYABLE RULE IMPORT ----------
+  const [payFileName, setPayFileName] = useState("");
+  const [payHeaders, setPayHeaders] = useState([]);
+  const [payRows, setPayRows] = useState([]);
+  const [payCarrierCol, setPayCarrierCol] = useState("");
+  const [payClientCol, setPayClientCol] = useState("");
+  const [payEffDateCol, setPayEffDateCol] = useState("");
+  const [payAgentCol, setPayAgentCol] = useState("");
+  const [payAmountCol, setPayAmountCol] = useState("");
+  const [payImporting, setPayImporting] = useState(false);
+  const [payImportProgress, setPayImportProgress] = useState("");
+
+  function handlePayableFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!json.length) return;
+        setPayHeaders(Object.keys(json[0]));
+        setPayRows(json);
+        setPayFileName(file.name);
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function resetPayableImport() {
+    setPayFileName(""); setPayHeaders([]); setPayRows([]);
+    setPayCarrierCol(""); setPayClientCol(""); setPayEffDateCol(""); setPayAgentCol(""); setPayAmountCol("");
+  }
+  const payableImportValid = payCarrierCol && payClientCol && payEffDateCol && payAgentCol && payAmountCol;
+
+  async function commitPayableBulkImport() {
+    if (!cloudCfg || !payableImportValid) return;
+    setPayImporting(true);
+    let successCount = 0, skipCount = 0, totalMatches = 0;
+    try {
+      for (let i = 0; i < payRows.length; i++) {
+        const r = payRows[i];
+        const carrier = String(r[payCarrierCol] ?? "").trim();
+        const clientName = String(r[payClientCol] ?? "").trim();
+        const effDate = parseDateValue(r[payEffDateCol]);
+        const agentName = String(r[payAgentCol] ?? "").trim();
+        const amt = parseMoney(r[payAmountCol]);
+        if (!carrier || !clientName || !effDate || !agentName || !(amt > 0)) { skipCount++; continue; }
+        setPayImportProgress(`Applying rule ${i + 1} of ${payRows.length} \u2014 ${clientName}\u2026`);
+        try {
+          const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate);
+          totalMatches += matchCount;
+          successCount++;
+        } catch (e) { skipCount++; }
+      }
+      await loadFromCloud(cloudCfg);
+      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      resetPayableImport();
+    } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
+    setPayImporting(false);
+    setPayImportProgress("");
   }
 
   async function deletePayableRule(ruleId) {
@@ -2560,6 +2628,67 @@ export default function App() {
                   <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingPayableRule || !payableCarrier.trim() || !payableClientName.trim() || !payableAgentName.trim() || !payableAmount || !payableEffectiveDate} onClick={addPayableRule}>
                     {addingPayableRule ? "Applying\u2026" : "Add rule"}
                   </button>
+                </div>
+
+                <div className="pt-card">
+                  <h3>Bulk import payable rules</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Have a whole list of affected clients? Upload a spreadsheet with Carrier, Client name, Effective date, True agent, and Amount columns instead of adding them one at a time.</p>
+                  {!payFileName ? (
+                    <label className="pt-btn ghost">
+                      Choose file
+                      <input type="file" accept=".xlsx,.xls,.csv" onChange={handlePayableFile} style={{ display: "none" }} />
+                    </label>
+                  ) : (
+                    <>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {payFileName} \u00b7 {payRows.length} rows</div>
+                      <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
+                        <div className="pt-field">
+                          <label>Carrier column *</label>
+                          <select value={payCarrierCol} onChange={(e) => setPayCarrierCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Client name column *</label>
+                          <select value={payClientCol} onChange={(e) => setPayClientCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Effective date column *</label>
+                          <select value={payEffDateCol} onChange={(e) => setPayEffDateCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>True agent column *</label>
+                          <select value={payAgentCol} onChange={(e) => setPayAgentCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Amount owed column *</label>
+                          <select value={payAmountCol} onChange={(e) => setPayAmountCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="pt-row-between" style={{ marginTop: 12 }}>
+                        <div>{payImporting && <p className="pt-hint">{payImportProgress || "Working\u2026"}</p>}</div>
+                        <div className="pt-btn-row">
+                          <button className="pt-btn ghost" onClick={resetPayableImport} disabled={payImporting}>Cancel</button>
+                          <button className="pt-btn primary" disabled={!payableImportValid || payImporting} onClick={commitPayableBulkImport}>
+                            {payImporting ? "Applying\u2026" : `Add ${payRows.length} rules`}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div className="pt-card">
