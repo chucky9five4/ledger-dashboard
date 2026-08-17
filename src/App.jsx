@@ -1861,7 +1861,8 @@ export default function App() {
     if (month >= 6 && month <= 8) return { months: [6, 7, 8], label: "June, July, August", deadline: `${year}-09-30` };
     return { months: [9, 10, 11], label: "September, October, November", deadline: `${year}-12-31` };
   }
-  const [marketingAgent, setMarketingAgent] = useState("");
+  const MARKETING_AGREEMENT_AGENT = "Contreras Ibanez, Viancilena"; // this specific tool only covers her agreement
+  const [marketingAgent] = useState(MARKETING_AGREEMENT_AGENT);
   const [marketingAmount, setMarketingAmount] = useState("50");
   const currentMarketingQuarter = useMemo(() => marketingQuarterFor(new Date()), []);
   const firstSeenByClient = useMemo(() => {
@@ -3185,14 +3186,13 @@ export default function App() {
 
         {view === "marketing" && (
           <div>
-            <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Track marketing reimbursement for new clients \u2014 $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
+            <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Viancilena Contreras Ibanez's marketing agreement \u2014 $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
 
             <div className="pt-card">
               <div className="pt-mapping-grid">
                 <div className="pt-field">
                   <label>Agent</label>
-                  <input list="marketing-agent-options" value={marketingAgent} onChange={(e) => setMarketingAgent(e.target.value)} placeholder="e.g. Vazquez, Viancilena" />
-                  <datalist id="marketing-agent-options">{agentsListAll.map((a) => <option key={a} value={a} />)}</datalist>
+                  <input value={marketingAgent} disabled style={{ background: "#F5F3EC", color: "var(--muted)" }} />
                 </div>
                 <div className="pt-field">
                   <label>Amount per new client ($)</label>
