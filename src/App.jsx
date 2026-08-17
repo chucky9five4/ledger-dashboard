@@ -1843,6 +1843,59 @@ export default function App() {
     }).sort((a, b) => (a.clientName || "").localeCompare(b.clientName || "") || (a.effectiveDate || "").localeCompare(b.effectiveDate || ""));
   }, [payableLedger, selectedPayableAgent, payablesMonth, agentLookupMaps, records]);
 
+  // ---------- MARKETING BUDGET ----------
+  // $X per genuinely new client (never seen anywhere in the book before, under
+  // any agent or carrier), tied to a strict use-by deadline based on the
+  // client's effective date quarter, no rollover if missed.
+  function marketingQuarterFor(dateObj) {
+    const month = dateObj.getMonth() + 1; // 1-12
+    const year = dateObj.getFullYear();
+    if (month === 12 || month === 1 || month === 2) {
+      const dYear = month === 12 ? year + 1 : year;
+      return { months: [12, 1, 2], label: "December, January, February", deadline: `${dYear}-03-31` };
+    }
+    if (month >= 3 && month <= 5) return { months: [3, 4, 5], label: "March, April, May", deadline: `${year}-06-30` };
+    if (month >= 6 && month <= 8) return { months: [6, 7, 8], label: "June, July, August", deadline: `${year}-09-30` };
+    return { months: [9, 10, 11], label: "September, October, November", deadline: `${year}-12-31` };
+  }
+  const [marketingAgent, setMarketingAgent] = useState("");
+  const [marketingAmount, setMarketingAmount] = useState("50");
+  const currentMarketingQuarter = useMemo(() => marketingQuarterFor(new Date()), []);
+  const firstSeenByClient = useMemo(() => {
+    const map = {};
+    const consider = (clientName, dateStr) => {
+      if (!clientName || !dateStr) return;
+      const key = normalizeClientKey(clientName);
+      if (!map[key] || dateStr < map[key]) map[key] = dateStr;
+    };
+    records.forEach((r) => consider(r.clientName, r.effectiveDate));
+    membershipRecords.forEach((r) => consider(r.clientName, r.effectiveDate));
+    return map;
+  }, [records, membershipRecords]);
+  const marketingQuarterClients = useMemo(() => {
+    if (!marketingAgent) return [];
+    const resolvedTarget = normalizeNameKey(marketingAgent);
+    const quarterMonths = currentMarketingQuarter.months;
+    const seenThisBatch = new Set();
+    const rows = [];
+    records
+      .filter((r) => normalizeNameKey(resolveAgentName(r.agent, "", "", "")) === resolvedTarget && r.clientName && r.effectiveDate)
+      .filter((r) => quarterMonths.includes(parseInt(r.effectiveDate.slice(5, 7), 10)))
+      .forEach((r) => {
+        const ckey = normalizeClientKey(r.clientName);
+        if (seenThisBatch.has(ckey)) return; // only count each client once even if multiple policies this quarter
+        seenThisBatch.add(ckey);
+        const firstSeen = firstSeenByClient[ckey];
+        const isNew = firstSeen && firstSeen >= r.effectiveDate; // this occurrence IS (or ties) their earliest record anywhere
+        rows.push({ clientName: r.clientName, carrier: r.carrier, effectiveDate: r.effectiveDate, firstSeen: firstSeen || r.effectiveDate, isNew });
+      });
+    return rows.sort((a, b) => (a.isNew === b.isNew ? a.clientName.localeCompare(b.clientName) : a.isNew ? -1 : 1));
+  }, [records, marketingAgent, currentMarketingQuarter, firstSeenByClient, agentLookupMaps]);
+  const marketingNewCount = marketingQuarterClients.filter((c) => c.isNew).length;
+  const marketingDuplicateCount = marketingQuarterClients.filter((c) => !c.isNew).length;
+  const marketingBudgetTotal = marketingNewCount * (Number(marketingAmount) || 0);
+
+
   if (loading) {
     return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
   }
@@ -1857,6 +1910,7 @@ export default function App() {
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
     { key: "payables", label: "Agent payables", icon: UserPlus },
+    { key: "marketing", label: "Marketing budget", icon: Layers },
     { key: "settings", label: "Database connection", icon: Settings },
   ];
 
@@ -3117,6 +3171,59 @@ export default function App() {
                             </tr>
                           );
                         })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {view === "marketing" && (
+          <div>
+            <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Track marketing reimbursement for new clients \u2014 $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
+
+            <div className="pt-card">
+              <div className="pt-mapping-grid">
+                <div className="pt-field">
+                  <label>Agent</label>
+                  <input list="marketing-agent-options" value={marketingAgent} onChange={(e) => setMarketingAgent(e.target.value)} placeholder="e.g. Vazquez, Viancilena" />
+                  <datalist id="marketing-agent-options">{agentsListAll.map((a) => <option key={a} value={a} />)}</datalist>
+                </div>
+                <div className="pt-field">
+                  <label>Amount per new client ($)</label>
+                  <input type="number" step="0.01" value={marketingAmount} onChange={(e) => setMarketingAmount(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            {marketingAgent && (
+              <>
+                <div className="pt-cards pt-cards-3">
+                  <StatCard label="New clients this quarter" value={marketingNewCount} tone="ink" />
+                  <StatCard label="Budget accrued" value={fmtMoneyShort(marketingBudgetTotal)} money={marketingBudgetTotal} />
+                  <StatCard label="Use by" value={fmtDate(currentMarketingQuarter.deadline)} tone="ink" />
+                </div>
+                <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Current quarter: clients effective {currentMarketingQuarter.label}. {marketingDuplicateCount > 0 && `${marketingDuplicateCount} client(s) below were excluded \u2014 they already existed in the book before this quarter's sale, so no new marketing fund is owed for them.`}</p>
+
+                <div className="pt-card">
+                  <h3>This quarter's clients</h3>
+                  {marketingQuarterClients.length === 0 ? (
+                    <p className="pt-hint">No clients found for this agent with an effective date in {currentMarketingQuarter.label}.</p>
+                  ) : (
+                    <table className="pt-table">
+                      <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th>First seen anywhere</th></tr></thead>
+                      <tbody>
+                        {marketingQuarterClients.map((c) => (
+                          <tr key={c.clientName}>
+                            <td><span className={"pt-status-chip " + (c.isNew ? "pt-status-green" : "pt-status-gray")}>{c.isNew ? "New" : "Duplicate"}</span></td>
+                            <td>{c.clientName}</td>
+                            <td>{c.carrier}</td>
+                            <td>{fmtDate(c.effectiveDate)}</td>
+                            <td>{fmtDate(c.firstSeen)}</td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   )}
