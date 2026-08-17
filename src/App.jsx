@@ -53,7 +53,10 @@ function normalizeNameKey(s) {
 }
 function normalizeClientKey(s) {
   const cleaned = String(s || "").toUpperCase().replace(/[,.]/g, " ").trim();
-  const tokens = cleaned.split(/\s+/).filter(Boolean).sort();
+  // Drop single-letter tokens (middle initials) so "Suarez, Maria I" matches
+  // "Maria Suarez" and "Suarez, Maria" \u2014 a real first/last name is essentially
+  // never just one letter, so this is safe.
+  const tokens = cleaned.split(/\s+/).filter(Boolean).filter((t) => t.length > 1).sort();
   return tokens.join(" ");
 }
 const MEMBER_MAPPING_FIELDS = [
