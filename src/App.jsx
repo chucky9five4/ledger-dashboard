@@ -391,10 +391,12 @@ const MIGRATION_SQL6 = `create table if not exists agent_payable_rules (
   amount_per_transaction numeric not null,
   effective_date date,
   active boolean default true,
+  bulk_batch_id text,
   created_at timestamptz default now()
 );
 alter table agent_payable_rules add column if not exists active boolean default true;
 alter table agent_payable_rules add column if not exists effective_date date;
+alter table agent_payable_rules add column if not exists bulk_batch_id text;
 
 create table if not exists agent_comp_rules (
   id uuid primary key default gen_random_uuid(),
@@ -630,7 +632,7 @@ export default function App() {
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
-      setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false })));
+      setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "" })));
       const compRules = await sbFetchAll(cfg, "agent_comp_rules?select=*&order=created_at.desc");
       setAgentCompRules((compRules || []).map((r) => ({ id: r.id, carrier: r.carrier, agentName: r.agent_name, renewalAmount: Number(r.renewal_amount), firstYearAmountPerMonth: Number(r.first_year_amount_per_month), active: r.active !== false })));
       const ledger = await sbFetchAll(cfg, "agent_payable_ledger?select=*&order=created_at.desc");
@@ -1609,14 +1611,17 @@ export default function App() {
   const [payableEffectiveDate, setPayableEffectiveDate] = useState("");
   const [addingPayableRule, setAddingPayableRule] = useState(false);
 
-  async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate) {
+  async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate, batchId) {
     const agentName = resolveAgentName(agentNameRaw, "", "", "");
-    const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate }]) });
+    const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate, bulk_batch_id: batchId || null }]) });
     const rule = inserted[0];
     // Retroactively adjust every existing matching record (payments AND
     // chargebacks) at this exact effective date \u2014 if this client already has
     // records under a different (newer) effective date, those are a separate
-    // enrollment and must not be touched.
+    // enrollment and must not be touched. This only corrects the dollar amount;
+    // the agent field (AOR) is left alone on purpose \u2014 that's a separate,
+    // deliberate action via Client Lookup \u2192 Reassign, not something a payable
+    // rule should silently change.
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
     const ledgerToInsert = [];
@@ -1724,9 +1729,12 @@ export default function App() {
   const [payFileName, setPayFileName] = useState("");
   const [payHeaders, setPayHeaders] = useState([]);
   const [payRows, setPayRows] = useState([]);
+  const [payCarrierMode, setPayCarrierMode] = useState("fixed");
+  const [payCarrierFixed, setPayCarrierFixed] = useState("");
   const [payCarrierCol, setPayCarrierCol] = useState("");
   const [payClientCol, setPayClientCol] = useState("");
   const [payEffDateCol, setPayEffDateCol] = useState("");
+  const [payWrongAgentCol, setPayWrongAgentCol] = useState("");
   const [payAgentCol, setPayAgentCol] = useState("");
   const [payAmountCol, setPayAmountCol] = useState("");
   const [payImporting, setPayImporting] = useState(false);
@@ -1752,45 +1760,116 @@ export default function App() {
   }
   function resetPayableImport() {
     setPayFileName(""); setPayHeaders([]); setPayRows([]);
-    setPayCarrierCol(""); setPayClientCol(""); setPayEffDateCol(""); setPayAgentCol(""); setPayAmountCol("");
+    setPayCarrierMode("fixed"); setPayCarrierFixed(""); setPayCarrierCol("");
+    setPayClientCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol("");
   }
-  const payableImportValid = payCarrierCol && payClientCol && payEffDateCol && payAgentCol && payAmountCol;
+  const payableImportValid = (payCarrierMode === "fixed" ? payCarrierFixed.trim() : payCarrierCol) && payClientCol && payEffDateCol && payAgentCol && payAmountCol;
+  const payableSkipCount = useMemo(() => {
+    if (!payWrongAgentCol || !payAgentCol || !payRows.length) return 0;
+    return payRows.filter((r) => String(r[payWrongAgentCol] ?? "").trim() === String(r[payAgentCol] ?? "").trim()).length;
+  }, [payRows, payWrongAgentCol, payAgentCol]);
 
   async function commitPayableBulkImport() {
     if (!cloudCfg || !payableImportValid) return;
     setPayImporting(true);
-    let successCount = 0, skipCount = 0, totalMatches = 0;
+    const batchId = "bulkpay_" + Date.now();
+    let successCount = 0, skipCount = 0, alreadyCorrectCount = 0, totalMatches = 0;
     try {
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
-        const carrier = String(r[payCarrierCol] ?? "").trim();
+        const carrier = payCarrierMode === "fixed" ? payCarrierFixed.trim() : String(r[payCarrierCol] ?? "").trim();
         const clientName = String(r[payClientCol] ?? "").trim();
         const effDate = parseDateValue(r[payEffDateCol]);
         const agentName = String(r[payAgentCol] ?? "").trim();
         const amt = parseMoney(r[payAmountCol]);
+        // If a "wrong agent" column is mapped, skip any row where it already
+        // matches the true agent \u2014 that row doesn't need a correction at all.
+        if (payWrongAgentCol) {
+          const wrongAgent = String(r[payWrongAgentCol] ?? "").trim();
+          if (wrongAgent && wrongAgent === agentName) { alreadyCorrectCount++; continue; }
+        }
         if (!carrier || !clientName || !effDate || !agentName || !(amt > 0)) { skipCount++; continue; }
         setPayImportProgress(`Applying rule ${i + 1} of ${payRows.length} \u2014 ${clientName}\u2026`);
         try {
-          const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate);
+          const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate, batchId);
           totalMatches += matchCount;
           successCount++;
         } catch (e) { skipCount++; }
       }
       await loadFromCloud(cloudCfg);
-      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetPayableImport();
     } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
     setPayImporting(false);
     setPayImportProgress("");
   }
 
+  async function revertLedgerEntries(cfg, ledgerEntries) {
+    // Undo each correction by adding the ledger amount back onto the current
+    // stored commission amount \u2014 this is the exact inverse of what
+    // createPayableRuleAndApply did (which subtracted it).
+    const policyIds = [...new Set(ledgerEntries.map((l) => l.policyId).filter(Boolean))];
+    if (policyIds.length) {
+      const currentRecords = records.filter((r) => policyIds.includes(r.id));
+      const currentById = {};
+      currentRecords.forEach((r) => { currentById[r.id] = r; });
+      const netByPolicy = {};
+      ledgerEntries.forEach((l) => { if (l.policyId) netByPolicy[l.policyId] = (netByPolicy[l.policyId] || 0) + l.amount; });
+      for (const policyId of Object.keys(netByPolicy)) {
+        const rec = currentById[policyId];
+        if (!rec) continue; // record may have since been deleted independently
+        const restoredAmount = rec.commissionAmount + netByPolicy[policyId];
+        await sbFetch(cfg, `policies?id=eq.${policyId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: restoredAmount }) });
+      }
+      setRecords((prev) => prev.map((r) => (netByPolicy[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount + netByPolicy[r.id] } : r)));
+    }
+  }
+
   async function deletePayableRule(ruleId) {
     if (!cloudCfg) return;
     try {
+      const entries = payableLedger.filter((l) => l.ruleId === ruleId);
+      await revertLedgerEntries(cloudCfg, entries);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
       await sbFetch(cloudCfg, `agent_payable_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast("Rule removed. Note: dollar amounts already corrected on past records are not reverted automatically.");
+      showToast(`Rule removed and ${entries.length} record(s) restored to their original amount.`);
       await loadFromCloud(cloudCfg);
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
+  }
+
+  const payableBulkBatches = useMemo(() => {
+    const map = {};
+    payableRules.forEach((r) => {
+      if (!r.bulkBatchId) return;
+      if (!map[r.bulkBatchId]) map[r.bulkBatchId] = { batchId: r.bulkBatchId, ruleCount: 0, ruleIds: [] };
+      map[r.bulkBatchId].ruleCount++;
+      map[r.bulkBatchId].ruleIds.push(r.id);
+    });
+    return Object.values(map).map((b) => {
+      const entries = payableLedger.filter((l) => b.ruleIds.includes(l.ruleId));
+      const totalAmount = entries.reduce((s, l) => s + l.amount, 0);
+      const ts = parseInt(b.batchId.replace("bulkpay_", ""), 10);
+      return { ...b, totalAmount, when: isNaN(ts) ? "" : new Date(ts).toLocaleString() };
+    }).sort((a, b) => b.batchId.localeCompare(a.batchId));
+  }, [payableRules, payableLedger]);
+  const [deletingBatchId, setDeletingBatchId] = useState(null);
+  const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState(null);
+
+  async function deleteBulkBatch(batchId) {
+    if (!cloudCfg) return;
+    setDeletingBatchId(batchId);
+    try {
+      const ruleIds = payableRules.filter((r) => r.bulkBatchId === batchId).map((r) => r.id);
+      const entries = payableLedger.filter((l) => ruleIds.includes(l.ruleId));
+      await revertLedgerEntries(cloudCfg, entries);
+      const idFilter = pgInList(ruleIds);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, `agent_payable_rules?id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Batch removed \u2014 ${ruleIds.length} rule(s) deleted, ${entries.length} record(s) restored to their original amount.`);
+      setConfirmDeleteBatchId(null);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not delete batch: " + e.message, "error"); }
+    setDeletingBatchId(null);
   }
 
   async function togglePayableRuleActive(ruleId, currentlyActive) {
@@ -3039,7 +3118,7 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Bulk import payable rules</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Have a whole list of affected clients? Upload a spreadsheet with Carrier, Client name, Effective date, True agent, and Amount columns instead of adding them one at a time.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Only corrects the dollar amount owed; the agent of record itself isn't touched \u2014 change that yourself via Client Lookup whenever you're ready.</p>
                   {!payFileName ? (
                     <label className="pt-btn ghost">
                       Choose file
@@ -3048,14 +3127,35 @@ export default function App() {
                   ) : (
                     <>
                       <div className="pt-file-chip"><FileSpreadsheet size={14} /> {payFileName} \u00b7 {payRows.length} rows</div>
-                      <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
-                        <div className="pt-field">
-                          <label>Carrier column *</label>
-                          <select value={payCarrierCol} onChange={(e) => setPayCarrierCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
-                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                          </select>
+
+                      <div style={{ marginTop: 12, marginBottom: 4 }}>
+                        <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
+                        <div className="pt-btn-row">
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={payCarrierMode === "fixed"} onChange={() => setPayCarrierMode("fixed")} /> This whole file is one carrier
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={payCarrierMode === "column"} onChange={() => setPayCarrierMode("column")} /> Read carrier from a column
+                          </label>
                         </div>
+                      </div>
+
+                      <div className="pt-mapping-grid" style={{ marginTop: 8 }}>
+                        {payCarrierMode === "fixed" ? (
+                          <div className="pt-field">
+                            <label>Carrier *</label>
+                            <input list="carrier-options-bulkpay" value={payCarrierFixed} onChange={(e) => setPayCarrierFixed(e.target.value)} placeholder="e.g. Aetna" />
+                            <datalist id="carrier-options-bulkpay">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                          </div>
+                        ) : (
+                          <div className="pt-field">
+                            <label>Carrier column *</label>
+                            <select value={payCarrierCol} onChange={(e) => setPayCarrierCol(e.target.value)}>
+                              <option value="">\u2014 choose \u2014</option>
+                              {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                        )}
                         <div className="pt-field">
                           <label>Client name column *</label>
                           <select value={payClientCol} onChange={(e) => setPayClientCol(e.target.value)}>
@@ -3067,6 +3167,13 @@ export default function App() {
                           <label>Effective date column *</label>
                           <select value={payEffDateCol} onChange={(e) => setPayEffDateCol(e.target.value)}>
                             <option value="">\u2014 choose \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Wrong/writing agent column (optional)</label>
+                          <select value={payWrongAgentCol} onChange={(e) => setPayWrongAgentCol(e.target.value)}>
+                            <option value="">Not in this file / skip detection</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -3085,18 +3192,51 @@ export default function App() {
                           </select>
                         </div>
                       </div>
+                      {payWrongAgentCol && payAgentCol && (
+                        <p className="pt-hint" style={{ marginTop: 8 }}>{payableSkipCount} row(s) already show the correct agent and will be skipped automatically \u2014 only genuine mismatches get a rule.</p>
+                      )}
                       <div className="pt-row-between" style={{ marginTop: 12 }}>
                         <div>{payImporting && <p className="pt-hint">{payImportProgress || "Working\u2026"}</p>}</div>
                         <div className="pt-btn-row">
                           <button className="pt-btn ghost" onClick={resetPayableImport} disabled={payImporting}>Cancel</button>
                           <button className="pt-btn primary" disabled={!payableImportValid || payImporting} onClick={commitPayableBulkImport}>
-                            {payImporting ? "Applying\u2026" : `Add ${payRows.length} rules`}
+                            {payImporting ? "Applying\u2026" : `Process ${payRows.length} rows`}
                           </button>
                         </div>
                       </div>
                     </>
                   )}
                 </div>
+
+                {payableBulkBatches.length > 0 && (
+                  <div className="pt-card">
+                    <h3>Past bulk imports</h3>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>Deleting a batch restores every record it touched back to its original dollar amount \u2014 a real undo, not just removing the tracking.</p>
+                    <table className="pt-table">
+                      <thead><tr><th>When</th><th className="num">Rules</th><th className="num">Amount tracked</th><th></th></tr></thead>
+                      <tbody>
+                        {payableBulkBatches.map((b) => (
+                          <tr key={b.batchId}>
+                            <td>{b.when || b.batchId}</td>
+                            <td className="num">{b.ruleCount}</td>
+                            <td className="num"><Money v={b.totalAmount} /></td>
+                            <td className="num">
+                              {confirmDeleteBatchId === b.batchId ? (
+                                <span className="pt-confirm-inline">
+                                  Delete {b.ruleCount} rule(s) and restore affected records?
+                                  <button className="pt-btn danger small" disabled={deletingBatchId === b.batchId} onClick={() => deleteBulkBatch(b.batchId)}>{deletingBatchId === b.batchId ? "Working\u2026" : "Yes, delete"}</button>
+                                  <button className="pt-btn ghost small" onClick={() => setConfirmDeleteBatchId(null)}>Cancel</button>
+                                </span>
+                              ) : (
+                                <button className="pt-btn ghost small" onClick={() => setConfirmDeleteBatchId(b.batchId)}><Trash2 size={12} /> Delete batch</button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 <div className="pt-card">
                   <h3>Agent compensation rules</h3>
