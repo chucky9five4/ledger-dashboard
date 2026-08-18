@@ -1894,6 +1894,31 @@ export default function App() {
     }
   }
 
+  const [resettingPayables, setResettingPayables] = useState(false);
+  const [confirmResetPayables, setConfirmResetPayables] = useState(false);
+  async function resetAllPayables() {
+    if (!cloudCfg) return;
+    setResettingPayables(true);
+    try {
+      // Only reverts client-specific payable rules (the ones tied to one
+      // client + effective date, created via "Add a payable rule" or bulk
+      // import) \u2014 leaves Agent Compensation Rules (like Charles Vazquez's
+      // permanent Aetna arrangement) completely untouched, since those are a
+      // separate, working setup unrelated to this cleanup.
+      const clientRuleEntries = payableLedger.filter((l) => l.sourceType !== "agent_comp");
+      await revertLedgerEntries(cloudCfg, clientRuleEntries);
+      const entryIds = clientRuleEntries.map((l) => l.id);
+      if (entryIds.length) {
+        await sbFetch(cloudCfg, `agent_payable_ledger?id=${encodeURIComponent(pgInList(entryIds))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      }
+      await sbFetch(cloudCfg, "agent_payable_rules?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Reset complete \u2014 ${clientRuleEntries.length} correction(s) reverted, all client-specific payable rules cleared. Agent Compensation Rules (like Charles Vazquez's) were left untouched.`);
+      setConfirmResetPayables(false);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Reset failed: " + e.message, "error"); }
+    setResettingPayables(false);
+  }
+
   async function deletePayableRule(ruleId) {
     if (!cloudCfg) return;
     try {
@@ -3091,7 +3116,20 @@ export default function App() {
 
         {view === "payables" && (
           <div>
-            <div className="pt-page-head"><div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record.</p></div></div>
+            <div className="pt-page-head">
+              <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record.</p></div>
+              {cloudCfg && payablesAvailable && (
+                confirmResetPayables ? (
+                  <span className="pt-confirm-inline">
+                    This reverts every client-specific correction back to its original amount and clears all rules. Agent Compensation Rules (Charles's) are left alone. Sure?
+                    <button className="pt-btn danger small" disabled={resettingPayables} onClick={resetAllPayables}>{resettingPayables ? "Working\u2026" : "Yes, start over"}</button>
+                    <button className="pt-btn ghost small" onClick={() => setConfirmResetPayables(false)}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="pt-btn danger" onClick={() => setConfirmResetPayables(true)}><Trash2 size={14} /> Start over</button>
+                )
+              )}
+            </div>
 
             {!cloudCfg ? (
               <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use Agent Payables.</p></div>
