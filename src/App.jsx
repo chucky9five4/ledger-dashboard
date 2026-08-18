@@ -633,11 +633,11 @@ export default function App() {
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
-      setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "" })));
+      setPayableRules((rules || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amountPerTransaction: Number(r.amount_per_transaction), effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "", createdAt: r.created_at || "" })));
       const compRules = await sbFetchAll(cfg, "agent_comp_rules?select=*&order=created_at.desc");
       setAgentCompRules((compRules || []).map((r) => ({ id: r.id, carrier: r.carrier, agentName: r.agent_name, renewalAmount: Number(r.renewal_amount), firstYearAmountPerMonth: Number(r.first_year_amount_per_month), active: r.active !== false })));
       const ledger = await sbFetchAll(cfg, "agent_payable_ledger?select=*&order=created_at.desc");
-      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, batchId: r.batch_id || "", sourceType: r.source_type || "client_rule", carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
+      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, batchId: r.batch_id || "", sourceType: r.source_type || "client_rule", carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date, createdAt: r.created_at || "" })));
       setPayablesAvailable(true);
       setCompAvailable(true);
     } catch (e) { setPayablesAvailable(false); setCompAvailable(false); }
@@ -1946,26 +1946,52 @@ export default function App() {
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
   }
 
-  const [clearingAllPayables, setClearingAllPayables] = useState(false);
-  const [confirmClearAllPayables, setConfirmClearAllPayables] = useState(false);
-  async function clearEveryClientPayableRule() {
-    // Catches everything: every client-specific rule (whether it has a batch
-    // id or not) and every ledger entry not tied to an Agent Compensation
-    // Rule \u2014 including one-time corrections made before batch tracking
-    // existed. Agent Compensation Rules (Charles's) are left untouched.
-    if (!cloudCfg) return;
-    setClearingAllPayables(true);
+  const [selectedRuleIds, setSelectedRuleIds] = useState(new Set());
+  function toggleRuleSelected(ruleId) {
+    setSelectedRuleIds((prev) => { const next = new Set(prev); if (next.has(ruleId)) next.delete(ruleId); else next.add(ruleId); return next; });
+  }
+  const [deletingSelectedRules, setDeletingSelectedRules] = useState(false);
+  const [confirmDeleteSelectedRules, setConfirmDeleteSelectedRules] = useState(false);
+  async function deleteSelectedRules() {
+    if (!cloudCfg || selectedRuleIds.size === 0) return;
+    setDeletingSelectedRules(true);
     try {
-      const entriesToRevert = payableLedger.filter((l) => l.sourceType !== "agent_comp");
-      await revertLedgerEntries(cloudCfg, entriesToRevert);
-      await sbFetch(cloudCfg, "agent_payable_ledger?source_type=eq.client_rule", { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await sbFetch(cloudCfg, "agent_payable_ledger?source_type=eq.one_time_correction", { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await sbFetch(cloudCfg, "agent_payable_rules?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast(`Done \u2014 ${entriesToRevert.length} record(s) restored to their original amount, every client-specific rule removed.`);
-      setConfirmClearAllPayables(false);
+      const ids = Array.from(selectedRuleIds);
+      const entries = payableLedger.filter((l) => ids.includes(l.ruleId));
+      await revertLedgerEntries(cloudCfg, entries);
+      const idFilter = pgInList(ids);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, `agent_payable_rules?id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`${ids.length} rule(s) removed, ${entries.length} record(s) restored to their original amount.`);
+      setSelectedRuleIds(new Set());
+      setConfirmDeleteSelectedRules(false);
       await loadFromCloud(cloudCfg);
-    } catch (e) { showToast("Could not finish clearing: " + e.message, "error"); }
-    setClearingAllPayables(false);
+    } catch (e) { showToast("Could not delete selected rules: " + e.message, "error"); }
+    setDeletingSelectedRules(false);
+  }
+
+  // Standalone one-time-correction ledger entries have no rule at all, so they
+  // need their own selectable list to find and revert individually.
+  const oneTimeCorrectionEntries = useMemo(() => payableLedger.filter((l) => l.sourceType === "one_time_correction").sort((a, b) => (b.transactionDate || "").localeCompare(a.transactionDate || "")), [payableLedger]);
+  const [selectedCorrectionIds, setSelectedCorrectionIds] = useState(new Set());
+  function toggleCorrectionSelected(id) {
+    setSelectedCorrectionIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  }
+  const [deletingSelectedCorrections, setDeletingSelectedCorrections] = useState(false);
+  async function deleteSelectedCorrections() {
+    if (!cloudCfg || selectedCorrectionIds.size === 0) return;
+    setDeletingSelectedCorrections(true);
+    try {
+      const ids = Array.from(selectedCorrectionIds);
+      const entries = payableLedger.filter((l) => ids.includes(l.id));
+      await revertLedgerEntries(cloudCfg, entries);
+      const idFilter = pgInList(ids);
+      await sbFetch(cloudCfg, `agent_payable_ledger?id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`${ids.length} correction(s) undone, restored to their original amount.`);
+      setSelectedCorrectionIds(new Set());
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not undo selected corrections: " + e.message, "error"); }
+    setDeletingSelectedCorrections(false);
   }
 
   async function togglePayableRuleActive(ruleId, currentlyActive) {
@@ -3129,17 +3155,6 @@ export default function App() {
           <div>
             <div className="pt-page-head">
               <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
-              {cloudCfg && payablesAvailable && (
-                confirmClearAllPayables ? (
-                  <span className="pt-confirm-inline">
-                    Restore every affected record to its original amount and remove all client-specific rules? Charles's Agent Compensation Rule is not touched.
-                    <button className="pt-btn danger small" disabled={clearingAllPayables} onClick={clearEveryClientPayableRule}>{clearingAllPayables ? "Working\u2026" : "Yes, clear everything"}</button>
-                    <button className="pt-btn ghost small" onClick={() => setConfirmClearAllPayables(false)}>Cancel</button>
-                  </span>
-                ) : (
-                  <button className="pt-btn danger" onClick={() => setConfirmClearAllPayables(true)}><Trash2 size={14} /> Undo all client-specific corrections</button>
-                )
-              )}
             </div>
 
             {!cloudCfg ? (
@@ -3449,17 +3464,34 @@ export default function App() {
                 </div>
 
                 <div className="pt-card">
-                  <h3>Rules</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one.</p>
+                  <div className="pt-row-between">
+                    <h3>Rules</h3>
+                    <div className="pt-btn-row">
+                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRules.filter((r) => r.createdAt && (Date.now() - new Date(r.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((r) => r.id)))}>Select last 2 hours</button>
+                      {selectedRuleIds.size > 0 && (
+                        confirmDeleteSelectedRules ? (
+                          <span className="pt-confirm-inline">
+                            Delete {selectedRuleIds.size} rule(s) and restore their records?
+                            <button className="pt-btn danger small" disabled={deletingSelectedRules} onClick={deleteSelectedRules}>{deletingSelectedRules ? "Working\u2026" : "Yes, delete"}</button>
+                            <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedRules(false)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button className="pt-btn danger small" onClick={() => setConfirmDeleteSelectedRules(true)}><Trash2 size={12} /> Delete {selectedRuleIds.size} selected</button>
+                        )
+                      )}
+                    </div>
+                  </div>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
                   {payableRules.length === 0 ? <p className="pt-hint">No payable rules yet.</p> : (
                     <table className="pt-table">
-                      <thead><tr><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>Owed to</th><th className="num">Per payment</th><th className="num">Total recognized</th><th></th></tr></thead>
+                      <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>Owed to</th><th className="num">Per payment</th><th className="num">Total recognized</th><th>Created</th><th></th></tr></thead>
                       <tbody>
                         {payableRules.map((rule) => {
                           const entries = payableLedger.filter((l) => l.ruleId === rule.id);
                           const total = entries.reduce((s, l) => s + l.amount, 0);
                           return (
                             <tr key={rule.id}>
+                              <td><input type="checkbox" checked={selectedRuleIds.has(rule.id)} onChange={() => toggleRuleSelected(rule.id)} /></td>
                               <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
                               <td>{rule.clientName}</td>
                               <td>{rule.carrier}</td>
@@ -3467,6 +3499,7 @@ export default function App() {
                               <td>{rule.agentName}</td>
                               <td className="num mono">{fmtMoney(rule.amountPerTransaction)}</td>
                               <td className="num"><Money v={total} /></td>
+                              <td>{rule.createdAt ? new Date(rule.createdAt).toLocaleString() : "\u2014"}</td>
                               <td className="num">
                                 <div className="pt-btn-row">
                                   <button className="pt-btn ghost small" onClick={() => togglePayableRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
@@ -3480,6 +3513,38 @@ export default function App() {
                     </table>
                   )}
                 </div>
+
+                {oneTimeCorrectionEntries.length > 0 && (
+                  <div className="pt-card">
+                    <div className="pt-row-between">
+                      <h3>One-time corrections</h3>
+                      <div className="pt-btn-row">
+                        <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.filter((e) => e.createdAt && (Date.now() - new Date(e.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((e) => e.id)))}>Select last 2 hours</button>
+                        {selectedCorrectionIds.size > 0 && (
+                          <button className="pt-btn danger small" disabled={deletingSelectedCorrections} onClick={deleteSelectedCorrections}>
+                            {deletingSelectedCorrections ? "Working\u2026" : <><Trash2 size={12} /> Undo {selectedCorrectionIds.size} selected</>}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>These came from the "One-time historical correction" tool \u2014 no rule attached, so they're listed individually here. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
+                    <table className="pt-table">
+                      <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th className="num">Amount</th><th>Created</th></tr></thead>
+                      <tbody>
+                        {oneTimeCorrectionEntries.map((entry) => (
+                          <tr key={entry.id}>
+                            <td><input type="checkbox" checked={selectedCorrectionIds.has(entry.id)} onChange={() => toggleCorrectionSelected(entry.id)} /></td>
+                            <td>{entry.clientName || "\u2014"}</td>
+                            <td>{entry.carrier}</td>
+                            <td>{fmtDate(entry.transactionDate)}</td>
+                            <td className="num"><Money v={entry.amount} /></td>
+                            <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "\u2014"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </>
             )}
           </div>
