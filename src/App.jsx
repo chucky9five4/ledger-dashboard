@@ -425,6 +425,7 @@ create table if not exists agent_payable_ledger (
 alter table agent_payable_ledger add column if not exists transaction_date date;
 alter table agent_payable_ledger add column if not exists source_type text default 'client_rule';
 alter table agent_payable_ledger drop constraint if exists agent_payable_ledger_rule_id_fkey;
+alter table agent_payable_ledger add column if not exists batch_id text;
 alter table policies add column if not exists term_date date;
 
 alter table agent_payable_rules enable row level security;
@@ -636,7 +637,7 @@ export default function App() {
       const compRules = await sbFetchAll(cfg, "agent_comp_rules?select=*&order=created_at.desc");
       setAgentCompRules((compRules || []).map((r) => ({ id: r.id, carrier: r.carrier, agentName: r.agent_name, renewalAmount: Number(r.renewal_amount), firstYearAmountPerMonth: Number(r.first_year_amount_per_month), active: r.active !== false })));
       const ledger = await sbFetchAll(cfg, "agent_payable_ledger?select=*&order=created_at.desc");
-      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, sourceType: r.source_type || "client_rule", carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
+      setPayableLedger((ledger || []).map((r) => ({ id: r.id, ruleId: r.rule_id, batchId: r.batch_id || "", sourceType: r.source_type || "client_rule", carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, amount: Number(r.amount), policyId: r.policy_id, transactionDate: r.transaction_date || "", paid: r.paid, paidDate: r.paid_date })));
       setPayablesAvailable(true);
       setCompAvailable(true);
     } catch (e) { setPayablesAvailable(false); setCompAvailable(false); }
@@ -1020,9 +1021,20 @@ export default function App() {
   async function deleteBatch(batchId) {
     const batch = batches.find((b) => b.id === batchId);
     const isMembership = batch && batch.batchType === "membership";
+    const isPayableRule = batch && batch.batchType === "payable_rule";
+    const isPayableCorrection = batch && batch.batchType === "payable_correction";
     if (cloudCfg) {
       try {
-        if (isMembership) {
+        if (isPayableRule || isPayableCorrection) {
+          const entries = payableLedger.filter((l) => l.batchId === batchId);
+          await revertLedgerEntries(cloudCfg, entries);
+          if (entries.length) {
+            await sbFetch(cloudCfg, `agent_payable_ledger?batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+          }
+          if (isPayableRule) {
+            await sbFetch(cloudCfg, `agent_payable_rules?bulk_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+          }
+        } else if (isMembership) {
           await sbFetch(cloudCfg, `membership_updates?upload_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
         } else {
           await sbFetch(cloudCfg, `policies?upload_batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
@@ -1030,7 +1042,12 @@ export default function App() {
         }
         await sbFetch(cloudCfg, `upload_batches?id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
         setBatches((prev) => prev.filter((b) => b.id !== batchId));
-        showToast(isMembership ? "Membership import removed. Note: status changes it already applied to policies aren't automatically reverted." : "Import removed.");
+        if (isPayableRule || isPayableCorrection) {
+          showToast("Upload removed \u2014 every affected record restored to its original amount.");
+          await loadFromCloud(cloudCfg);
+        } else {
+          showToast(isMembership ? "Membership import removed. Note: status changes it already applied to policies aren't automatically reverted." : "Import removed.");
+        }
       } catch (e) { showToast("Could not delete: " + e.message, "error"); }
     } else {
       const nextRecords = records.filter((r) => r.uploadBatchId !== batchId);
@@ -1625,13 +1642,13 @@ export default function App() {
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
     const ledgerToInsert = [];
-    for (const rec of matches) {
+    await Promise.all(matches.map((rec) => {
       const direction = rec.commissionAmount >= 0 ? 1 : -1;
       const agentPortion = direction * amt;
       const newAmount = rec.commissionAmount - agentPortion;
-      await sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
-      ledgerToInsert.push({ rule_id: rule.id, carrier: rec.carrier, client_name: rec.clientName, agent_name: agentName, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
-    }
+      ledgerToInsert.push({ rule_id: rule.id, batch_id: batchId || null, carrier: rec.carrier, client_name: rec.clientName, agent_name: agentName, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+      return sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+    }));
     if (ledgerToInsert.length) {
       await sbFetch(cfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
     }
@@ -1810,8 +1827,13 @@ export default function App() {
   async function commitOneTimeCorrection() {
     if (!cloudCfg || !correctImportValid) return;
     setCorrecting(true);
+    const batchId = "b_" + Date.now();
+    const carrierLabel = correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : "Multiple";
     let rowsProcessed = 0, recordsFixed = 0, skipCount = 0;
+    const ledgerToInsert = [];
     try {
+      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ id: batchId, carrier: carrierLabel, file_name: correctFileName, uploaded_at: new Date().toISOString(), row_count: correctRows.length, batch_type: "payable_correction" }]) });
+      setBatches((prev) => [...prev, { id: batchId, carrier: carrierLabel, fileName: correctFileName, uploadedAt: new Date().toISOString(), rowCount: correctRows.length, batchType: "payable_correction" }]);
       for (let i = 0; i < correctRows.length; i++) {
         const r = correctRows[i];
         const carrier = correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : String(r[correctCarrierCol] ?? "").trim();
@@ -1822,16 +1844,24 @@ export default function App() {
         setCorrectProgress(`Correcting ${i + 1} of ${correctRows.length} \u2014 ${clientName}\u2026`);
         const key = normalizeClientKey(clientName);
         const matches = records.filter((rec) => rec.carrier === carrier && normalizeClientKey(rec.clientName) === key && rec.commissionAmount !== 0 && rec.effectiveDate === effDate);
-        for (const rec of matches) {
+        await Promise.all(matches.map((rec) => {
           const direction = rec.commissionAmount >= 0 ? 1 : -1;
-          const newAmount = rec.commissionAmount - direction * amt;
-          await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+          const changeAmount = direction * amt;
+          const newAmount = rec.commissionAmount - changeAmount;
+          // Logged so it can be found and reverted via Manage Data, but tagged
+          // one_time_correction so it never shows up in any "owed to agent"
+          // report \u2014 exactly what was asked for: fix the number, track nothing.
+          ledgerToInsert.push({ rule_id: null, batch_id: batchId, source_type: "one_time_correction", carrier: rec.carrier, client_name: rec.clientName, agent_name: "", amount: changeAmount, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
           recordsFixed++;
-        }
+          return sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+        }));
         rowsProcessed++;
       }
+      if (ledgerToInsert.length) {
+        await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
+      }
       await loadFromCloud(cloudCfg);
-      showToast(`Corrected ${recordsFixed} record(s) across ${rowsProcessed} client(s). No rule or tracking was created \u2014 this was a one-time fix only.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Corrected ${recordsFixed} record(s) across ${rowsProcessed} client(s). Nothing shows as owed anywhere \u2014 find this upload in Manage Data if you ever need to delete/revert it.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetCorrectImport();
     } catch (e) { showToast("Correction failed: " + e.message, "error"); }
     setCorrecting(false);
@@ -1841,9 +1871,12 @@ export default function App() {
   async function commitPayableBulkImport() {
     if (!cloudCfg || !payableImportValid) return;
     setPayImporting(true);
-    const batchId = "bulkpay_" + Date.now();
+    const batchId = "b_" + Date.now();
+    const carrierLabel = payCarrierMode === "fixed" ? payCarrierFixed.trim() : "Multiple";
     let successCount = 0, skipCount = 0, alreadyCorrectCount = 0, totalMatches = 0;
     try {
+      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ id: batchId, carrier: carrierLabel, file_name: payFileName, uploaded_at: new Date().toISOString(), row_count: payRows.length, batch_type: "payable_rule" }]) });
+      setBatches((prev) => [...prev, { id: batchId, carrier: carrierLabel, fileName: payFileName, uploadedAt: new Date().toISOString(), rowCount: payRows.length, batchType: "payable_rule" }]);
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
         const carrier = payCarrierMode === "fixed" ? payCarrierFixed.trim() : String(r[payCarrierCol] ?? "").trim();
@@ -1866,17 +1899,19 @@ export default function App() {
         } catch (e) { skipCount++; }
       }
       await loadFromCloud(cloudCfg);
-      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total. Find this upload in Manage Data if you need to delete it.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetPayableImport();
     } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
     setPayImporting(false);
     setPayImportProgress("");
   }
 
-  async function revertLedgerEntries(cfg, ledgerEntries) {
+  async function revertLedgerEntries(cfg, ledgerEntries, onProgress) {
     // Undo each correction by adding the ledger amount back onto the current
     // stored commission amount \u2014 this is the exact inverse of what
-    // createPayableRuleAndApply did (which subtracted it).
+    // createPayableRuleAndApply did (which subtracted it). Runs in parallel
+    // batches instead of one request at a time, since sequential requests for
+    // a few hundred records could otherwise take minutes.
     const policyIds = [...new Set(ledgerEntries.map((l) => l.policyId).filter(Boolean))];
     if (policyIds.length) {
       const currentRecords = records.filter((r) => policyIds.includes(r.id));
@@ -1884,39 +1919,19 @@ export default function App() {
       currentRecords.forEach((r) => { currentById[r.id] = r; });
       const netByPolicy = {};
       ledgerEntries.forEach((l) => { if (l.policyId) netByPolicy[l.policyId] = (netByPolicy[l.policyId] || 0) + l.amount; });
-      for (const policyId of Object.keys(netByPolicy)) {
-        const rec = currentById[policyId];
-        if (!rec) continue; // record may have since been deleted independently
-        const restoredAmount = rec.commissionAmount + netByPolicy[policyId];
-        await sbFetch(cfg, `policies?id=eq.${policyId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: restoredAmount }) });
+      const idsToUpdate = Object.keys(netByPolicy).filter((id) => currentById[id]);
+      const chunks = chunkArray(idsToUpdate, 20);
+      let done = 0;
+      for (const chunk of chunks) {
+        await Promise.all(chunk.map((policyId) => {
+          const restoredAmount = currentById[policyId].commissionAmount + netByPolicy[policyId];
+          return sbFetch(cfg, `policies?id=eq.${policyId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: restoredAmount }) });
+        }));
+        done += chunk.length;
+        if (onProgress) onProgress(done, idsToUpdate.length);
       }
       setRecords((prev) => prev.map((r) => (netByPolicy[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount + netByPolicy[r.id] } : r)));
     }
-  }
-
-  const [resettingPayables, setResettingPayables] = useState(false);
-  const [confirmResetPayables, setConfirmResetPayables] = useState(false);
-  async function resetAllPayables() {
-    if (!cloudCfg) return;
-    setResettingPayables(true);
-    try {
-      // Only reverts client-specific payable rules (the ones tied to one
-      // client + effective date, created via "Add a payable rule" or bulk
-      // import) \u2014 leaves Agent Compensation Rules (like Charles Vazquez's
-      // permanent Aetna arrangement) completely untouched, since those are a
-      // separate, working setup unrelated to this cleanup.
-      const clientRuleEntries = payableLedger.filter((l) => l.sourceType !== "agent_comp");
-      await revertLedgerEntries(cloudCfg, clientRuleEntries);
-      const entryIds = clientRuleEntries.map((l) => l.id);
-      if (entryIds.length) {
-        await sbFetch(cloudCfg, `agent_payable_ledger?id=${encodeURIComponent(pgInList(entryIds))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      }
-      await sbFetch(cloudCfg, "agent_payable_rules?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast(`Reset complete \u2014 ${clientRuleEntries.length} correction(s) reverted, all client-specific payable rules cleared. Agent Compensation Rules (like Charles Vazquez's) were left untouched.`);
-      setConfirmResetPayables(false);
-      await loadFromCloud(cloudCfg);
-    } catch (e) { showToast("Reset failed: " + e.message, "error"); }
-    setResettingPayables(false);
   }
 
   async function deletePayableRule(ruleId) {
@@ -1929,41 +1944,6 @@ export default function App() {
       showToast(`Rule removed and ${entries.length} record(s) restored to their original amount.`);
       await loadFromCloud(cloudCfg);
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
-  }
-
-  const payableBulkBatches = useMemo(() => {
-    const map = {};
-    payableRules.forEach((r) => {
-      if (!r.bulkBatchId) return;
-      if (!map[r.bulkBatchId]) map[r.bulkBatchId] = { batchId: r.bulkBatchId, ruleCount: 0, ruleIds: [] };
-      map[r.bulkBatchId].ruleCount++;
-      map[r.bulkBatchId].ruleIds.push(r.id);
-    });
-    return Object.values(map).map((b) => {
-      const entries = payableLedger.filter((l) => b.ruleIds.includes(l.ruleId));
-      const totalAmount = entries.reduce((s, l) => s + l.amount, 0);
-      const ts = parseInt(b.batchId.replace("bulkpay_", ""), 10);
-      return { ...b, totalAmount, when: isNaN(ts) ? "" : new Date(ts).toLocaleString() };
-    }).sort((a, b) => b.batchId.localeCompare(a.batchId));
-  }, [payableRules, payableLedger]);
-  const [deletingBatchId, setDeletingBatchId] = useState(null);
-  const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState(null);
-
-  async function deleteBulkBatch(batchId) {
-    if (!cloudCfg) return;
-    setDeletingBatchId(batchId);
-    try {
-      const ruleIds = payableRules.filter((r) => r.bulkBatchId === batchId).map((r) => r.id);
-      const entries = payableLedger.filter((l) => ruleIds.includes(l.ruleId));
-      await revertLedgerEntries(cloudCfg, entries);
-      const idFilter = pgInList(ruleIds);
-      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await sbFetch(cloudCfg, `agent_payable_rules?id=${encodeURIComponent(idFilter)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast(`Batch removed \u2014 ${ruleIds.length} rule(s) deleted, ${entries.length} record(s) restored to their original amount.`);
-      setConfirmDeleteBatchId(null);
-      await loadFromCloud(cloudCfg);
-    } catch (e) { showToast("Could not delete batch: " + e.message, "error"); }
-    setDeletingBatchId(null);
   }
 
   async function togglePayableRuleActive(ruleId, currentlyActive) {
@@ -1989,7 +1969,7 @@ export default function App() {
   const [payablesMonth, setPayablesMonth] = useState("");
   const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
   const owedByAgentThisMonth = useMemo(() => {
-    const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " \u2014 " + l.carrier);
     return grouped.map((g) => {
       const [agentName, carrier] = g.key.split(" \u2014 ");
@@ -2000,7 +1980,7 @@ export default function App() {
   // the carrier filter above \u2014 so you can see "everything owed to me" even
   // while the breakdown table is narrowed to one company.
   const totalOwedByAgentThisMonth = useMemo(() => {
-    const scoped = payableLedger.filter((l) => !payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "")).sort((a, b) => b.revenue - a.revenue);
   }, [payableLedger, payablesMonth, agentLookupMaps]);
   const [selectedPayableAgent, setSelectedPayableAgent] = useState(null);
@@ -2012,7 +1992,7 @@ export default function App() {
     if (!selectedPayableAgent) return [];
     const recordById = {};
     records.forEach((r) => { recordById[r.id] = r; });
-    const scoped = payableLedger.filter((l) => resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     return scoped.map((l) => {
       const rec = recordById[l.policyId];
       return { id: l.id, clientName: l.clientName || "Unknown", carrier: l.carrier, amount: l.amount, effectiveDate: rec ? rec.effectiveDate : "", transactionDate: l.transactionDate };
@@ -3014,7 +2994,10 @@ export default function App() {
                   <thead><tr><th></th><th>Type</th><th>Carrier</th><th>File</th><th>Imported</th><th className="num">Rows</th><th></th></tr></thead>
                   <tbody>
                     {[...batches].reverse().map((b) => {
-                      const commissionBreakdown = b.batchType !== "membership" ? groupBy(records.filter((r) => r.uploadBatchId === b.id), (r) => r.carrier).sort((x, y) => y.count - x.count) : [];
+                      const commissionBreakdown = b.batchType !== "membership" && b.batchType !== "payable_rule" && b.batchType !== "payable_correction" ? groupBy(records.filter((r) => r.uploadBatchId === b.id), (r) => r.carrier).sort((x, y) => y.count - x.count) : [];
+                      const payableBatchEntries = (b.batchType === "payable_rule" || b.batchType === "payable_correction") ? payableLedger.filter((l) => l.batchId === b.id) : [];
+                      const payableBatchTotal = payableBatchEntries.reduce((s, l) => s + l.amount, 0);
+                      const payableBatchByAgent = groupBy(payableBatchEntries.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") || "\u2014").sort((x, y) => y.revenue - x.revenue);
                       const memberByCarrier = {};
                       const memberByStatus = {};
                       let unmatchedCount = 0;
@@ -3030,7 +3013,7 @@ export default function App() {
                         <React.Fragment key={b.id}>
                           <tr className="pt-clickable" onClick={() => toggleBatchDetail(b)}>
                             <td style={{ width: 20, color: "var(--muted)" }}>{expandedBatchId === b.id ? "\u25be" : "\u25b8"}</td>
-                            <td><span className="pt-alias-type">{b.batchType === "membership" ? "Membership" : "Commission"}</span></td>
+                            <td><span className="pt-alias-type">{b.batchType === "membership" ? "Membership" : b.batchType === "payable_rule" ? "Payable rule" : b.batchType === "payable_correction" ? "One-time correction" : "Commission"}</span></td>
                             <td>{b.carrier}</td>
                             <td>{b.fileName}</td>
                             <td>{new Date(b.uploadedAt).toLocaleString()}</td>
@@ -3038,7 +3021,7 @@ export default function App() {
                             <td className="num" onClick={(e) => e.stopPropagation()}>
                               {confirmDeleteId === b.id ? (
                                 <span className="pt-confirm-inline">
-                                  Remove {b.rowCount} rows?
+                                  {b.batchType === "payable_rule" || b.batchType === "payable_correction" ? `Undo this and restore ${b.rowCount} record(s) to their original amount?` : `Remove ${b.rowCount} rows?`}
                                   <button className="pt-btn danger small" onClick={() => deleteBatch(b.id)}>Yes</button>
                                   <button className="pt-btn ghost small" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
                                 </span>
@@ -3073,6 +3056,12 @@ export default function App() {
                                       </p>
                                     </>
                                   )
+                                ) : (b.batchType === "payable_rule" || b.batchType === "payable_correction") ? (
+                                  <>
+                                    <div className="pt-mini-label">Total corrected: <Money v={payableBatchTotal} /></div>
+                                    <div className="pt-mini-label" style={{ marginTop: 10 }}>By agent</div>
+                                    {payableBatchByAgent.length === 0 ? <p className="pt-hint">No entries found (may have been deleted individually).</p> : payableBatchByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span>{a.count} record(s) \u00b7 <Money v={a.revenue} /></span></div>)}
+                                  </>
                                 ) : (
                                   <>
                                     <div className="pt-mini-label">Landed under these carriers</div>
@@ -3117,18 +3106,7 @@ export default function App() {
         {view === "payables" && (
           <div>
             <div className="pt-page-head">
-              <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record.</p></div>
-              {cloudCfg && payablesAvailable && (
-                confirmResetPayables ? (
-                  <span className="pt-confirm-inline">
-                    This reverts every client-specific correction back to its original amount and clears all rules. Agent Compensation Rules (Charles's) are left alone. Sure?
-                    <button className="pt-btn danger small" disabled={resettingPayables} onClick={resetAllPayables}>{resettingPayables ? "Working\u2026" : "Yes, start over"}</button>
-                    <button className="pt-btn ghost small" onClick={() => setConfirmResetPayables(false)}>Cancel</button>
-                  </span>
-                ) : (
-                  <button className="pt-btn danger" onClick={() => setConfirmResetPayables(true)}><Trash2 size={14} /> Start over</button>
-                )
-              )}
+              <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
             </div>
 
             {!cloudCfg ? (
@@ -3387,36 +3365,6 @@ export default function App() {
                     </>
                   )}
                 </div>
-
-                {payableBulkBatches.length > 0 && (
-                  <div className="pt-card">
-                    <h3>Past bulk imports</h3>
-                    <p className="pt-hint" style={{ marginBottom: 10 }}>Deleting a batch restores every record it touched back to its original dollar amount \u2014 a real undo, not just removing the tracking.</p>
-                    <table className="pt-table">
-                      <thead><tr><th>When</th><th className="num">Rules</th><th className="num">Amount tracked</th><th></th></tr></thead>
-                      <tbody>
-                        {payableBulkBatches.map((b) => (
-                          <tr key={b.batchId}>
-                            <td>{b.when || b.batchId}</td>
-                            <td className="num">{b.ruleCount}</td>
-                            <td className="num"><Money v={b.totalAmount} /></td>
-                            <td className="num">
-                              {confirmDeleteBatchId === b.batchId ? (
-                                <span className="pt-confirm-inline">
-                                  Delete {b.ruleCount} rule(s) and restore affected records?
-                                  <button className="pt-btn danger small" disabled={deletingBatchId === b.batchId} onClick={() => deleteBulkBatch(b.batchId)}>{deletingBatchId === b.batchId ? "Working\u2026" : "Yes, delete"}</button>
-                                  <button className="pt-btn ghost small" onClick={() => setConfirmDeleteBatchId(null)}>Cancel</button>
-                                </span>
-                              ) : (
-                                <button className="pt-btn ghost small" onClick={() => setConfirmDeleteBatchId(b.batchId)}><Trash2 size={12} /> Delete batch</button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
 
                 <div className="pt-card">
                   <h3>Agent compensation rules</h3>
