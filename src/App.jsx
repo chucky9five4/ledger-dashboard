@@ -1946,6 +1946,28 @@ export default function App() {
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
   }
 
+  const [clearingAllPayables, setClearingAllPayables] = useState(false);
+  const [confirmClearAllPayables, setConfirmClearAllPayables] = useState(false);
+  async function clearEveryClientPayableRule() {
+    // Catches everything: every client-specific rule (whether it has a batch
+    // id or not) and every ledger entry not tied to an Agent Compensation
+    // Rule \u2014 including one-time corrections made before batch tracking
+    // existed. Agent Compensation Rules (Charles's) are left untouched.
+    if (!cloudCfg) return;
+    setClearingAllPayables(true);
+    try {
+      const entriesToRevert = payableLedger.filter((l) => l.sourceType !== "agent_comp");
+      await revertLedgerEntries(cloudCfg, entriesToRevert);
+      await sbFetch(cloudCfg, "agent_payable_ledger?source_type=eq.client_rule", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, "agent_payable_ledger?source_type=eq.one_time_correction", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, "agent_payable_rules?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Done \u2014 ${entriesToRevert.length} record(s) restored to their original amount, every client-specific rule removed.`);
+      setConfirmClearAllPayables(false);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not finish clearing: " + e.message, "error"); }
+    setClearingAllPayables(false);
+  }
+
   async function togglePayableRuleActive(ruleId, currentlyActive) {
     if (!cloudCfg) return;
     try {
@@ -3107,6 +3129,17 @@ export default function App() {
           <div>
             <div className="pt-page-head">
               <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
+              {cloudCfg && payablesAvailable && (
+                confirmClearAllPayables ? (
+                  <span className="pt-confirm-inline">
+                    Restore every affected record to its original amount and remove all client-specific rules? Charles's Agent Compensation Rule is not touched.
+                    <button className="pt-btn danger small" disabled={clearingAllPayables} onClick={clearEveryClientPayableRule}>{clearingAllPayables ? "Working\u2026" : "Yes, clear everything"}</button>
+                    <button className="pt-btn ghost small" onClick={() => setConfirmClearAllPayables(false)}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="pt-btn danger" onClick={() => setConfirmClearAllPayables(true)}><Trash2 size={14} /> Undo all client-specific corrections</button>
+                )
+              )}
             </div>
 
             {!cloudCfg ? (
