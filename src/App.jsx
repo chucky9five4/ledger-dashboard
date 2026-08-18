@@ -1769,6 +1769,75 @@ export default function App() {
     return payRows.filter((r) => String(r[payWrongAgentCol] ?? "").trim() === String(r[payAgentCol] ?? "").trim()).length;
   }, [payRows, payWrongAgentCol, payAgentCol]);
 
+  // ---------- ONE-TIME HISTORICAL CORRECTION (no tracking, no rule, no future matching) ----------
+  const [correctFileName, setCorrectFileName] = useState("");
+  const [correctHeaders, setCorrectHeaders] = useState([]);
+  const [correctRows, setCorrectRows] = useState([]);
+  const [correctCarrierMode, setCorrectCarrierMode] = useState("fixed");
+  const [correctCarrierFixed, setCorrectCarrierFixed] = useState("");
+  const [correctCarrierCol, setCorrectCarrierCol] = useState("");
+  const [correctClientCol, setCorrectClientCol] = useState("");
+  const [correctEffDateCol, setCorrectEffDateCol] = useState("");
+  const [correctAmountCol, setCorrectAmountCol] = useState("");
+  const [correcting, setCorrecting] = useState(false);
+  const [correctProgress, setCorrectProgress] = useState("");
+
+  function handleCorrectFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!json.length) return;
+        setCorrectHeaders(Object.keys(json[0]));
+        setCorrectRows(json);
+        setCorrectFileName(file.name);
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function resetCorrectImport() {
+    setCorrectFileName(""); setCorrectHeaders([]); setCorrectRows([]);
+    setCorrectCarrierMode("fixed"); setCorrectCarrierFixed(""); setCorrectCarrierCol("");
+    setCorrectClientCol(""); setCorrectEffDateCol(""); setCorrectAmountCol("");
+  }
+  const correctImportValid = (correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : correctCarrierCol) && correctClientCol && correctEffDateCol && correctAmountCol;
+
+  async function commitOneTimeCorrection() {
+    if (!cloudCfg || !correctImportValid) return;
+    setCorrecting(true);
+    let rowsProcessed = 0, recordsFixed = 0, skipCount = 0;
+    try {
+      for (let i = 0; i < correctRows.length; i++) {
+        const r = correctRows[i];
+        const carrier = correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : String(r[correctCarrierCol] ?? "").trim();
+        const clientName = String(r[correctClientCol] ?? "").trim();
+        const effDate = parseDateValue(r[correctEffDateCol]);
+        const amt = parseMoney(r[correctAmountCol]);
+        if (!carrier || !clientName || !effDate || !(amt > 0)) { skipCount++; continue; }
+        setCorrectProgress(`Correcting ${i + 1} of ${correctRows.length} \u2014 ${clientName}\u2026`);
+        const key = normalizeClientKey(clientName);
+        const matches = records.filter((rec) => rec.carrier === carrier && normalizeClientKey(rec.clientName) === key && rec.commissionAmount !== 0 && rec.effectiveDate === effDate);
+        for (const rec of matches) {
+          const direction = rec.commissionAmount >= 0 ? 1 : -1;
+          const newAmount = rec.commissionAmount - direction * amt;
+          await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+          recordsFixed++;
+        }
+        rowsProcessed++;
+      }
+      await loadFromCloud(cloudCfg);
+      showToast(`Corrected ${recordsFixed} record(s) across ${rowsProcessed} client(s). No rule or tracking was created \u2014 this was a one-time fix only.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      resetCorrectImport();
+    } catch (e) { showToast("Correction failed: " + e.message, "error"); }
+    setCorrecting(false);
+    setCorrectProgress("");
+  }
+
   async function commitPayableBulkImport() {
     if (!cloudCfg || !payableImportValid) return;
     setPayImporting(true);
@@ -3082,6 +3151,79 @@ export default function App() {
                         </table>
                       </div>
                     </div>
+                  )}
+                </div>
+
+                <div className="pt-card" style={{ border: "2px solid var(--gold)" }}>
+                  <h3>One-time historical correction</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Use this when you've already paid the agent and just need the Dashboard numbers to be accurate \u2014 fixes the dollar amount on matching past records and does nothing else. No rule, no ledger entry, no "owed" tracking, and it will not touch anything imported in the future. If those same clients keep needing this every month going forward, use "Add a payable rule" below instead \u2014 that one keeps applying automatically so you don't have to redo this by hand.</p>
+                  {!correctFileName ? (
+                    <label className="pt-btn ghost">
+                      Choose file
+                      <input type="file" accept=".xlsx,.xls,.csv" onChange={handleCorrectFile} style={{ display: "none" }} />
+                    </label>
+                  ) : (
+                    <>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {correctFileName} \u00b7 {correctRows.length} rows</div>
+                      <div style={{ marginTop: 12, marginBottom: 4 }}>
+                        <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
+                        <div className="pt-btn-row">
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={correctCarrierMode === "fixed"} onChange={() => setCorrectCarrierMode("fixed")} /> This whole file is one carrier
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={correctCarrierMode === "column"} onChange={() => setCorrectCarrierMode("column")} /> Read carrier from a column
+                          </label>
+                        </div>
+                      </div>
+                      <div className="pt-mapping-grid" style={{ marginTop: 8 }}>
+                        {correctCarrierMode === "fixed" ? (
+                          <div className="pt-field">
+                            <label>Carrier *</label>
+                            <input list="carrier-options-correct" value={correctCarrierFixed} onChange={(e) => setCorrectCarrierFixed(e.target.value)} placeholder="e.g. Aetna" />
+                            <datalist id="carrier-options-correct">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                          </div>
+                        ) : (
+                          <div className="pt-field">
+                            <label>Carrier column *</label>
+                            <select value={correctCarrierCol} onChange={(e) => setCorrectCarrierCol(e.target.value)}>
+                              <option value="">\u2014 choose \u2014</option>
+                              {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        <div className="pt-field">
+                          <label>Client name column *</label>
+                          <select value={correctClientCol} onChange={(e) => setCorrectClientCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Effective date column *</label>
+                          <select value={correctEffDateCol} onChange={(e) => setCorrectEffDateCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Amount to subtract column *</label>
+                          <select value={correctAmountCol} onChange={(e) => setCorrectAmountCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="pt-row-between" style={{ marginTop: 12 }}>
+                        <div>{correcting && <p className="pt-hint">{correctProgress || "Working\u2026"}</p>}</div>
+                        <div className="pt-btn-row">
+                          <button className="pt-btn ghost" onClick={resetCorrectImport} disabled={correcting}>Cancel</button>
+                          <button className="pt-btn primary" disabled={!correctImportValid || correcting} onClick={commitOneTimeCorrection}>
+                            {correcting ? "Correcting\u2026" : `Correct ${correctRows.length} rows`}
+                          </button>
+                        </div>
+                      </div>
+                    </>
                   )}
                 </div>
 
