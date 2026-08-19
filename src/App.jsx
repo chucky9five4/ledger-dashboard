@@ -1732,6 +1732,47 @@ export default function App() {
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
   }
 
+  const [clearingHistoryRuleId, setClearingHistoryRuleId] = useState(null);
+  const [confirmClearHistoryId, setConfirmClearHistoryId] = useState(null);
+  async function clearCompRuleHistory(ruleId, isAgentComp) {
+    // Deletes only the "owed" tracking entries \u2014 the dollar corrections on
+    // the actual commission records are left completely untouched, and the
+    // rule itself stays active, so future imports keep matching and tracking
+    // normally. Use this when the historical amount owed has already been
+    // paid outside the system and just needs to stop showing as outstanding.
+    if (!cloudCfg) return;
+    setClearingHistoryRuleId(ruleId);
+    try {
+      const entries = payableLedger.filter((l) => l.ruleId === ruleId);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Cleared ${entries.length} tracked entry/entries. Dollar amounts on your records are unchanged, and the rule is still active for anything imported from now on.`);
+      setConfirmClearHistoryId(null);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not clear history: " + e.message, "error"); }
+    setClearingHistoryRuleId(null);
+  }
+
+  const [undoingDoubleDeductionId, setUndoingDoubleDeductionId] = useState(null);
+  const [confirmUndoDoubleDeductionId, setConfirmUndoDoubleDeductionId] = useState(null);
+  async function undoDoubleDeduction(ruleId) {
+    // For when data was manually pre-corrected before upload, but the rule
+    // was active and deducted again on top of it. Puts the dollar amount back
+    // to exactly what was uploaded, clears the tracking, but \u2014 unlike
+    // deleting the rule \u2014 keeps it alive and active so it correctly applies
+    // to future, un-adjusted imports.
+    if (!cloudCfg) return;
+    setUndoingDoubleDeductionId(ruleId);
+    try {
+      const entries = payableLedger.filter((l) => l.ruleId === ruleId);
+      await revertLedgerEntries(cloudCfg, entries);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Restored ${entries.length} record(s) to what you originally uploaded, and cleared the tracking. The rule is still active for the next statement.`);
+      setConfirmUndoDoubleDeductionId(null);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not undo: " + e.message, "error"); }
+    setUndoingDoubleDeductionId(null);
+  }
+
   async function addPayableRule() {
     if (!cloudCfg || !payableClientName.trim() || !payableCarrier.trim() || !payableAgentName.trim() || !payableAmount || Number(payableAmount) <= 0 || !payableEffectiveDate) return;
     setAddingPayableRule(true);
@@ -3444,23 +3485,43 @@ export default function App() {
                   </button>
                   {agentCompRules.length > 0 && (
                     <table className="pt-table" style={{ marginTop: 16 }}>
-                      <thead><tr><th>Status</th><th>Carrier</th><th>Agent</th><th className="num">Renewal/txn</th><th className="num">First year/mo</th><th></th></tr></thead>
+                      <thead><tr><th>Status</th><th>Carrier</th><th>Agent</th><th className="num">Renewal/txn</th><th className="num">First year/mo</th><th className="num">Currently tracked</th><th></th></tr></thead>
                       <tbody>
-                        {agentCompRules.map((rule) => (
-                          <tr key={rule.id}>
-                            <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
-                            <td>{rule.carrier}</td>
-                            <td>{rule.agentName}</td>
-                            <td className="num mono">{fmtMoney(rule.renewalAmount)}</td>
-                            <td className="num mono">{fmtMoney(rule.firstYearAmountPerMonth)}</td>
-                            <td className="num">
-                              <div className="pt-btn-row">
-                                <button className="pt-btn ghost small" onClick={() => toggleCompRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
-                                <button className="pt-btn ghost small" onClick={() => deleteAgentCompRule(rule.id)}><X size={12} /></button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        {agentCompRules.map((rule) => {
+                          const owed = payableLedger.filter((l) => l.ruleId === rule.id).reduce((s, l) => s + l.amount, 0);
+                          return (
+                            <tr key={rule.id}>
+                              <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
+                              <td>{rule.carrier}</td>
+                              <td>{rule.agentName}</td>
+                              <td className="num mono">{fmtMoney(rule.renewalAmount)}</td>
+                              <td className="num mono">{fmtMoney(rule.firstYearAmountPerMonth)}</td>
+                              <td className="num"><Money v={owed} /></td>
+                              <td className="num">
+                                {confirmClearHistoryId === rule.id ? (
+                                  <span className="pt-confirm-inline">
+                                    Clear tracking only \u2014 dollar amounts stay as-is, rule keeps running?
+                                    <button className="pt-btn danger small" disabled={clearingHistoryRuleId === rule.id} onClick={() => clearCompRuleHistory(rule.id)}>{clearingHistoryRuleId === rule.id ? "Working\u2026" : "Yes"}</button>
+                                    <button className="pt-btn ghost small" onClick={() => setConfirmClearHistoryId(null)}>Cancel</button>
+                                  </span>
+                                ) : confirmUndoDoubleDeductionId === rule.id ? (
+                                  <span className="pt-confirm-inline">
+                                    Put every affected record back to what you actually uploaded, clear tracking, keep the rule active for next time?
+                                    <button className="pt-btn danger small" disabled={undoingDoubleDeductionId === rule.id} onClick={() => undoDoubleDeduction(rule.id)}>{undoingDoubleDeductionId === rule.id ? "Working\u2026" : "Yes"}</button>
+                                    <button className="pt-btn ghost small" onClick={() => setConfirmUndoDoubleDeductionId(null)}>Cancel</button>
+                                  </span>
+                                ) : (
+                                  <div className="pt-btn-row">
+                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmClearHistoryId(rule.id)}>Already paid \u2014 clear history</button>}
+                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmUndoDoubleDeductionId(rule.id)}>I pre-adjusted this upload \u2014 undo double deduction</button>}
+                                    <button className="pt-btn ghost small" onClick={() => toggleCompRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                    <button className="pt-btn ghost small" onClick={() => deleteAgentCompRule(rule.id)}><X size={12} /></button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
