@@ -1723,8 +1723,11 @@ export default function App() {
   async function deleteAgentCompRule(ruleId) {
     if (!cloudCfg) return;
     try {
+      const entries = payableLedger.filter((l) => l.ruleId === ruleId);
+      await revertLedgerEntries(cloudCfg, entries);
+      await sbFetch(cloudCfg, `agent_payable_ledger?rule_id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
       await sbFetch(cloudCfg, `agent_comp_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast("Rule removed. Note: dollar amounts already corrected on past records are not reverted automatically.");
+      showToast(`Rule removed and ${entries.length} record(s) restored to their original amount.`);
       await loadFromCloud(cloudCfg);
     } catch (e) { showToast("Could not remove rule: " + e.message, "error"); }
   }
@@ -3467,6 +3470,7 @@ export default function App() {
                   <div className="pt-row-between">
                     <h3>Rules</h3>
                     <div className="pt-btn-row">
+                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRules.map((r) => r.id)))}>Select all ({payableRules.length})</button>
                       <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRules.filter((r) => r.createdAt && (Date.now() - new Date(r.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((r) => r.id)))}>Select last 2 hours</button>
                       {selectedRuleIds.size > 0 && (
                         confirmDeleteSelectedRules ? (
@@ -3519,6 +3523,7 @@ export default function App() {
                     <div className="pt-row-between">
                       <h3>One-time corrections</h3>
                       <div className="pt-btn-row">
+                        <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.map((e) => e.id)))}>Select all ({oneTimeCorrectionEntries.length})</button>
                         <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.filter((e) => e.createdAt && (Date.now() - new Date(e.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((e) => e.id)))}>Select last 2 hours</button>
                         {selectedCorrectionIds.size > 0 && (
                           <button className="pt-btn danger small" disabled={deletingSelectedCorrections} onClick={deleteSelectedCorrections}>
