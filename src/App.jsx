@@ -1734,6 +1734,29 @@ export default function App() {
 
   const [clearingHistoryRuleId, setClearingHistoryRuleId] = useState(null);
   const [confirmClearHistoryId, setConfirmClearHistoryId] = useState(null);
+  const [clearingAllLedger, setClearingAllLedger] = useState(false);
+  const [confirmClearAllLedger, setConfirmClearAllLedger] = useState(false);
+  const [clearAllProgress, setClearAllProgress] = useState("");
+  async function clearAllLedgerDirectly() {
+    // Works directly off every row in agent_payable_ledger, regardless of
+    // whether its rule still exists \u2014 catches orphaned tracking entries left
+    // behind from a rule that was already deleted, which the rule-based
+    // buttons can't reach since they look up entries by rule_id.
+    if (!cloudCfg) return;
+    setClearingAllLedger(true);
+    try {
+      const entries = payableLedger;
+      await revertLedgerEntries(cloudCfg, entries, (done, total) => setClearAllProgress(`Restoring ${done} of ${total}\u2026`));
+      await sbFetch(cloudCfg, "agent_payable_ledger?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`Restored ${entries.length} record(s) to their original amount and cleared all tracking. Agent Payables should now be empty.`);
+      setConfirmClearAllLedger(false);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not clear: " + e.message, "error"); }
+    setClearingAllLedger(false);
+    setClearAllProgress("");
+  }
+
+
   async function clearCompRuleHistory(ruleId, isAgentComp) {
     // Deletes only the "owed" tracking entries \u2014 the dollar corrections on
     // the actual commission records are left completely untouched, and the
@@ -3199,6 +3222,17 @@ export default function App() {
           <div>
             <div className="pt-page-head">
               <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
+              {cloudCfg && payablesAvailable && payableLedger.length > 0 && (
+                confirmClearAllLedger ? (
+                  <span className="pt-confirm-inline">
+                    {clearingAllLedger ? clearAllProgress : `Restore all ${payableLedger.length} tracked amount(s) back to full income and clear every bit of tracking?`}
+                    <button className="pt-btn danger small" disabled={clearingAllLedger} onClick={clearAllLedgerDirectly}>{clearingAllLedger ? "Working\u2026" : "Yes, give it all to the agency"}</button>
+                    <button className="pt-btn ghost small" onClick={() => setConfirmClearAllLedger(false)} disabled={clearingAllLedger}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="pt-btn danger" onClick={() => setConfirmClearAllLedger(true)}><Trash2 size={14} /> Undo everything \u2014 all income to agency</button>
+                )
+              )}
             </div>
 
             {!cloudCfg ? (
