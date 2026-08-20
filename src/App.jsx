@@ -1764,6 +1764,8 @@ export default function App() {
   const [ovCarrierFixed, setOvCarrierFixed] = useState("");
   const [ovCarrierCol, setOvCarrierCol] = useState("");
   const [ovClientCol, setOvClientCol] = useState("");
+  const [ovClientFirstCol, setOvClientFirstCol] = useState("");
+  const [ovClientLastCol, setOvClientLastCol] = useState("");
   const [ovEffDateCol, setOvEffDateCol] = useState("");
   const [ovWrongAgentCol, setOvWrongAgentCol] = useState("");
   const [ovAgentCol, setOvAgentCol] = useState("");
@@ -1790,9 +1792,9 @@ export default function App() {
   function resetOverrideImport() {
     setOvFileName(""); setOvHeaders([]); setOvRows([]);
     setOvCarrierMode("fixed"); setOvCarrierFixed(""); setOvCarrierCol("");
-    setOvClientCol(""); setOvEffDateCol(""); setOvWrongAgentCol(""); setOvAgentCol("");
+    setOvClientCol(""); setOvClientFirstCol(""); setOvClientLastCol(""); setOvEffDateCol(""); setOvWrongAgentCol(""); setOvAgentCol("");
   }
-  const overrideImportValid = (ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : ovCarrierCol) && ovClientCol && ovEffDateCol && ovAgentCol;
+  const overrideImportValid = (ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : ovCarrierCol) && (ovClientCol || ovClientFirstCol || ovClientLastCol) && ovEffDateCol && ovAgentCol;
   const overrideSkipCount = useMemo(() => {
     if (!ovWrongAgentCol || !ovAgentCol || !ovRows.length) return 0;
     return ovRows.filter((r) => String(r[ovWrongAgentCol] ?? "").trim() === String(r[ovAgentCol] ?? "").trim()).length;
@@ -1806,7 +1808,8 @@ export default function App() {
       for (let i = 0; i < ovRows.length; i++) {
         const r = ovRows[i];
         const carrier = ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : String(r[ovCarrierCol] ?? "").trim();
-        const clientName = String(r[ovClientCol] ?? "").trim();
+        const directName = ovClientCol ? String(r[ovClientCol] ?? "").trim() : "";
+        const clientName = directName || combineName(ovClientFirstCol ? r[ovClientFirstCol] : "", ovClientLastCol ? r[ovClientLastCol] : "");
         const effDate = parseDateValue(r[ovEffDateCol]);
         const agentName = String(r[ovAgentCol] ?? "").trim();
         if (ovWrongAgentCol) {
@@ -3113,7 +3116,7 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Bulk import client agent overrides</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Whether names come as one full-name column or separate First/Last columns, each row uses whichever one actually has data \u2014 handy if different carriers in the same file use different formats.</p>
                   {!ovFileName ? (
                     <label className="pt-btn ghost">
                       Choose file
@@ -3150,9 +3153,23 @@ export default function App() {
                           </div>
                         )}
                         <div className="pt-field">
-                          <label>Client name column *</label>
+                          <label>Client name column (if one column has the full name)</label>
                           <select value={ovClientCol} onChange={(e) => setOvClientCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">\u2014 not used \u2014</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>First name column (if name is split)</label>
+                          <select value={ovClientFirstCol} onChange={(e) => setOvClientFirstCol(e.target.value)}>
+                            <option value="">\u2014 not used \u2014</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Last name column (if name is split)</label>
+                          <select value={ovClientLastCol} onChange={(e) => setOvClientLastCol(e.target.value)}>
+                            <option value="">\u2014 not used \u2014</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
