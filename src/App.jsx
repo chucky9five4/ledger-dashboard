@@ -428,6 +428,20 @@ alter table agent_payable_ledger drop constraint if exists agent_payable_ledger_
 alter table agent_payable_ledger add column if not exists batch_id text;
 alter table policies add column if not exists term_date date;
 
+create table if not exists membership_agent_overrides (
+  id uuid primary key default gen_random_uuid(),
+  carrier text not null,
+  client_name text not null,
+  agent_name text not null,
+  effective_date date,
+  active boolean default true,
+  bulk_batch_id text,
+  created_at timestamptz default now()
+);
+alter table membership_agent_overrides enable row level security;
+drop policy if exists "allow all - solo use" on membership_agent_overrides;
+create policy "allow all - solo use" on membership_agent_overrides for all using (true) with check (true);
+
 alter table agent_payable_rules enable row level security;
 alter table agent_comp_rules enable row level security;
 alter table agent_payable_ledger enable row level security;
@@ -663,6 +677,11 @@ export default function App() {
       setPayablesAvailable(true);
       setCompAvailable(true);
     } catch (e) { setPayablesAvailable(false); setCompAvailable(false); }
+    try {
+      const overrides = await sbFetchAll(cfg, "membership_agent_overrides?select=*&order=created_at.desc");
+      setMembershipOverrides((overrides || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "", createdAt: r.created_at || "" })));
+      setMembershipOverridesAvailable(true);
+    } catch (e) { setMembershipOverridesAvailable(false); }
   }
 
   useEffect(() => {
@@ -954,16 +973,23 @@ export default function App() {
     if (!memberMappingValid) return;
     const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
-    const memberRows = rawRows.map((r) => ({
-      carrier: carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier,
-      clientName: memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]),
-      status: normalizeStatus(r[memberMapping.status]),
-      agent: memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "",
-      planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
-      pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
-      effectiveDate: memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "",
-      termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
-    })).filter((r) => r.clientName);
+    const memberRows = rawRows.map((r) => {
+      const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
+      const rowClientName = memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]);
+      const rowEffectiveDate = memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "";
+      const rawAgent = memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "";
+      const override = rowClientName && rowEffectiveDate ? findMembershipOverride(rowCarrier, rowClientName, rowEffectiveDate) : null;
+      return {
+        carrier: rowCarrier,
+        clientName: rowClientName,
+        status: normalizeStatus(r[memberMapping.status]),
+        agent: override ? override.agentName : rawAgent,
+        planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
+        pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
+        effectiveDate: rowEffectiveDate,
+        termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
+      };
+    }).filter((r) => r.clientName);
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
@@ -983,7 +1009,7 @@ export default function App() {
         setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
         await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
       }
-      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, importedAt: new Date().toISOString() })), ...prev]);
+      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
 
@@ -1634,6 +1660,173 @@ export default function App() {
       showToast(`Reassigned ${scoped.length} record(s) to ${resolvedAgent}.`);
       setReassignNewAgent(""); setReassignCarrier(""); setConfirmReassign(false);
     } catch (e) { showToast("Could not reassign: " + e.message, "error"); }
+  }
+
+  // Production/membership data has no dollar amount at all, so fixing a wrong
+  // agent here is simpler than commissions \u2014 just the agent field itself,
+  // no rules, no tracking, completely separate from the commission side above.
+  const membershipMatches = useMemo(() => {
+    if (clientSearch.trim().length < 2) return [];
+    const q = clientSearch.toLowerCase();
+    return membershipRecords.filter((r) => r.clientName && r.clientName.toLowerCase().includes(q));
+  }, [membershipRecords, clientSearch]);
+  const [reassignMemberCarrier, setReassignMemberCarrier] = useState("");
+  const [reassignMemberNewAgent, setReassignMemberNewAgent] = useState("");
+  const [confirmReassignMember, setConfirmReassignMember] = useState(false);
+  const reassignMemberCarriersAvailable = useMemo(() => [...new Set(membershipMatches.map((r) => r.carrier))].sort(), [membershipMatches]);
+  const reassignMemberTargetCount = useMemo(() => membershipMatches.filter((r) => !reassignMemberCarrier || r.carrier === reassignMemberCarrier).length, [membershipMatches, reassignMemberCarrier]);
+
+  async function reassignMembershipAgent() {
+    if (!cloudCfg || !reassignMemberNewAgent.trim() || membershipMatches.length === 0) return;
+    try {
+      const resolvedAgent = resolveAgentName(reassignMemberNewAgent.trim(), "", "", "");
+      const scoped = membershipMatches.filter((r) => !reassignMemberCarrier || r.carrier === reassignMemberCarrier);
+      const byCarrier = {};
+      scoped.forEach((r) => { if (!byCarrier[r.carrier]) byCarrier[r.carrier] = new Set(); byCarrier[r.carrier].add(r.clientName); });
+      for (const carrier of Object.keys(byCarrier)) {
+        const names = Array.from(byCarrier[carrier]);
+        const filterValue = pgInList(names);
+        const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&client_name=${encodeURIComponent(filterValue)}`;
+        await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: resolvedAgent }) });
+      }
+      setMembershipRecords((prev) => prev.map((r) => (byCarrier[r.carrier] && byCarrier[r.carrier].has(r.clientName) ? { ...r, agent: resolvedAgent } : r)));
+      showToast(`Reassigned ${scoped.length} production record(s) to ${resolvedAgent}.`);
+      setReassignMemberNewAgent(""); setReassignMemberCarrier(""); setConfirmReassignMember(false);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not reassign: " + e.message, "error"); }
+  }
+
+  // ---------- MEMBERSHIP AGENT OVERRIDES ----------
+  // Same idea as the client-specific payable rules, but for production data:
+  // no dollar amount at all, just "this client, this carrier, this effective
+  // date always belongs to this agent." Tied to effective date so a genuine
+  // new enrollment for the same client isn't wrongly grabbed by an old rule.
+  const [membershipOverrides, setMembershipOverrides] = useState([]);
+  const [membershipOverridesAvailable, setMembershipOverridesAvailable] = useState(false);
+  function findMembershipOverride(carrier, clientName, effectiveDate) {
+    const key = normalizeClientKey(clientName);
+    return membershipOverrides.find((o) => o.active && o.carrier === carrier && normalizeClientKey(o.clientName) === key && o.effectiveDate && effectiveDate && o.effectiveDate === effectiveDate);
+  }
+  async function createMembershipOverrideAndApply(cfg, carrier, clientName, agentNameRaw, effectiveDate, batchId) {
+    const agentName = resolveAgentName(agentNameRaw, "", "", "");
+    const inserted = await sbFetch(cfg, "membership_agent_overrides", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, effective_date: effectiveDate, bulk_batch_id: batchId || null }]) });
+    const key = normalizeClientKey(clientName);
+    const matches = membershipRecords.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate === effectiveDate);
+    if (matches.length) {
+      const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&client_name=eq.${encodeURIComponent(clientName)}&effective_date=eq.${effectiveDate}`;
+      await sbFetch(cfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: agentName }) });
+      setMembershipRecords((prev) => prev.map((r) => (r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate === effectiveDate ? { ...r, agent: agentName } : r)));
+    }
+    return matches.length;
+  }
+
+  const [overrideCarrier, setOverrideCarrier] = useState("");
+  const [overrideClientName, setOverrideClientName] = useState("");
+  const [overrideEffectiveDate, setOverrideEffectiveDate] = useState("");
+  const [overrideAgentName, setOverrideAgentName] = useState("");
+  const [addingOverride, setAddingOverride] = useState(false);
+  async function addMembershipOverride() {
+    if (!cloudCfg || !overrideCarrier.trim() || !overrideClientName.trim() || !overrideAgentName.trim() || !overrideEffectiveDate) return;
+    setAddingOverride(true);
+    try {
+      const count = await createMembershipOverrideAndApply(cloudCfg, overrideCarrier.trim(), overrideClientName.trim(), overrideAgentName.trim(), overrideEffectiveDate);
+      await loadFromCloud(cloudCfg);
+      showToast(`Override added \u2014 corrected ${count} existing production record(s). Future imports for this client + date will be corrected automatically too.`);
+      setOverrideCarrier(""); setOverrideClientName(""); setOverrideAgentName(""); setOverrideEffectiveDate("");
+    } catch (e) { showToast("Could not add override: " + e.message, "error"); }
+    setAddingOverride(false);
+  }
+  async function toggleMembershipOverrideActive(id, currentlyActive) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `membership_agent_overrides?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
+      setMembershipOverrides((prev) => prev.map((o) => (o.id === id ? { ...o, active: !currentlyActive } : o)));
+      showToast(currentlyActive ? "Override paused." : "Override reactivated.");
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+  async function deleteMembershipOverride(id) {
+    // Unlike commission rules, there's no dollar amount to revert here, and no
+    // record of the original wrong agent \u2014 deleting just stops the rule from
+    // applying to anything imported from now on.
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `membership_agent_overrides?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast("Override removed. Records already corrected are not reverted \u2014 there's no dollar amount here, and no stored record of the original agent to go back to.");
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not remove: " + e.message, "error"); }
+  }
+
+  // ---------- BULK MEMBERSHIP OVERRIDE IMPORT ----------
+  const [ovFileName, setOvFileName] = useState("");
+  const [ovHeaders, setOvHeaders] = useState([]);
+  const [ovRows, setOvRows] = useState([]);
+  const [ovCarrierMode, setOvCarrierMode] = useState("fixed");
+  const [ovCarrierFixed, setOvCarrierFixed] = useState("");
+  const [ovCarrierCol, setOvCarrierCol] = useState("");
+  const [ovClientCol, setOvClientCol] = useState("");
+  const [ovEffDateCol, setOvEffDateCol] = useState("");
+  const [ovWrongAgentCol, setOvWrongAgentCol] = useState("");
+  const [ovAgentCol, setOvAgentCol] = useState("");
+  const [ovImporting, setOvImporting] = useState(false);
+  const [ovProgress, setOvProgress] = useState("");
+  function handleOverrideFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        if (!json.length) return;
+        setOvHeaders(Object.keys(json[0]));
+        setOvRows(json);
+        setOvFileName(file.name);
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function resetOverrideImport() {
+    setOvFileName(""); setOvHeaders([]); setOvRows([]);
+    setOvCarrierMode("fixed"); setOvCarrierFixed(""); setOvCarrierCol("");
+    setOvClientCol(""); setOvEffDateCol(""); setOvWrongAgentCol(""); setOvAgentCol("");
+  }
+  const overrideImportValid = (ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : ovCarrierCol) && ovClientCol && ovEffDateCol && ovAgentCol;
+  const overrideSkipCount = useMemo(() => {
+    if (!ovWrongAgentCol || !ovAgentCol || !ovRows.length) return 0;
+    return ovRows.filter((r) => String(r[ovWrongAgentCol] ?? "").trim() === String(r[ovAgentCol] ?? "").trim()).length;
+  }, [ovRows, ovWrongAgentCol, ovAgentCol]);
+  async function commitOverrideBulkImport() {
+    if (!cloudCfg || !overrideImportValid) return;
+    setOvImporting(true);
+    const batchId = "bulkoverride_" + Date.now();
+    let successCount = 0, skipCount = 0, alreadyCorrectCount = 0, totalMatches = 0;
+    try {
+      for (let i = 0; i < ovRows.length; i++) {
+        const r = ovRows[i];
+        const carrier = ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : String(r[ovCarrierCol] ?? "").trim();
+        const clientName = String(r[ovClientCol] ?? "").trim();
+        const effDate = parseDateValue(r[ovEffDateCol]);
+        const agentName = String(r[ovAgentCol] ?? "").trim();
+        if (ovWrongAgentCol) {
+          const wrongAgent = String(r[ovWrongAgentCol] ?? "").trim();
+          if (wrongAgent && wrongAgent === agentName) { alreadyCorrectCount++; continue; }
+        }
+        if (!carrier || !clientName || !effDate || !agentName) { skipCount++; continue; }
+        setOvProgress(`Applying override ${i + 1} of ${ovRows.length} \u2014 ${clientName}\u2026`);
+        try {
+          const matchCount = await createMembershipOverrideAndApply(cloudCfg, carrier, clientName, agentName, effDate, batchId);
+          totalMatches += matchCount;
+          successCount++;
+        } catch (e) { skipCount++; }
+      }
+      await loadFromCloud(cloudCfg);
+      showToast(`Added ${successCount} override(s), correcting ${totalMatches} production record(s) total.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      resetOverrideImport();
+    } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
+    setOvImporting(false);
+    setOvProgress("");
   }
 
   // ---------- AGENT PAYABLE RULES ----------
@@ -2848,6 +3041,186 @@ export default function App() {
                 )
               )}
             </div>
+
+            {clientSearch.trim().length >= 2 && membershipMatches.length > 0 && (
+              <div className="pt-card">
+                <h3>Production / membership records</h3>
+                <p className="pt-hint" style={{ marginBottom: 8 }}>Completely separate from the commission records above \u2014 no dollar amount involved here, just membership status. Fixing the agent here has no effect on financials, and vice versa.</p>
+                <table className="pt-table">
+                  <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Plan</th><th>Effective date</th><th>Term date</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {membershipMatches.map((r, i) => (
+                      <tr key={i}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.planName}</td><td>{fmtDate(r.effectiveDate)}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td><StatusBadge status={r.status} /></td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="pt-plantype-block">
+                  <label>Wrong agent on record? Reassign these production records to the true agent.</label>
+                  <p className="pt-hint" style={{ marginBottom: 8 }}>Applies to every production record matching this search. Narrow to one carrier if needed.</p>
+                  {confirmReassignMember ? (
+                    <span className="pt-confirm-inline">
+                      Reassign {reassignMemberTargetCount} production record(s) to "{reassignMemberNewAgent}"? This can't be undone automatically.
+                      <button className="pt-btn danger small" onClick={reassignMembershipAgent}>Yes, reassign</button>
+                      <button className="pt-btn ghost small" onClick={() => setConfirmReassignMember(false)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <div className="pt-inline-form">
+                      <select value={reassignMemberCarrier} onChange={(e) => setReassignMemberCarrier(e.target.value)} style={{ minWidth: 160 }}>
+                        <option value="">All carriers ({membershipMatches.length} records)</option>
+                        {reassignMemberCarriersAvailable.map((c) => <option key={c} value={c}>{c} only</option>)}
+                      </select>
+                      <input placeholder="True agent's name" value={reassignMemberNewAgent} onChange={(e) => setReassignMemberNewAgent(e.target.value)} style={{ minWidth: 180 }} />
+                      <button className="pt-btn ghost small" disabled={!reassignMemberNewAgent.trim()} onClick={() => setConfirmReassignMember(true)}>Reassign {reassignMemberTargetCount} record(s)</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!cloudCfg ? null : !membershipOverridesAvailable ? (
+              <div className="pt-card">
+                <p className="pt-error">Your database doesn't have the membership override table yet.</p>
+                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run the same SQL you used for Agent Payables again \u2014 it now also creates this table.</p>
+              </div>
+            ) : (
+              <>
+                <div className="pt-card">
+                  <h3>Client agent overrides (production data)</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>For too many clients to fix one at a time. Tied to this exact effective date \u2014 a new enrollment for the same client won't be touched. No dollar amount involved, just the agent field \u2014 corrects existing records immediately and keeps applying to every future production statement automatically.</p>
+                  <div className="pt-mapping-grid">
+                    <div className="pt-field">
+                      <label>Carrier</label>
+                      <input list="carrier-options-override" value={overrideCarrier} onChange={(e) => setOverrideCarrier(e.target.value)} placeholder="e.g. Aetna" />
+                      <datalist id="carrier-options-override">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                    </div>
+                    <div className="pt-field">
+                      <label>Client name</label>
+                      <input value={overrideClientName} onChange={(e) => setOverrideClientName(e.target.value)} placeholder="e.g. Charles Vazquez" />
+                    </div>
+                    <div className="pt-field">
+                      <label>Effective date</label>
+                      <input type="date" value={overrideEffectiveDate} onChange={(e) => setOverrideEffectiveDate(e.target.value)} />
+                    </div>
+                    <div className="pt-field">
+                      <label>True agent</label>
+                      <input value={overrideAgentName} onChange={(e) => setOverrideAgentName(e.target.value)} placeholder="Who this really belongs to" />
+                    </div>
+                  </div>
+                  <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingOverride || !overrideCarrier.trim() || !overrideClientName.trim() || !overrideAgentName.trim() || !overrideEffectiveDate} onClick={addMembershipOverride}>
+                    {addingOverride ? "Applying\u2026" : "Add override"}
+                  </button>
+                </div>
+
+                <div className="pt-card">
+                  <h3>Bulk import client agent overrides</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped.</p>
+                  {!ovFileName ? (
+                    <label className="pt-btn ghost">
+                      Choose file
+                      <input type="file" accept=".xlsx,.xls,.csv" onChange={handleOverrideFile} style={{ display: "none" }} />
+                    </label>
+                  ) : (
+                    <>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {ovFileName} \u00b7 {ovRows.length} rows</div>
+                      <div style={{ marginTop: 12, marginBottom: 4 }}>
+                        <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
+                        <div className="pt-btn-row">
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={ovCarrierMode === "fixed"} onChange={() => setOvCarrierMode("fixed")} /> This whole file is one carrier
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                            <input type="radio" checked={ovCarrierMode === "column"} onChange={() => setOvCarrierMode("column")} /> Read carrier from a column
+                          </label>
+                        </div>
+                      </div>
+                      <div className="pt-mapping-grid" style={{ marginTop: 8 }}>
+                        {ovCarrierMode === "fixed" ? (
+                          <div className="pt-field">
+                            <label>Carrier *</label>
+                            <input list="carrier-options-ovbulk" value={ovCarrierFixed} onChange={(e) => setOvCarrierFixed(e.target.value)} placeholder="e.g. Aetna" />
+                            <datalist id="carrier-options-ovbulk">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                          </div>
+                        ) : (
+                          <div className="pt-field">
+                            <label>Carrier column *</label>
+                            <select value={ovCarrierCol} onChange={(e) => setOvCarrierCol(e.target.value)}>
+                              <option value="">\u2014 choose \u2014</option>
+                              {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        <div className="pt-field">
+                          <label>Client name column *</label>
+                          <select value={ovClientCol} onChange={(e) => setOvClientCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Effective date column *</label>
+                          <select value={ovEffDateCol} onChange={(e) => setOvEffDateCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Wrong/writing agent column (optional)</label>
+                          <select value={ovWrongAgentCol} onChange={(e) => setOvWrongAgentCol(e.target.value)}>
+                            <option value="">Not in this file / skip detection</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>True agent column *</label>
+                          <select value={ovAgentCol} onChange={(e) => setOvAgentCol(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      {ovWrongAgentCol && ovAgentCol && (
+                        <p className="pt-hint" style={{ marginTop: 8 }}>{overrideSkipCount} row(s) already show the correct agent and will be skipped automatically.</p>
+                      )}
+                      <div className="pt-row-between" style={{ marginTop: 12 }}>
+                        <div>{ovImporting && <p className="pt-hint">{ovProgress || "Working\u2026"}</p>}</div>
+                        <div className="pt-btn-row">
+                          <button className="pt-btn ghost" onClick={resetOverrideImport} disabled={ovImporting}>Cancel</button>
+                          <button className="pt-btn primary" disabled={!overrideImportValid || ovImporting} onClick={commitOverrideBulkImport}>
+                            {ovImporting ? "Applying\u2026" : `Process ${ovRows.length} rows`}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {membershipOverrides.length > 0 && (
+                  <div className="pt-card">
+                    <h3>Active overrides ({membershipOverrides.length})</h3>
+                    <table className="pt-table">
+                      <thead><tr><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th><th></th></tr></thead>
+                      <tbody>
+                        {membershipOverrides.map((o) => (
+                          <tr key={o.id}>
+                            <td><span className={"pt-status-chip " + (o.active ? "pt-status-green" : "pt-status-gray")}>{o.active ? "Active" : "Paused"}</span></td>
+                            <td>{o.clientName}</td>
+                            <td>{o.carrier}</td>
+                            <td>{fmtDate(o.effectiveDate)}</td>
+                            <td>{o.agentName}</td>
+                            <td className="num">
+                              <div className="pt-btn-row">
+                                <button className="pt-btn ghost small" onClick={() => toggleMembershipOverrideActive(o.id, o.active)}>{o.active ? "Pause" : "Resume"}</button>
+                                <button className="pt-btn ghost small" onClick={() => deleteMembershipOverride(o.id)}><X size={12} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
