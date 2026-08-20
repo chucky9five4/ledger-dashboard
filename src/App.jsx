@@ -503,6 +503,28 @@ function parseDateValue(v) {
   if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return "";
 }
+function isRealTermDate(termDate) {
+  if (!termDate) return false;
+  const year = parseInt(termDate.slice(0, 4), 10);
+  // Carriers use far-past or far-future placeholder dates to mean "no real
+  // termination" (Humana: 12/31/99 \u2192 1999, Aetna: 1/1/00 \u2192 2000, United
+  // Healthcare: 2300-01-01). Anything outside a realistic window is treated
+  // as if no term date were given at all.
+  return year >= 2015 && year <= 2099;
+}
+function nextMonthStr(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  const nm = m === 12 ? 1 : m + 1;
+  const ny = m === 12 ? y + 1 : y;
+  return `${ny}-${String(nm).padStart(2, "0")}`;
+}
+function monthsBetweenInclusive(fromYm, toYm) {
+  const months = [];
+  let cur = fromYm;
+  let guard = 0;
+  while (cur <= toYm && guard < 1200) { months.push(cur); cur = nextMonthStr(cur); guard++; }
+  return months;
+}
 function parseMoney(raw) {
   if (raw === undefined || raw === null || raw === "") return 0;
   let s = String(raw).trim();
@@ -629,7 +651,7 @@ export default function App() {
     await loadDirectory(cfg);
     try {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", importedAt: r.imported_at })));
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
@@ -788,6 +810,11 @@ export default function App() {
     if (!mappingValid) return;
     const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
+    // If a carrier splits one First Year lump-sum payment across several
+    // transactions in the same month, only the first one we see for a given
+    // policy gets the lump sum \u2014 the rest are treated as already accounted
+    // for, so the total credited never exceeds one correct lump sum.
+    const firstYearLumpSumSeen = new Set();
     const newRecords = rawRows.map((r, i) => {
       const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
@@ -816,7 +843,17 @@ export default function App() {
         const compRule = findAgentCompRule(rowCarrier, resolvedAgent);
         if (compRule) {
           const category = classifyCommissionCategory(rowCommissionType, rowEffectiveDate, rowPaymentDate);
-          agentPortion = calcAgentCompPortion(compRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+          if (category === "First Year" && !rowTermDate && rawCommissionAmount > 0) {
+            const groupKey = rowCarrier + "::" + normalizeClientKey(rowClientName) + "::" + rowEffectiveDate;
+            if (firstYearLumpSumSeen.has(groupKey)) {
+              agentPortion = 0; // already credited via an earlier split transaction for this same policy
+            } else {
+              agentPortion = calcAgentCompPortion(compRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+              firstYearLumpSumSeen.add(groupKey);
+            }
+          } else {
+            agentPortion = calcAgentCompPortion(compRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+          }
           if (agentPortion !== 0) { matchedRuleId = compRule.id; matchedAgentName = compRule.agentName; matchedSourceType = "agent_comp"; }
         }
       }
@@ -1349,7 +1386,12 @@ export default function App() {
   const membershipLatestByPolicy = useMemo(() => {
     const map = {};
     [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
-      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
+      // Same client + same carrier + same effective date = one policy, no
+      // matter how many times it shows up (duplicates collapse to the latest
+      // import). A different effective date under the same carrier is a real,
+      // separate policy \u2014 e.g. they switched plans \u2014 and the old one will
+      // naturally pick up its own term date over time.
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + (r.effectiveDate || "");
       if (!map[key]) map[key] = r;
     });
     return map;
@@ -1417,6 +1459,23 @@ export default function App() {
     );
   }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
+  const membershipGrowthMonths = useMemo(() => {
+    if (!dateFrom || !dateTo) return null; // no range set = consider every month present in the data
+    return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
+  }, [dateFrom, dateTo]);
+  const membershipGrowth = useMemo(() => {
+    let newCount = 0, lostCount = 0;
+    filteredMembershipLatest.forEach((r) => {
+      if (!r.effectiveDate) return;
+      const effMonth = r.effectiveDate.slice(0, 7);
+      if (!membershipGrowthMonths || membershipGrowthMonths.includes(effMonth)) newCount++;
+      if (isRealTermDate(r.termDate)) {
+        const lostMonth = nextMonthStr(r.termDate.slice(0, 7));
+        if (!membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth)) lostCount++;
+      }
+    });
+    return { newCount, lostCount, netCount: newCount - lostCount };
+  }, [filteredMembershipLatest, membershipGrowthMonths]);
   const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
   const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
@@ -1674,9 +1733,21 @@ export default function App() {
     const ledgerToInsert = [];
     const matchAdjustments = {};
     let appliedCount = 0;
+    const firstYearLumpSumSeen = new Set();
     for (const rec of matches) {
       const category = classifyCommissionCategory(rec.commissionType, rec.effectiveDate, rec.paymentDate);
-      const agentPortion = calcAgentCompPortion(compRule, category, rec.commissionAmount, rec.effectiveDate, rec.termDate);
+      let agentPortion;
+      if (category === "First Year" && !rec.termDate && rec.commissionAmount > 0) {
+        const groupKey = rec.carrier + "::" + normalizeClientKey(rec.clientName) + "::" + rec.effectiveDate;
+        if (firstYearLumpSumSeen.has(groupKey)) {
+          agentPortion = 0; // already credited via an earlier split transaction for this same policy
+        } else {
+          agentPortion = calcAgentCompPortion(compRule, category, rec.commissionAmount, rec.effectiveDate, rec.termDate);
+          firstYearLumpSumSeen.add(groupKey);
+        }
+      } else {
+        agentPortion = calcAgentCompPortion(compRule, category, rec.commissionAmount, rec.effectiveDate, rec.termDate);
+      }
       if (agentPortion === 0) continue;
       const newAmount = rec.commissionAmount - agentPortion;
       await sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
@@ -2295,6 +2366,16 @@ export default function App() {
                     <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
                     <StatCard label="Agents" value={activeAgentCount} tone="ink" />
                   </div>
+                </div>
+
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Membership growth {membershipGrowthMonths ? `\u2014 ${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}` : "\u2014 all time"}</div>
+                  <div className="pt-cards pt-cards-3">
+                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" />
+                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" />
+                    <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} />
+                  </div>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. Set Paid From/To above to look at a specific period; a policy counts as "lost" the month after its term date, since it was still active through the end of its term month. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
