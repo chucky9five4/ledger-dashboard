@@ -1475,6 +1475,7 @@ export default function App() {
   const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
+  const [showAllTopAgents, setShowAllTopAgents] = useState(false);
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byMonth = useMemo(() => {
     const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
@@ -2717,7 +2718,7 @@ export default function App() {
                   <table className="pt-table">
                     <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
-                      {byAgent.slice(0, 10).map((a) => (
+                      {(showAllTopAgents ? byAgent : byAgent.slice(0, 10)).map((a) => (
                         <tr key={a.key}>
                           <td>{a.key}</td>
                           <td className="num">{(activeMembersByAgent[a.key] || 0).toLocaleString()}</td>
@@ -2726,6 +2727,11 @@ export default function App() {
                       ))}
                     </tbody>
                   </table>
+                  {byAgent.length > 10 && (
+                    <button className="pt-btn text" style={{ marginTop: 10 }} onClick={() => setShowAllTopAgents((v) => !v)}>
+                      {showAllTopAgents ? <>\u2191 Show top 10 only</> : <>\u2193 Show all {byAgent.length} agents</>}
+                    </button>
+                  )}
                 </div>
               </>
             )}
