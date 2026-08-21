@@ -526,6 +526,12 @@ function isRealTermDate(termDate) {
   // as if no term date were given at all.
   return year >= 2015 && year <= 2099;
 }
+function neverEffective(effectiveDate, termDate) {
+  // Effective date and term date on the exact same day means the policy was
+  // cancelled before coverage ever really started \u2014 not a real new member,
+  // not a real lost member, not counted as active. Excluded entirely.
+  return effectiveDate && termDate && effectiveDate === termDate;
+}
 function nextMonthStr(ym) {
   const [y, m] = ym.split("-").map(Number);
   const nm = m === 12 ? 1 : m + 1;
@@ -1495,6 +1501,7 @@ export default function App() {
     const map = {};
     filteredMembershipLatest.forEach((r) => {
       if (!r.effectiveDate || r.effectiveDate > todayStr) return; // not started yet
+      if (neverEffective(r.effectiveDate, r.termDate)) return; // cancelled before coverage started
       if (isRealTermDate(r.termDate) && r.termDate < todayStr) return; // already past their last active day
       const agentKey = resolveAgentName(r.agent, "", "", "");
       map[agentKey] = (map[agentKey] || 0) + 1;
@@ -1510,7 +1517,7 @@ export default function App() {
     const excludeFromNew = new Set();
     const byClientCarrier = {};
     Object.values(membershipLatestByPolicy).forEach((r) => {
-      if (!r.effectiveDate) return;
+      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return;
       const groupKey = r.carrier + "::" + normalizeClientKey(r.clientName);
       if (!byClientCarrier[groupKey]) byClientCarrier[groupKey] = [];
       byClientCarrier[groupKey].push(r);
@@ -1534,6 +1541,7 @@ export default function App() {
   const totalActiveMembers = useMemo(() => {
     return filteredMembershipLatest.filter((r) => {
       if (!r.effectiveDate || r.effectiveDate > todayStr) return false; // not started yet
+      if (neverEffective(r.effectiveDate, r.termDate)) return false; // cancelled before coverage started
       if (isRealTermDate(r.termDate) && r.termDate < todayStr) return false; // already past their last active day
       return true;
     }).length;
@@ -1549,6 +1557,7 @@ export default function App() {
     let newCount = 0, lostCount = 0;
     filteredMembershipLatest.forEach((r) => {
       if (!r.effectiveDate) return;
+      if (neverEffective(r.effectiveDate, r.termDate)) return; // cancelled before coverage started, not a real event
       const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
       const effMonth = r.effectiveDate.slice(0, 7);
       if (r.effectiveDate <= todayStr && !seamlessTransitions.excludeFromNew.has(policyKey)) {
