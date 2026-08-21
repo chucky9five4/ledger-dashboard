@@ -1491,6 +1491,16 @@ export default function App() {
   }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const activeMembersByAgent = useMemo(() => {
+    const map = {};
+    filteredMembershipLatest.forEach((r) => {
+      if (!r.effectiveDate || r.effectiveDate > todayStr) return; // not started yet
+      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return; // already past their last active day
+      const agentKey = resolveAgentName(r.agent, "", "", "");
+      map[agentKey] = (map[agentKey] || 0) + 1;
+    });
+    return map;
+  }, [filteredMembershipLatest, todayStr, agentLookupMaps]);
   // A same-client, same-carrier transition where the old policy's term date
   // is exactly the day before the new policy's effective date is a plan
   // switch, not real churn \u2014 excluded from both Lost and New so it doesn't
@@ -1545,7 +1555,7 @@ export default function App() {
         if (!membershipGrowthMonths || membershipGrowthMonths.includes(effMonth)) newCount++;
       }
       if (isRealTermDate(r.termDate) && !seamlessTransitions.excludeFromLost.has(policyKey)) {
-        const lostMonth = nextMonthStr(r.termDate.slice(0, 7));
+        const lostMonth = addOneDayStr(r.termDate).slice(0, 7);
         if (!membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth)) lostCount++;
       }
     });
@@ -2696,12 +2706,12 @@ export default function App() {
                 <div className="pt-card">
                   <h3>Top agents in this view</h3>
                   <table className="pt-table">
-                    <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th></tr></thead>
+                    <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
                       {byAgent.slice(0, 10).map((a) => (
                         <tr key={a.key}>
                           <td>{a.key}</td>
-                          <td className="num">{a.count}</td>
+                          <td className="num">{(activeMembersByAgent[a.key] || 0).toLocaleString()}</td>
                           <td className="num mono">{<Money v={a.revenue} />}</td>
                         </tr>
                       ))}
