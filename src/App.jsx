@@ -1504,6 +1504,14 @@ export default function App() {
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
   const [showAllTopAgents, setShowAllTopAgents] = useState(false);
   const [membershipDrillDown, setMembershipDrillDown] = useState(null); // null | { type: "total"|"new"|"lost"|"agent", agentName?: string }
+  const [drillFilterCarrier, setDrillFilterCarrier] = useState("All");
+  const [drillFilterName, setDrillFilterName] = useState("");
+  const [drillFilterEffDate, setDrillFilterEffDate] = useState("");
+  const [drillFilterTermDate, setDrillFilterTermDate] = useState("");
+  function openMembershipDrillDown(dd) {
+    setDrillFilterCarrier("All"); setDrillFilterName(""); setDrillFilterEffDate(""); setDrillFilterTermDate("");
+    setMembershipDrillDown(dd);
+  }
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byMonth = useMemo(() => {
     const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
@@ -1636,6 +1644,21 @@ export default function App() {
     }
     return null;
   }, [membershipDrillDown, activeMembersList, newMembersList, lostMembersList, membershipPeriodLabel, agentLookupMaps]);
+  const drillDownCarrierOptions = useMemo(() => {
+    if (!membershipDrillDownData) return [];
+    return [...new Set(membershipDrillDownData.rows.map((r) => r.carrier))].sort();
+  }, [membershipDrillDownData]);
+  const filteredDrillDownRows = useMemo(() => {
+    if (!membershipDrillDownData) return [];
+    const nameQuery = drillFilterName.trim().toLowerCase();
+    return membershipDrillDownData.rows.filter((r) => {
+      if (drillFilterCarrier !== "All" && r.carrier !== drillFilterCarrier) return false;
+      if (nameQuery && !r.clientName.toLowerCase().includes(nameQuery)) return false;
+      if (drillFilterEffDate && r.effectiveDate !== drillFilterEffDate) return false;
+      if (drillFilterTermDate && r.termDate !== drillFilterTermDate) return false;
+      return true;
+    });
+  }, [membershipDrillDownData, drillFilterCarrier, drillFilterName, drillFilterEffDate, drillFilterTermDate]);
   const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
   const clientStatusAcrossCarriers = useMemo(() => {
@@ -2703,9 +2726,9 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Membership growth \u2014 {membershipGrowthMonths[0] === membershipGrowthMonths[membershipGrowthMonths.length - 1] ? membershipGrowthMonths[0] : `${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}`}</div>
                   <div className="pt-cards pt-cards-4">
-                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => setMembershipDrillDown({ type: "total" })} />
-                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => setMembershipDrillDown({ type: "new" })} />
-                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => setMembershipDrillDown({ type: "lost" })} />
+                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => openMembershipDrillDown({ type: "total" })} />
+                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => openMembershipDrillDown({ type: "new" })} />
+                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => openMembershipDrillDown({ type: "lost" })} />
                     <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} period={membershipPeriodLabel} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. "Total active members" is always as of right now, from your latest upload for each policy, regardless of any date filter. A policy counts as "lost" the month after its term date, since it was still active through the end of its term month. A same-client, same-carrier switch with zero gap between the old term date and the new effective date is treated as one continuous membership, not a loss plus a new gain. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored, and nothing with a future effective date counts as active yet.</p>
@@ -2767,7 +2790,7 @@ export default function App() {
                     <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
                       {(showAllTopAgents ? byAgent : byAgent.slice(0, 10)).map((a) => (
-                        <tr key={a.key} className={activeMembersByAgent[a.key] ? "pt-row-clickable" : ""} onClick={() => activeMembersByAgent[a.key] && setMembershipDrillDown({ type: "agent", agentName: a.key })}>
+                        <tr key={a.key} className={activeMembersByAgent[a.key] ? "pt-row-clickable" : ""} onClick={() => activeMembersByAgent[a.key] && openMembershipDrillDown({ type: "agent", agentName: a.key })}>
                           <td>{a.key}</td>
                           <td className="num">{(activeMembersByAgent[a.key] || 0).toLocaleString()}</td>
                           <td className="num mono">{<Money v={a.revenue} />}</td>
@@ -2794,13 +2817,39 @@ export default function App() {
                 <button className="pt-btn ghost small" onClick={() => setMembershipDrillDown(null)}><X size={14} /></button>
               </div>
               <p className="pt-hint" style={{ marginBottom: 12 }}>{membershipDrillDownData.rows.length} client(s) \u2014 from production statements only, respecting your current Carrier/Agent filters.</p>
-              {membershipDrillDownData.rows.length === 0 ? (
+              <div className="pt-filters" style={{ marginBottom: 14 }}>
+                <div className="pt-filter">
+                  <label>Carrier</label>
+                  <select value={drillFilterCarrier} onChange={(e) => setDrillFilterCarrier(e.target.value)}>
+                    <option value="All">All</option>
+                    {drillDownCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="pt-filter">
+                  <label>Member name</label>
+                  <input value={drillFilterName} onChange={(e) => setDrillFilterName(e.target.value)} placeholder="Search\u2026" />
+                </div>
+                <div className="pt-filter">
+                  <label>Effective date</label>
+                  <input type="date" value={drillFilterEffDate} onChange={(e) => setDrillFilterEffDate(e.target.value)} />
+                </div>
+                <div className="pt-filter">
+                  <label>Term date</label>
+                  <input type="date" value={drillFilterTermDate} onChange={(e) => setDrillFilterTermDate(e.target.value)} />
+                </div>
+                {(drillFilterCarrier !== "All" || drillFilterName || drillFilterEffDate || drillFilterTermDate) && (
+                  <button className="pt-btn text" onClick={() => { setDrillFilterCarrier("All"); setDrillFilterName(""); setDrillFilterEffDate(""); setDrillFilterTermDate(""); }}>
+                    Clear filters
+                  </button>
+                )}
+              </div>
+              {filteredDrillDownRows.length === 0 ? (
                 <p className="pt-hint">No matching clients.</p>
               ) : (
                 <table className="pt-table">
                   <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Plan</th><th>Effective date</th><th>Term date</th><th>Status</th></tr></thead>
                   <tbody>
-                    {membershipDrillDownData.rows.map((r, i) => (
+                    {filteredDrillDownRows.map((r, i) => (
                       <tr key={i}>
                         <td>{r.clientName}</td>
                         <td>{resolveAgentName(r.agent, "", "", "")}</td>
