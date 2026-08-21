@@ -1503,6 +1503,7 @@ export default function App() {
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
   const [showAllTopAgents, setShowAllTopAgents] = useState(false);
+  const [membershipDrillDown, setMembershipDrillDown] = useState(null); // null | { type: "total"|"new"|"lost"|"agent", agentName?: string }
   const byPlanType = useMemo(() => groupBy(filteredRecords, (r) => r.planType).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byMonth = useMemo(() => {
     const grouped = groupBy(filteredRecords.filter((r) => r.paymentDate), (r) => r.paymentDate.slice(0, 7));
@@ -1525,17 +1526,6 @@ export default function App() {
   }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const activeMembersByAgent = useMemo(() => {
-    const map = {};
-    filteredMembershipLatest.forEach((r) => {
-      if (!r.effectiveDate || r.effectiveDate > todayStr) return; // not started yet
-      if (neverEffective(r.effectiveDate, r.termDate)) return; // cancelled before coverage started
-      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return; // already past their last active day
-      const agentKey = resolveAgentName(r.agent, "", "", "");
-      map[agentKey] = (map[agentKey] || 0) + 1;
-    });
-    return map;
-  }, [filteredMembershipLatest, todayStr, agentLookupMaps]);
   // A same-client, same-carrier transition where the old policy's term date
   // is exactly the day before the new policy's effective date is a plan
   // switch, not real churn \u2014 excluded from both Lost and New so it doesn't
@@ -1564,16 +1554,6 @@ export default function App() {
     });
     return { excludeFromLost, excludeFromNew };
   }, [membershipLatestByPolicy]);
-  // Always "as of right now," using whatever the latest upload says \u2014 not
-  // tied to the Paid From/To range, same as Active/Inactive Policies.
-  const totalActiveMembers = useMemo(() => {
-    return filteredMembershipLatest.filter((r) => {
-      if (!r.effectiveDate || r.effectiveDate > todayStr) return false; // not started yet
-      if (neverEffective(r.effectiveDate, r.termDate)) return false; // cancelled before coverage started
-      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return false; // already past their last active day
-      return true;
-    }).length;
-  }, [filteredMembershipLatest, todayStr]);
   const membershipGrowthMonths = useMemo(() => {
     if (dateFrom && dateTo) return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
     // No range set: default to the current calendar month, not an all-time
@@ -1581,23 +1561,52 @@ export default function App() {
     // right now, not a running sum of everything ever uploaded.
     return [todayStr.slice(0, 7)];
   }, [dateFrom, dateTo, todayStr]);
-  const membershipGrowth = useMemo(() => {
-    let newCount = 0, lostCount = 0;
-    filteredMembershipLatest.forEach((r) => {
-      if (!r.effectiveDate) return;
-      if (neverEffective(r.effectiveDate, r.termDate)) return; // cancelled before coverage started, not a real event
-      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
-      const effMonth = r.effectiveDate.slice(0, 7);
-      if (r.effectiveDate <= todayStr && !seamlessTransitions.excludeFromNew.has(policyKey)) {
-        if (!membershipGrowthMonths || membershipGrowthMonths.includes(effMonth)) newCount++;
-      }
-      if (isRealTermDate(r.termDate) && !seamlessTransitions.excludeFromLost.has(policyKey)) {
-        const lostMonth = addOneDayStr(r.termDate).slice(0, 7);
-        if (!membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth)) lostCount++;
-      }
+  // Always "as of right now," using whatever the latest upload says \u2014 not
+  // tied to the Paid From/To range, same as Active/Inactive Policies. Built as
+  // an explicit list (not just a count) so the drill-down modal can never
+  // show something different from what the card number says.
+  const activeMembersList = useMemo(() => {
+    return filteredMembershipLatest.filter((r) => {
+      if (!r.effectiveDate || r.effectiveDate > todayStr) return false; // not started yet
+      if (neverEffective(r.effectiveDate, r.termDate)) return false; // cancelled before coverage started
+      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return false; // already past their last active day
+      return true;
     });
-    return { newCount, lostCount, netCount: newCount - lostCount };
+  }, [filteredMembershipLatest, todayStr]);
+  const totalActiveMembers = activeMembersList.length;
+  const newMembersList = useMemo(() => {
+    return filteredMembershipLatest.filter((r) => {
+      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return false;
+      if (r.effectiveDate > todayStr) return false;
+      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
+      if (seamlessTransitions.excludeFromNew.has(policyKey)) return false;
+      const effMonth = r.effectiveDate.slice(0, 7);
+      return !membershipGrowthMonths || membershipGrowthMonths.includes(effMonth);
+    });
   }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions, todayStr]);
+  const lostMembersList = useMemo(() => {
+    return filteredMembershipLatest.filter((r) => {
+      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return false;
+      if (!isRealTermDate(r.termDate)) return false;
+      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
+      if (seamlessTransitions.excludeFromLost.has(policyKey)) return false;
+      const lostMonth = addOneDayStr(r.termDate).slice(0, 7);
+      return !membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth);
+    });
+  }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions]);
+  const membershipGrowth = useMemo(() => ({
+    newCount: newMembersList.length,
+    lostCount: lostMembersList.length,
+    netCount: newMembersList.length - lostMembersList.length,
+  }), [newMembersList, lostMembersList]);
+  const activeMembersByAgent = useMemo(() => {
+    const map = {};
+    activeMembersList.forEach((r) => {
+      const agentKey = resolveAgentName(r.agent, "", "", "");
+      map[agentKey] = (map[agentKey] || 0) + 1;
+    });
+    return map;
+  }, [activeMembersList, agentLookupMaps]);
   const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
 
   // Period badges shown in the corner of each card, so nothing is left to
@@ -1616,6 +1625,17 @@ export default function App() {
   }, [dateFrom, dateTo]);
   const asOfTodayLabel = "As of today";
   const allTimeLabel = "All time";
+  const membershipDrillDownData = useMemo(() => {
+    if (!membershipDrillDown) return null;
+    if (membershipDrillDown.type === "total") return { title: "Total active members", rows: activeMembersList };
+    if (membershipDrillDown.type === "new") return { title: `New members \u2014 ${membershipPeriodLabel}`, rows: newMembersList };
+    if (membershipDrillDown.type === "lost") return { title: `Lost members \u2014 ${membershipPeriodLabel}`, rows: lostMembersList };
+    if (membershipDrillDown.type === "agent") {
+      const rows = activeMembersList.filter((r) => resolveAgentName(r.agent, "", "", "") === membershipDrillDown.agentName);
+      return { title: `${membershipDrillDown.agentName} \u2014 active members`, rows };
+    }
+    return null;
+  }, [membershipDrillDown, activeMembersList, newMembersList, lostMembersList, membershipPeriodLabel, agentLookupMaps]);
   const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
   const clientStatusAcrossCarriers = useMemo(() => {
@@ -2683,9 +2703,9 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Membership growth \u2014 {membershipGrowthMonths[0] === membershipGrowthMonths[membershipGrowthMonths.length - 1] ? membershipGrowthMonths[0] : `${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}`}</div>
                   <div className="pt-cards pt-cards-4">
-                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} />
-                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} />
-                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} />
+                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => setMembershipDrillDown({ type: "total" })} />
+                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => setMembershipDrillDown({ type: "new" })} />
+                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => setMembershipDrillDown({ type: "lost" })} />
                     <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} period={membershipPeriodLabel} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. "Total active members" is always as of right now, from your latest upload for each policy, regardless of any date filter. A policy counts as "lost" the month after its term date, since it was still active through the end of its term month. A same-client, same-carrier switch with zero gap between the old term date and the new effective date is treated as one continuous membership, not a loss plus a new gain. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored, and nothing with a future effective date counts as active yet.</p>
@@ -2742,11 +2762,12 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Top agents in this view</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Click a row to see that agent's active clients \u2014 from production statements only, separate from the commission data behind Revenue.</p>
                   <table className="pt-table">
                     <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
                       {(showAllTopAgents ? byAgent : byAgent.slice(0, 10)).map((a) => (
-                        <tr key={a.key}>
+                        <tr key={a.key} className={activeMembersByAgent[a.key] ? "pt-row-clickable" : ""} onClick={() => activeMembersByAgent[a.key] && setMembershipDrillDown({ type: "agent", agentName: a.key })}>
                           <td>{a.key}</td>
                           <td className="num">{(activeMembersByAgent[a.key] || 0).toLocaleString()}</td>
                           <td className="num mono">{<Money v={a.revenue} />}</td>
@@ -2762,6 +2783,38 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {membershipDrillDownData && (
+          <div className="pt-modal-backdrop" onClick={() => setMembershipDrillDown(null)}>
+            <div className="pt-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="pt-row-between" style={{ marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>{membershipDrillDownData.title}</h3>
+                <button className="pt-btn ghost small" onClick={() => setMembershipDrillDown(null)}><X size={14} /></button>
+              </div>
+              <p className="pt-hint" style={{ marginBottom: 12 }}>{membershipDrillDownData.rows.length} client(s) \u2014 from production statements only, respecting your current Carrier/Agent filters.</p>
+              {membershipDrillDownData.rows.length === 0 ? (
+                <p className="pt-hint">No matching clients.</p>
+              ) : (
+                <table className="pt-table">
+                  <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Plan</th><th>Effective date</th><th>Term date</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {membershipDrillDownData.rows.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.clientName}</td>
+                        <td>{resolveAgentName(r.agent, "", "", "")}</td>
+                        <td>{r.carrier}</td>
+                        <td>{r.planName}</td>
+                        <td>{fmtDate(r.effectiveDate)}</td>
+                        <td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td>
+                        <td><StatusBadge status={r.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         )}
 
@@ -4376,9 +4429,9 @@ function MoneyShort({ v }) {
   const n = Number(v) || 0;
   return <span className={moneyClass(n)}>{fmtMoneyShort(n)}</span>;
 }
-function StatCard({ label, value, tone, money, caption, period }) {
+function StatCard({ label, value, tone, money, caption, period, onClick }) {
   return (
-    <div className="pt-stat-card">
+    <div className={"pt-stat-card" + (onClick ? " pt-stat-card-clickable" : "")} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}>
       <div className="pt-row-between" style={{ alignItems: "flex-start" }}>
         <div className="pt-stat-label">{label}</div>
         {period && <span className="pt-stat-period">{period}</span>}
@@ -4510,6 +4563,12 @@ const CSS = `
 .pt-stat-caption { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.3; }
 .pt-stat-period { font-size: 10px; color: var(--muted); background: #F0EDE4; border-radius: 4px; padding: 2px 6px; white-space: nowrap; flex-shrink: 0; }
 .pt-stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.pt-stat-card-clickable { cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+.pt-stat-card-clickable:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(206,51,52,0.12); }
+.pt-row-clickable { cursor: pointer; }
+.pt-row-clickable:hover { background: #FAF7EF; }
+.pt-modal-backdrop { position: fixed; inset: 0; background: rgba(20,16,10,0.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; z-index: 1000; overflow-y: auto; }
+.pt-modal { background: var(--card); border-radius: 10px; padding: 24px; max-width: 900px; width: 100%; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
 .pt-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
 .pt-stat-value { font-family: "SF Mono", monospace; font-size: 20px; letter-spacing: -0.01em; border-bottom: 2px solid var(--gold-soft); padding-bottom: 2px; display: inline-block; }
 .pt-stat-value.rose { color: var(--rose); border-bottom-color: #F1D4D1; }
