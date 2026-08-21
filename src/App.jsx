@@ -1529,9 +1529,12 @@ export default function App() {
     }).length;
   }, [filteredMembershipLatest, todayStr]);
   const membershipGrowthMonths = useMemo(() => {
-    if (!dateFrom || !dateTo) return null; // no range set = consider every month present in the data
-    return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
-  }, [dateFrom, dateTo]);
+    if (dateFrom && dateTo) return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
+    // No range set: default to the current calendar month, not an all-time
+    // cumulative total \u2014 matches "Total active members" always being as of
+    // right now, not a running sum of everything ever uploaded.
+    return [todayStr.slice(0, 7)];
+  }, [dateFrom, dateTo, todayStr]);
   const membershipGrowth = useMemo(() => {
     let newCount = 0, lostCount = 0;
     filteredMembershipLatest.forEach((r) => {
@@ -2606,16 +2609,15 @@ export default function App() {
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Book of business</div>
-                  <div className="pt-cards pt-cards-4">
-                    <StatCard label="Active policies" value={activePolicyCount.toLocaleString()} tone="ink" />
-                    <StatCard label="Inactive policies" value={inactivePolicyCount.toLocaleString()} tone="ink" />
+                  <div className="pt-cards pt-cards-2">
                     <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
                     <StatCard label="Agents" value={activeAgentCount} tone="ink" />
                   </div>
+                  <p className="pt-hint" style={{ marginTop: 6 }}>Active/inactive membership counts now live in Membership Growth below \u2014 "Total active members" and "Lost members" \u2014 calculated from real effective and term dates instead of status text, so there's one accurate source instead of two that could disagree.</p>
                 </div>
 
                 <div className="pt-stat-section">
-                  <div className="pt-stat-section-label">Membership growth {membershipGrowthMonths ? `\u2014 ${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}` : "\u2014 all time"}</div>
+                  <div className="pt-stat-section-label">Membership growth \u2014 {membershipGrowthMonths[0] === membershipGrowthMonths[membershipGrowthMonths.length - 1] ? membershipGrowthMonths[0] : `${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}`}</div>
                   <div className="pt-cards pt-cards-4">
                     <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" />
                     <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" />
