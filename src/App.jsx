@@ -51,6 +51,23 @@ const MAPPING_FIELDS = [
 function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
+function flipNameOrder(name) {
+  // "Nicholas Basto" <-> "Basto, Nicholas" \u2014 carriers are inconsistent about
+  // which order they use, so when a direct match fails, try the other order
+  // before giving up.
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.includes(",")) {
+    const [last, rest] = trimmed.split(",").map((s) => s.trim());
+    if (!last || !rest) return null;
+    return `${rest} ${last}`;
+  }
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1];
+  const first = parts.slice(0, -1).join(" ");
+  return `${last}, ${first}`;
+}
 function normalizeClientKey(s) {
   const cleaned = String(s || "").toUpperCase().replace(/[,.]/g, " ").trim();
   // Drop single-letter tokens (middle initials) so "Suarez, Maria I" matches
@@ -65,6 +82,8 @@ const MEMBER_MAPPING_FIELDS = [
   { key: "clientLastName", label: "Client last name (if separate columns)", required: false },
   { key: "status", label: "Status (Active/Inactive/Termed)", required: true },
   { key: "agent", label: "Agent name", required: false },
+  { key: "agentNpn", label: "Agent NPN (recommended \u2014 matches regardless of name format)", required: false },
+  { key: "agentCarrierId", label: "Agent's carrier-specific ID (alternative to NPN)", required: false },
   { key: "planName", label: "Plan name", required: false },
   { key: "pbp", label: "PBP code (for carriers with unclear plan names)", required: false },
   { key: "effectiveDate", label: "Effective date", required: false },
@@ -763,6 +782,11 @@ export default function App() {
     if (carrierId && carrierIdMap[(carrier || "") + "::" + carrierId]) return agentById[carrierIdMap[(carrier || "") + "::" + carrierId]] || rawName;
     const key = normalizeNameKey(rawName);
     if (nameTextMap[key]) return agentById[nameTextMap[key]] || rawName;
+    const flipped = flipNameOrder(rawName);
+    if (flipped) {
+      const flippedKey = normalizeNameKey(flipped);
+      if (nameTextMap[flippedKey]) return agentById[nameTextMap[flippedKey]] || rawName;
+    }
     return rawName;
   }
 
@@ -782,7 +806,7 @@ export default function App() {
   const [planTypeColumn, setPlanTypeColumn] = useState("");
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
-  const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+  const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
   const [rawFileObject, setRawFileObject] = useState(null);
@@ -790,7 +814,7 @@ export default function App() {
   function resetImportStaging() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
-    setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+    setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
   }
@@ -989,12 +1013,15 @@ export default function App() {
       const rowClientName = memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]);
       const rowEffectiveDate = memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "";
       const rawAgent = memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "";
+      const rowAgentNpn = memberMapping.agentNpn ? String(r[memberMapping.agentNpn] ?? "").trim() : "";
+      const rowAgentCarrierId = memberMapping.agentCarrierId ? String(r[memberMapping.agentCarrierId] ?? "").trim() : "";
+      const resolvedAgent = resolveAgentName(rawAgent, rowAgentNpn, rowAgentCarrierId, rowCarrier);
       const override = rowClientName && rowEffectiveDate ? findMembershipOverride(rowCarrier, rowClientName, rowEffectiveDate) : null;
       return {
         carrier: rowCarrier,
         clientName: rowClientName,
         status: normalizeStatus(r[memberMapping.status]),
-        agent: override ? override.agentName : rawAgent,
+        agent: override ? override.agentName : resolvedAgent,
         planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
         pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
         effectiveDate: rowEffectiveDate,
