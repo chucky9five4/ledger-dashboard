@@ -1552,6 +1552,23 @@ export default function App() {
     return { newCount, lostCount, netCount: newCount - lostCount };
   }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions, todayStr]);
   const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
+
+  // Period badges shown in the corner of each card, so nothing is left to
+  // assumption about which months a number represents.
+  function fmtMonthDay(dateStr) {
+    const [, m, d] = dateStr.split("-");
+    return `${m}/${d}`;
+  }
+  const commissionPeriodLabel = useMemo(() => {
+    if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
+    return "Total";
+  }, [dateFrom, dateTo]);
+  const membershipPeriodLabel = useMemo(() => {
+    if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
+    return "This month";
+  }, [dateFrom, dateTo]);
+  const asOfTodayLabel = "As of today";
+  const allTimeLabel = "All time";
   const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
   const clientStatusAcrossCarriers = useMemo(() => {
@@ -2584,34 +2601,34 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Cash flow</div>
                   <div className="pt-cards pt-cards-3">
-                    <StatCard label="Gross revenue" value={fmtMoneyShort(grossRevenue)} money={grossRevenue} />
-                    <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} />
-                    <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" />
+                    <StatCard label="Gross revenue" value={fmtMoneyShort(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
+                    <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
+                    <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Revenue breakdown</div>
                   <div className="pt-cards pt-cards-2">
-                    <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" />
-                    <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" />
+                    <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">\u2014 across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
                   <div className="pt-cards pt-cards-3">
-                    <StatCard label="Avg net" value={fmtMoneyShort(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" />
-                    <StatCard label="Avg first year" value={fmtMoneyShort(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" />
-                    <StatCard label="Avg renewal" value={fmtMoneyShort(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" />
+                    <StatCard label="Avg net" value={fmtMoneyShort(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg first year" value={fmtMoneyShort(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg renewal" value={fmtMoneyShort(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Book of business</div>
                   <div className="pt-cards pt-cards-2">
-                    <StatCard label="Carriers" value={activeCarrierCount} tone="ink" />
-                    <StatCard label="Agents" value={activeAgentCount} tone="ink" />
+                    <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} />
+                    <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: 6 }}>Active/inactive membership counts now live in Membership Growth below \u2014 "Total active members" and "Lost members" \u2014 calculated from real effective and term dates instead of status text, so there's one accurate source instead of two that could disagree.</p>
                 </div>
@@ -2619,10 +2636,10 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Membership growth \u2014 {membershipGrowthMonths[0] === membershipGrowthMonths[membershipGrowthMonths.length - 1] ? membershipGrowthMonths[0] : `${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}`}</div>
                   <div className="pt-cards pt-cards-4">
-                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" />
-                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" />
-                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" />
-                    <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} />
+                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} />
+                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} />
+                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} />
+                    <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} period={membershipPeriodLabel} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. "Total active members" is always as of right now, from your latest upload for each policy, regardless of any date filter. A policy counts as "lost" the month after its term date, since it was still active through the end of its term month. A same-client, same-carrier switch with zero gap between the old term date and the new effective date is treated as one continuous membership, not a loss plus a new gain. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored, and nothing with a future effective date counts as active yet.</p>
                 </div>
@@ -4307,10 +4324,13 @@ function MoneyShort({ v }) {
   const n = Number(v) || 0;
   return <span className={moneyClass(n)}>{fmtMoneyShort(n)}</span>;
 }
-function StatCard({ label, value, tone, money, caption }) {
+function StatCard({ label, value, tone, money, caption, period }) {
   return (
     <div className="pt-stat-card">
-      <div className="pt-stat-label">{label}</div>
+      <div className="pt-row-between" style={{ alignItems: "flex-start" }}>
+        <div className="pt-stat-label">{label}</div>
+        {period && <span className="pt-stat-period">{period}</span>}
+      </div>
       <div className={"pt-stat-value " + (money !== undefined ? moneyClass(money) : tone)}>{value}</div>
       {caption && <div className="pt-stat-caption">{caption}</div>}
     </div>
@@ -4436,6 +4456,7 @@ const CSS = `
 .pt-stat-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
 .pt-stat-section-sub { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); font-size: 11px; }
 .pt-stat-caption { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.3; }
+.pt-stat-period { font-size: 10px; color: var(--muted); background: #F0EDE4; border-radius: 4px; padding: 2px 6px; white-space: nowrap; flex-shrink: 0; }
 .pt-stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .pt-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
 .pt-stat-value { font-family: "SF Mono", monospace; font-size: 20px; letter-spacing: -0.01em; border-bottom: 2px solid var(--gold-soft); padding-bottom: 2px; display: inline-block; }
