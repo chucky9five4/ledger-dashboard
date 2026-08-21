@@ -532,6 +532,11 @@ function nextMonthStr(ym) {
   const ny = m === 12 ? y + 1 : y;
   return `${ny}-${String(nm).padStart(2, "0")}`;
 }
+function addOneDayStr(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 function monthsBetweenInclusive(fromYm, toYm) {
   const months = [];
   let cur = fromYm;
@@ -1485,6 +1490,44 @@ export default function App() {
     );
   }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  // A same-client, same-carrier transition where the old policy's term date
+  // is exactly the day before the new policy's effective date is a plan
+  // switch, not real churn \u2014 excluded from both Lost and New so it doesn't
+  // get double-counted as losing one member and gaining another.
+  const seamlessTransitions = useMemo(() => {
+    const excludeFromLost = new Set();
+    const excludeFromNew = new Set();
+    const byClientCarrier = {};
+    Object.values(membershipLatestByPolicy).forEach((r) => {
+      if (!r.effectiveDate) return;
+      const groupKey = r.carrier + "::" + normalizeClientKey(r.clientName);
+      if (!byClientCarrier[groupKey]) byClientCarrier[groupKey] = [];
+      byClientCarrier[groupKey].push(r);
+    });
+    Object.values(byClientCarrier).forEach((policies) => {
+      if (policies.length < 2) return;
+      const sorted = [...policies].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const cur = sorted[i];
+        const next = sorted[i + 1];
+        if (isRealTermDate(cur.termDate) && addOneDayStr(cur.termDate) === next.effectiveDate) {
+          excludeFromLost.add(cur.carrier + "::" + normalizeClientKey(cur.clientName) + "::" + cur.effectiveDate);
+          excludeFromNew.add(next.carrier + "::" + normalizeClientKey(next.clientName) + "::" + next.effectiveDate);
+        }
+      }
+    });
+    return { excludeFromLost, excludeFromNew };
+  }, [membershipLatestByPolicy]);
+  // Always "as of right now," using whatever the latest upload says \u2014 not
+  // tied to the Paid From/To range, same as Active/Inactive Policies.
+  const totalActiveMembers = useMemo(() => {
+    return filteredMembershipLatest.filter((r) => {
+      if (!r.effectiveDate || r.effectiveDate > todayStr) return false; // not started yet
+      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return false; // already past their last active day
+      return true;
+    }).length;
+  }, [filteredMembershipLatest, todayStr]);
   const membershipGrowthMonths = useMemo(() => {
     if (!dateFrom || !dateTo) return null; // no range set = consider every month present in the data
     return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
@@ -1493,15 +1536,18 @@ export default function App() {
     let newCount = 0, lostCount = 0;
     filteredMembershipLatest.forEach((r) => {
       if (!r.effectiveDate) return;
+      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
       const effMonth = r.effectiveDate.slice(0, 7);
-      if (!membershipGrowthMonths || membershipGrowthMonths.includes(effMonth)) newCount++;
-      if (isRealTermDate(r.termDate)) {
+      if (r.effectiveDate <= todayStr && !seamlessTransitions.excludeFromNew.has(policyKey)) {
+        if (!membershipGrowthMonths || membershipGrowthMonths.includes(effMonth)) newCount++;
+      }
+      if (isRealTermDate(r.termDate) && !seamlessTransitions.excludeFromLost.has(policyKey)) {
         const lostMonth = nextMonthStr(r.termDate.slice(0, 7));
         if (!membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth)) lostCount++;
       }
     });
     return { newCount, lostCount, netCount: newCount - lostCount };
-  }, [filteredMembershipLatest, membershipGrowthMonths]);
+  }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions, todayStr]);
   const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
   const pendingPolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "pending").length, [filteredMembershipLatest]);
 
@@ -2084,6 +2130,8 @@ export default function App() {
   const [payCarrierFixed, setPayCarrierFixed] = useState("");
   const [payCarrierCol, setPayCarrierCol] = useState("");
   const [payClientCol, setPayClientCol] = useState("");
+  const [payClientFirstCol, setPayClientFirstCol] = useState("");
+  const [payClientLastCol, setPayClientLastCol] = useState("");
   const [payEffDateCol, setPayEffDateCol] = useState("");
   const [payWrongAgentCol, setPayWrongAgentCol] = useState("");
   const [payAgentCol, setPayAgentCol] = useState("");
@@ -2112,9 +2160,9 @@ export default function App() {
   function resetPayableImport() {
     setPayFileName(""); setPayHeaders([]); setPayRows([]);
     setPayCarrierMode("fixed"); setPayCarrierFixed(""); setPayCarrierCol("");
-    setPayClientCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol("");
+    setPayClientCol(""); setPayClientFirstCol(""); setPayClientLastCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol("");
   }
-  const payableImportValid = (payCarrierMode === "fixed" ? payCarrierFixed.trim() : payCarrierCol) && payClientCol && payEffDateCol && payAgentCol && payAmountCol;
+  const payableImportValid = (payCarrierMode === "fixed" ? payCarrierFixed.trim() : payCarrierCol) && (payClientCol || payClientFirstCol || payClientLastCol) && payEffDateCol && payAgentCol && payAmountCol;
   const payableSkipCount = useMemo(() => {
     if (!payWrongAgentCol || !payAgentCol || !payRows.length) return 0;
     return payRows.filter((r) => String(r[payWrongAgentCol] ?? "").trim() === String(r[payAgentCol] ?? "").trim()).length;
@@ -2214,7 +2262,8 @@ export default function App() {
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
         const carrier = payCarrierMode === "fixed" ? payCarrierFixed.trim() : String(r[payCarrierCol] ?? "").trim();
-        const clientName = String(r[payClientCol] ?? "").trim();
+        const directName = payClientCol ? String(r[payClientCol] ?? "").trim() : "";
+        const clientName = directName || combineName(payClientFirstCol ? r[payClientFirstCol] : "", payClientLastCol ? r[payClientLastCol] : "");
         const effDate = parseDateValue(r[payEffDateCol]);
         const agentName = String(r[payAgentCol] ?? "").trim();
         const amt = parseMoney(r[payAmountCol]);
@@ -2527,6 +2576,7 @@ export default function App() {
                     </button>
                   )}
                 </div>
+                <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Note: Paid From/To drives commission numbers by payment date, but the same range drives Membership Growth below by <b>effective date</b> instead \u2014 production statements don't have a payment date.</p>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Cash flow</div>
@@ -2566,12 +2616,13 @@ export default function App() {
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Membership growth {membershipGrowthMonths ? `\u2014 ${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}` : "\u2014 all time"}</div>
-                  <div className="pt-cards pt-cards-3">
+                  <div className="pt-cards pt-cards-4">
+                    <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" />
                     <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" />
                     <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" />
                     <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. Set Paid From/To above to look at a specific period; a policy counts as "lost" the month after its term date, since it was still active through the end of its term month. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. "Total active members" is always as of right now, from your latest upload for each policy, regardless of any date filter. A policy counts as "lost" the month after its term date, since it was still active through the end of its term month. A same-client, same-carrier switch with zero gap between the old term date and the new effective date is treated as one continuous membership, not a loss plus a new gain. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored, and nothing with a future effective date counts as active yet.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
@@ -3912,9 +3963,23 @@ export default function App() {
                           </div>
                         )}
                         <div className="pt-field">
-                          <label>Client name column *</label>
+                          <label>Client name column (if one column has the full name)</label>
                           <select value={payClientCol} onChange={(e) => setPayClientCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">\u2014 not used \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>First name column (if name is split)</label>
+                          <select value={payClientFirstCol} onChange={(e) => setPayClientFirstCol(e.target.value)}>
+                            <option value="">\u2014 not used \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Last name column (if name is split)</label>
+                          <select value={payClientLastCol} onChange={(e) => setPayClientLastCol(e.target.value)}>
+                            <option value="">\u2014 not used \u2014</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
