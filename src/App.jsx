@@ -1366,13 +1366,18 @@ export default function App() {
   async function linkRawNameToAgent(rawName, agentId, canonicalName) {
     if (!cloudCfg) return;
     try {
-      await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
-      await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(rawName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
-      await sbFetch(cloudCfg, `membership_updates?agent=eq.${encodeURIComponent(rawName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
-      setRecords((prev) => prev.map((r) => (r.agent === rawName ? { ...r, agent: canonicalName } : r)));
-      setMembershipRecords((prev) => prev.map((r) => (r.agent === rawName ? { ...r, agent: canonicalName } : r)));
+      const isBlank = rawName === "";
+      const policiesFilter = isBlank ? "agent=is.null" : `agent=eq.${encodeURIComponent(rawName)}`;
+      const membershipFilter = isBlank ? "agent=is.null" : `agent=eq.${encodeURIComponent(rawName)}`;
+      if (!isBlank) {
+        await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
+      }
+      await sbFetch(cloudCfg, `policies?${policiesFilter}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
+      await sbFetch(cloudCfg, `membership_updates?${membershipFilter}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
+      setRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
+      setMembershipRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
       await loadDirectory(cloudCfg);
-      showToast(`Linked "${rawName}" to ${canonicalName}.`);
+      showToast(isBlank ? `Fixed \u2014 blank agents assigned to ${canonicalName}.` : `Linked "${rawName}" to ${canonicalName}.`);
     } catch (e) { showToast("Could not link: " + e.message, "error"); }
   }
   async function createAgentFromRawName(rawName) {
@@ -1409,15 +1414,15 @@ export default function App() {
 
   const unmatchedAgentNames = useMemo(() => {
     const { nameTextMap } = agentLookupMaps;
-    const commissionNames = records.map((r) => r.agent);
-    const productionNames = membershipRecords.map((r) => r.agent);
+    const commissionNames = records.map((r) => r.agent ?? "");
+    const productionNames = membershipRecords.map((r) => r.agent ?? "");
     const distinct = [...new Set([...commissionNames, ...productionNames])];
     return distinct
-      .filter((n) => n && !nameTextMap[normalizeNameKey(n)])
+      .filter((n) => n === "" || !nameTextMap[normalizeNameKey(n)])
       .map((n) => {
-        const commRecs = records.filter((r) => r.agent === n);
-        const prodRecs = membershipRecords.filter((r) => r.agent === n);
-        return { name: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
+        const commRecs = records.filter((r) => (r.agent ?? "") === n);
+        const prodRecs = membershipRecords.filter((r) => (r.agent ?? "") === n);
+        return { name: n === "" ? "(blank \u2014 matching failed with no fallback name)" : n, rawName: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
       })
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipRecords, agentLookupMaps]);
@@ -3804,16 +3809,22 @@ export default function App() {
                               <td className="num">{u.productionCount}</td>
                               <td className="num mono">{<Money v={u.revenue} />}</td>
                               <td>
-                                <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
-                                  <option value="">Choose agent\u2026</option>
-                                  {agentDirectory.map((a) => <option key={a.id} value={a.id}>{a.canonicalName}</option>)}
-                                </select>
+                                {u.rawName === "" ? (
+                                  <span className="pt-hint">Fix via Client Lookup, scoped to the right carrier \u2014 a blanket fix here could affect unrelated carriers too.</span>
+                                ) : (
+                                  <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
+                                    <option value="">Choose agent\u2026</option>
+                                    {agentDirectory.map((a) => <option key={a.id} value={a.id}>{a.canonicalName}</option>)}
+                                  </select>
+                                )}
                               </td>
                               <td className="num">
-                                <div className="pt-btn-row">
-                                  <button className="pt-btn ghost small" disabled={!linkChoice[u.name]} onClick={() => linkRawNameToAgent(u.name, linkChoice[u.name], agentDirectory.find((a) => a.id === linkChoice[u.name])?.canonicalName)}><Link2 size={12} /> Link</button>
-                                  <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name)}><UserPlus size={12} /> New</button>
-                                </div>
+                                {u.rawName !== "" && (
+                                  <div className="pt-btn-row">
+                                    <button className="pt-btn ghost small" disabled={!linkChoice[u.name]} onClick={() => linkRawNameToAgent(u.name, linkChoice[u.name], agentDirectory.find((a) => a.id === linkChoice[u.name])?.canonicalName)}><Link2 size={12} /> Link</button>
+                                    <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name)}><UserPlus size={12} /> New</button>
+                                  </div>
+                                )}
                               </td>
                             </tr>
                           ))}
