@@ -48,6 +48,15 @@ const MAPPING_FIELDS = [
   { key: "paymentDate", label: "Payment date", required: false },
   { key: "termDate", label: "Term date (for prorated chargeback math)", required: false },
 ];
+function normalizeIdValue(v) {
+  // NPNs and carrier IDs need to match regardless of stray whitespace, case,
+  // or the common Excel quirk of exporting a whole number as "123456.0" or
+  // silently dropping a leading zero.
+  let s = String(v == null ? "" : v).trim().toUpperCase();
+  s = s.replace(/\.0$/, "");
+  if (/^\d+$/.test(s)) s = s.replace(/^0+(?=\d)/, "");
+  return s;
+}
 function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
@@ -775,8 +784,8 @@ export default function App() {
     const npnMap = {}, carrierIdMap = {}, nameTextMap = {}, agentById = {};
     agentDirectory.forEach((a) => { agentById[a.id] = a.canonicalName; });
     agentAliases.forEach((a) => {
-      if (a.aliasType === "npn") npnMap[a.aliasValue] = a.agentId;
-      else if (a.aliasType === "carrier_id") carrierIdMap[(a.carrier || "") + "::" + a.aliasValue] = a.agentId;
+      if (a.aliasType === "npn") npnMap[normalizeIdValue(a.aliasValue)] = a.agentId;
+      else if (a.aliasType === "carrier_id") carrierIdMap[normalizeNameKey(a.carrier || "") + "::" + normalizeIdValue(a.aliasValue)] = a.agentId;
       else if (a.aliasType === "name_text") nameTextMap[a.aliasValue] = a.agentId;
     });
     agentDirectory.forEach((a) => { nameTextMap[normalizeNameKey(a.canonicalName)] = a.id; });
@@ -785,8 +794,8 @@ export default function App() {
 
   function resolveAgentName(rawName, npn, carrierId, carrier) {
     const { npnMap, carrierIdMap, nameTextMap, agentById } = agentLookupMaps;
-    if (npn && npnMap[npn]) return agentById[npnMap[npn]] || rawName;
-    if (carrierId && carrierIdMap[(carrier || "") + "::" + carrierId]) return agentById[carrierIdMap[(carrier || "") + "::" + carrierId]] || rawName;
+    if (npn && npnMap[normalizeIdValue(npn)]) return agentById[npnMap[normalizeIdValue(npn)]] || rawName;
+    if (carrierId && carrierIdMap[normalizeNameKey(carrier || "") + "::" + normalizeIdValue(carrierId)]) return agentById[carrierIdMap[normalizeNameKey(carrier || "") + "::" + normalizeIdValue(carrierId)]] || rawName;
     const key = normalizeNameKey(rawName);
     if (nameTextMap[key]) return agentById[nameTextMap[key]] || rawName;
     const flipped = flipNameOrder(rawName);
