@@ -548,43 +548,6 @@ function parseDateValue(v) {
   if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
   return "";
 }
-function isRealTermDate(termDate) {
-  if (!termDate) return false;
-  const year = parseInt(termDate.slice(0, 4), 10);
-  // Carriers use far-past or far-future placeholder dates to mean "no real
-  // termination" (Humana: 12/31/99 \u2192 1999, Aetna: 1/1/00 \u2192 2000, United
-  // Healthcare: 2300-01-01). Anything outside a realistic window is treated
-  // as if no term date were given at all.
-  return year >= 2015 && year <= 2099;
-}
-function neverEffective(effectiveDate, termDate) {
-  // Effective date and term date on the exact same day means the policy was
-  // cancelled before coverage ever really started \u2014 not a real new member,
-  // not a real lost member, not counted as active. Excluded entirely.
-  return effectiveDate && termDate && effectiveDate === termDate;
-}
-function nextMonthStr(ym) {
-  const [y, m] = ym.split("-").map(Number);
-  const nm = m === 12 ? 1 : m + 1;
-  const ny = m === 12 ? y + 1 : y;
-  return `${ny}-${String(nm).padStart(2, "0")}`;
-}
-function addOneDayStr(dateStr) {
-  const d = new Date(dateStr + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-function lastDayOfMonth(ym) {
-  const [y, m] = ym.split("-").map(Number);
-  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
-}
-function monthsBetweenInclusive(fromYm, toYm) {
-  const months = [];
-  let cur = fromYm;
-  let guard = 0;
-  while (cur <= toYm && guard < 1200) { months.push(cur); cur = nextMonthStr(cur); guard++; }
-  return months;
-}
 function parseMoney(raw) {
   if (raw === undefined || raw === null || raw === "") return 0;
   let s = String(raw).trim();
@@ -711,7 +674,7 @@ export default function App() {
     await loadDirectory(cfg);
     try {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", statementMonth: r.statement_month || "", importedAt: r.imported_at })));
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", statementMonth: r.statement_month || "", uploadBatchId: r.upload_batch_id || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
@@ -823,10 +786,6 @@ export default function App() {
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
   const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
-  const [noTermDatesMode, setNoTermDatesMode] = useState(false);
-  const [statementMonth, setStatementMonth] = useState("");
-  const [statementMonthMode, setStatementMonthMode] = useState("fixed"); // "fixed" | "column"
-  const [statementMonthCol, setStatementMonthCol] = useState("");
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
   const [rawFileObject, setRawFileObject] = useState(null);
@@ -835,7 +794,6 @@ export default function App() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
-    setNoTermDatesMode(false); setStatementMonth(""); setStatementMonthMode("fixed"); setStatementMonthCol("");
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
   }
@@ -1011,7 +969,7 @@ export default function App() {
     }
   }
 
-  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && (memberMapping.status || noTermDatesMode) && (carrierMode === "fixed" || carrierColumn) && (!noTermDatesMode || (statementMonthMode === "fixed" ? statementMonth : statementMonthCol));
+  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && (carrierMode === "fixed" || carrierColumn);
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
@@ -1029,37 +987,6 @@ export default function App() {
   // hierarchy change) \u2014 compares this new statement-month against the most
   // recent prior one for the same carrier, and marks anyone who was there
   // before but is missing now as termed on the last day of that prior month.
-  async function inferAbsenceTerminations(cfg, carrier, newStatementMonth, newMemberRows, dedupedCount) {
-    const dedupPrefix = dedupedCount > 0 ? `Collapsed ${dedupedCount} duplicate line item(s) to one row per client. ` : "";
-    const priorMonths = [...new Set(
-      batches.filter((b) => b.carrier === carrier && b.noTermDatesMode && b.statementMonth && b.statementMonth < newStatementMonth).map((b) => b.statementMonth)
-    )];
-    if (priorMonths.length === 0) {
-      showToast(`${dedupPrefix}This is your first statement for ${carrier} in this mode \u2014 nothing to compare against yet, so no one was marked as termed.`);
-      return;
-    }
-    const priorMonth = priorMonths.sort().reverse()[0];
-    const priorClientKeys = new Set(
-      membershipRecords.filter((r) => r.carrier === carrier && r.statementMonth === priorMonth).map((r) => normalizeClientKey(r.clientName))
-    );
-    const newClientKeys = new Set(newMemberRows.map((r) => normalizeClientKey(r.clientName)));
-    const absentKeys = [...priorClientKeys].filter((k) => !newClientKeys.has(k));
-    if (absentKeys.length === 0) {
-      showToast(`${dedupPrefix}Compared against ${priorMonth} \u2014 everyone from that statement is still here, nobody marked as termed.`);
-      return;
-    }
-    const absentKeySet = new Set(absentKeys);
-    const lastDay = lastDayOfMonth(priorMonth);
-    const actualNames = [...new Set(
-      membershipRecords.filter((r) => r.carrier === carrier && r.statementMonth === priorMonth && absentKeySet.has(normalizeClientKey(r.clientName))).map((r) => r.clientName)
-    )];
-    if (actualNames.length === 0) return;
-    const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&statement_month=eq.${priorMonth}&client_name=${encodeURIComponent(pgInList(actualNames))}`;
-    await sbFetch(cfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ term_date: lastDay }) });
-    setMembershipRecords((prev) => prev.map((r) => (r.carrier === carrier && r.statementMonth === priorMonth && absentKeySet.has(normalizeClientKey(r.clientName)) ? { ...r, termDate: lastDay } : r)));
-    showToast(`${dedupPrefix}Compared against ${priorMonth} \u2014 ${actualNames.length} client(s) who were there before but aren't in this statement got marked as termed on ${lastDay}.`);
-  }
-
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
     const carrier = carrierInput.trim();
@@ -1072,71 +999,37 @@ export default function App() {
       const rowAgentCarrierId = memberMapping.agentCarrierId ? String(r[memberMapping.agentCarrierId] ?? "").trim() : "";
       const resolvedAgent = resolveAgentName(rawAgent, rowAgentNpn, rowAgentCarrierId, rowCarrier);
       const override = rowClientName && rowEffectiveDate ? findMembershipOverride(rowCarrier, rowClientName, rowEffectiveDate) : null;
-      let rowStatementMonth = "";
-      if (noTermDatesMode) {
-        if (statementMonthMode === "fixed") {
-          rowStatementMonth = statementMonth;
-        } else {
-          const raw = statementMonthCol ? parseDateValue(r[statementMonthCol]) : "";
-          rowStatementMonth = raw ? raw.slice(0, 7) : "";
-        }
-      }
       return {
         carrier: rowCarrier,
         clientName: rowClientName,
-        // No status column in this file usually means every row is an active
-        // residual by definition \u2014 default to Active rather than blocking
-        // the upload over a field that genuinely doesn't exist in this data.
-        status: memberMapping.status ? normalizeStatus(r[memberMapping.status]) : (noTermDatesMode ? "Active" : ""),
+        // No status column just means this is a clean, already-active-only
+        // roster \u2014 default to Active rather than blocking the upload.
+        status: memberMapping.status ? normalizeStatus(r[memberMapping.status]) : "Active",
         agent: override ? override.agentName : resolvedAgent,
         planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
         pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
         effectiveDate: rowEffectiveDate,
-        termDate: noTermDatesMode ? "" : (memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : ""),
-        statementMonth: rowStatementMonth,
+        termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
       };
-    }).filter((r) => r.clientName && (!noTermDatesMode || r.statementMonth));
-    const skippedNoMonth = rawRows.length - memberRows.length;
+    }).filter((r) => r.clientName);
 
-    let dedupedCount = 0;
-    if (noTermDatesMode) {
-      // A commission file can list the same person on multiple line items
-      // (different products, split payments) with inconsistent or missing
-      // effective dates \u2014 collapse to one row per client PER MONTH here,
-      // since this mode is a roster of who's currently being paid, not
-      // per-policy detail. A client legitimately appearing in several
-      // different months is fine and expected \u2014 only duplicates within the
-      // same month get collapsed.
-      const seen = new Set();
-      const before = memberRows.length;
-      memberRows = memberRows.filter((r) => {
-        const key = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.statementMonth;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      dedupedCount = before - memberRows.length;
-    }
+    // A file can list the same person more than once (different products,
+    // split payments) \u2014 collapse to one row per client, since this is a
+    // roster of who's currently active, not per-policy detail.
+    const seen = new Set();
+    const before = memberRows.length;
+    memberRows = memberRows.filter((r) => {
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const dedupedCount = before - memberRows.length;
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
     try {
-      if (!noTermDatesMode || statementMonthMode === "fixed") {
-        // Normal case: everything in this file is one statement, one batch.
-        await saveMembershipBatch(carrier, memberRows, statementMonth, dedupedCount, skippedNoMonth);
-      } else {
-        // Multiple months in one file: split into one sub-batch per distinct
-        // month, insert and run absence-comparison for each in chronological
-        // order, so each month correctly sees the previous one as "prior."
-        const months = [...new Set(memberRows.map((r) => r.statementMonth))].sort();
-        for (let i = 0; i < months.length; i++) {
-          const month = months[i];
-          setImportProgress(`Processing ${month} \u2014 statement ${i + 1} of ${months.length}\u2026`);
-          const monthRows = memberRows.filter((r) => r.statementMonth === month);
-          await saveMembershipBatch(carrier, monthRows, month, i === 0 ? dedupedCount : 0, 0);
-        }
-        if (skippedNoMonth > 0) showToast(`${skippedNoMonth} row(s) skipped \u2014 couldn't determine a statement month for them.`, "error");
-      }
+      await saveMembershipBatch(carrier, memberRows, dedupedCount);
       resetImportStaging();
       setView("dashboard");
     } catch (e) {
@@ -1147,9 +1040,9 @@ export default function App() {
     setImportProgress("");
   }
 
-  async function saveMembershipBatch(carrier, memberRows, batchStatementMonth, dedupedCount, skippedNoMonth) {
+  async function saveMembershipBatch(carrier, memberRows, dedupedCount) {
     const batchId = "b_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
-    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", statementMonth: noTermDatesMode ? batchStatementMonth : "", noTermDatesMode };
+    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
 
     if (rawFileObject) {
       try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
@@ -1158,22 +1051,19 @@ export default function App() {
     const toInsertSnake = memberRows.map((r) => ({
       carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
       plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
-      statement_month: r.statementMonth || null,
       upload_batch_id: batchId, source_file: fileName,
     }));
     const insertChunks = chunkArray(toInsertSnake, 500);
     for (let i = 0; i < insertChunks.length; i++) {
-      setImportProgress(`Saving ${batchStatementMonth || "records"} \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
+      setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
       await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
     }
-    const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, statementMonth: r.statementMonth, importedAt: new Date().toISOString() }));
+    const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, uploadBatchId: batchId, importedAt: new Date().toISOString() }));
     setMembershipRecords((prev) => [...newRecords, ...prev]);
     await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
     setBatches((prev) => [...prev, batchEntry]);
 
-    if (noTermDatesMode && batchStatementMonth) {
-      await inferAbsenceTerminations(cloudCfg, carrier, batchStatementMonth, memberRows, dedupedCount);
-    } else if (dedupedCount > 0) {
+    if (dedupedCount > 0) {
       showToast(`Collapsed ${dedupedCount} duplicate line item(s) down to one row per client before saving.`);
     }
 
@@ -1215,7 +1105,7 @@ export default function App() {
         }));
       }
       const needsPlanReview = memberRows.filter((r) => !resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).resolved).length;
-      showToast(`Imported ${memberRows.length} membership records from ${carrier}${batchStatementMonth ? ` (${batchStatementMonth})` : ""} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
+      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
     }
   }
 
@@ -1299,6 +1189,27 @@ export default function App() {
       showToast("All data cleared.");
     }
     setConfirmClearAll(false);
+  }
+  const [confirmClearProduction, setConfirmClearProduction] = useState(false);
+  const [clearingProduction, setClearingProduction] = useState(false);
+  async function clearAllProductionData() {
+    // Scoped strictly to production/membership tables \u2014 never touches
+    // commission data, agent payables, marketing budget, or anything else.
+    if (!cloudCfg) { showToast("Connect your database first.", "error"); return; }
+    setClearingProduction(true);
+    try {
+      await sbFetch(cloudCfg, "membership_updates?id=not.is.null", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, "upload_batches?batch_type=eq.membership", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      try {
+        await sbFetch(cloudCfg, "membership_agent_overrides?id=not.is.null", { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      } catch (e) { /* table may not exist yet, that's fine */ }
+      setMembershipRecords([]);
+      setBatches((prev) => prev.filter((b) => b.batchType !== "membership"));
+      setMembershipOverrides([]);
+      showToast("All production/membership data cleared \u2014 commission data, agent payables, and everything else is untouched.");
+    } catch (e) { showToast("Could not clear production data: " + e.message, "error"); }
+    setClearingProduction(false);
+    setConfirmClearProduction(false);
   }
 
   // ---------- AGENT DIRECTORY ----------
@@ -1674,79 +1585,35 @@ export default function App() {
   }, [membershipLatestByPolicy, filterCarrier, filterAgent]);
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  // A same-client, same-carrier transition where the old policy's term date
-  // is exactly the day before the new policy's effective date is a plan
-  // switch, not real churn \u2014 excluded from both Lost and New so it doesn't
-  // get double-counted as losing one member and gaining another.
-  const seamlessTransitions = useMemo(() => {
-    const excludeFromLost = new Set();
-    const excludeFromNew = new Set();
-    const byClientCarrier = {};
-    Object.values(membershipLatestByPolicy).forEach((r) => {
-      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return;
-      const groupKey = r.carrier + "::" + normalizeClientKey(r.clientName);
-      if (!byClientCarrier[groupKey]) byClientCarrier[groupKey] = [];
-      byClientCarrier[groupKey].push(r);
-    });
-    Object.values(byClientCarrier).forEach((policies) => {
-      if (policies.length < 2) return;
-      const sorted = [...policies].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const cur = sorted[i];
-        const next = sorted[i + 1];
-        if (isRealTermDate(cur.termDate) && addOneDayStr(cur.termDate) === next.effectiveDate) {
-          excludeFromLost.add(cur.carrier + "::" + normalizeClientKey(cur.clientName) + "::" + cur.effectiveDate);
-          excludeFromNew.add(next.carrier + "::" + normalizeClientKey(next.clientName) + "::" + next.effectiveDate);
-        }
+  // Simple model: for each carrier, only the most recently uploaded production
+  // batch counts as "current." No date math, no term dates \u2014 you clean the
+  // data to only include active clients before uploading, and the system just
+  // shows whatever's in that latest file.
+  const latestBatchByCarrier = useMemo(() => {
+    const map = {};
+    batches.filter((b) => b.batchType === "membership").forEach((b) => {
+      if (!map[b.carrier] || new Date(b.uploadedAt) > new Date(map[b.carrier].uploadedAt)) {
+        map[b.carrier] = { id: b.id, uploadedAt: b.uploadedAt };
       }
     });
-    return { excludeFromLost, excludeFromNew };
-  }, [membershipLatestByPolicy]);
-  const membershipGrowthMonths = useMemo(() => {
-    if (dateFrom && dateTo) return monthsBetweenInclusive(dateFrom.slice(0, 7), dateTo.slice(0, 7));
-    // No range set: default to the current calendar month, not an all-time
-    // cumulative total \u2014 matches "Total active members" always being as of
-    // right now, not a running sum of everything ever uploaded.
-    return [todayStr.slice(0, 7)];
-  }, [dateFrom, dateTo, todayStr]);
-  // Always "as of right now," using whatever the latest upload says \u2014 not
-  // tied to the Paid From/To range, same as Active/Inactive Policies. Built as
-  // an explicit list (not just a count) so the drill-down modal can never
-  // show something different from what the card number says.
+    return map;
+  }, [batches]);
   const activeMembersList = useMemo(() => {
-    return filteredMembershipLatest.filter((r) => {
-      if (!r.effectiveDate || r.effectiveDate > todayStr) return false; // not started yet
-      if (neverEffective(r.effectiveDate, r.termDate)) return false; // cancelled before coverage started
-      if (isRealTermDate(r.termDate) && r.termDate < todayStr) return false; // already past their last active day
+    const latestIds = new Set(Object.values(latestBatchByCarrier).map((b) => b.id));
+    const rows = membershipRecords.filter((r) =>
+      latestIds.has(r.uploadBatchId) &&
+      (filterCarrier === "All" || r.carrier === filterCarrier) &&
+      (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent)))
+    );
+    const seen = new Set();
+    return rows.filter((r) => {
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
-  }, [filteredMembershipLatest, todayStr]);
+  }, [membershipRecords, latestBatchByCarrier, filterCarrier, filterAgent]);
   const totalActiveMembers = activeMembersList.length;
-  const newMembersList = useMemo(() => {
-    return filteredMembershipLatest.filter((r) => {
-      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return false;
-      if (r.effectiveDate > todayStr) return false;
-      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
-      if (seamlessTransitions.excludeFromNew.has(policyKey)) return false;
-      const effMonth = r.effectiveDate.slice(0, 7);
-      return !membershipGrowthMonths || membershipGrowthMonths.includes(effMonth);
-    });
-  }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions, todayStr]);
-  const lostMembersList = useMemo(() => {
-    return filteredMembershipLatest.filter((r) => {
-      if (!r.effectiveDate || neverEffective(r.effectiveDate, r.termDate)) return false;
-      if (!isRealTermDate(r.termDate)) return false;
-      const policyKey = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.effectiveDate;
-      if (seamlessTransitions.excludeFromLost.has(policyKey)) return false;
-      const lostMonth = addOneDayStr(r.termDate).slice(0, 7);
-      return !membershipGrowthMonths || membershipGrowthMonths.includes(lostMonth);
-    });
-  }, [filteredMembershipLatest, membershipGrowthMonths, seamlessTransitions]);
-  const membershipGrowth = useMemo(() => ({
-    newCount: newMembersList.length,
-    lostCount: lostMembersList.length,
-    netCount: newMembersList.length - lostMembersList.length,
-  }), [newMembersList, lostMembersList]);
   const activeMembersByAgent = useMemo(() => {
     const map = {};
     activeMembersList.forEach((r) => {
@@ -1767,23 +1634,17 @@ export default function App() {
     if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
     return "Total";
   }, [dateFrom, dateTo]);
-  const membershipPeriodLabel = useMemo(() => {
-    if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
-    return "This month";
-  }, [dateFrom, dateTo]);
   const asOfTodayLabel = "As of today";
   const allTimeLabel = "All time";
   const membershipDrillDownData = useMemo(() => {
     if (!membershipDrillDown) return null;
-    if (membershipDrillDown.type === "total") return { title: "Total active members", rows: activeMembersList };
-    if (membershipDrillDown.type === "new") return { title: `New members \u2014 ${membershipPeriodLabel}`, rows: newMembersList };
-    if (membershipDrillDown.type === "lost") return { title: `Lost members \u2014 ${membershipPeriodLabel}`, rows: lostMembersList };
+    if (membershipDrillDown.type === "total") return { title: "Active members", rows: activeMembersList };
     if (membershipDrillDown.type === "agent") {
       const rows = activeMembersList.filter((r) => resolveAgentName(r.agent, "", "", "") === membershipDrillDown.agentName);
       return { title: `${membershipDrillDown.agentName} \u2014 active members`, rows };
     }
     return null;
-  }, [membershipDrillDown, activeMembersList, newMembersList, lostMembersList, membershipPeriodLabel, agentLookupMaps]);
+  }, [membershipDrillDown, activeMembersList]);
   const drillDownCarrierOptions = useMemo(() => {
     if (!membershipDrillDownData) return [];
     return [...new Set(membershipDrillDownData.rows.map((r) => r.carrier))].sort();
@@ -2895,18 +2756,15 @@ export default function App() {
                     <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} />
                     <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: 6 }}>Active/inactive membership counts now live in Membership Growth below \u2014 "Total active members" and "Lost members" \u2014 calculated from real effective and term dates instead of status text, so there's one accurate source instead of two that could disagree.</p>
+                  <p className="pt-hint" style={{ marginTop: 6 }}>Active membership counts now live in Active Members below \u2014 always reflecting your most recent production upload for each carrier.</p>
                 </div>
 
                 <div className="pt-stat-section">
-                  <div className="pt-stat-section-label">Membership growth \u2014 {membershipGrowthMonths[0] === membershipGrowthMonths[membershipGrowthMonths.length - 1] ? membershipGrowthMonths[0] : `${membershipGrowthMonths[0]} to ${membershipGrowthMonths[membershipGrowthMonths.length - 1]}`}</div>
-                  <div className="pt-cards pt-cards-4">
+                  <div className="pt-stat-section-label">Active members</div>
+                  <div className="pt-cards pt-cards-1">
                     <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => openMembershipDrillDown({ type: "total" })} />
-                    <StatCard label="New members" value={membershipGrowth.newCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => openMembershipDrillDown({ type: "new" })} />
-                    <StatCard label="Lost members" value={membershipGrowth.lostCount.toLocaleString()} tone="ink" period={membershipPeriodLabel} onClick={() => openMembershipDrillDown({ type: "lost" })} />
-                    <StatCard label="Net growth" value={(membershipGrowth.netCount >= 0 ? "+" : "") + membershipGrowth.netCount.toLocaleString()} money={membershipGrowth.netCount} period={membershipPeriodLabel} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Based on effective and term dates from your production statements \u2014 completely separate from commission data. "Total active members" is always as of right now, from your latest upload for each policy, regardless of any date filter. A policy counts as "lost" the month after its term date, since it was still active through the end of its term month. A same-client, same-carrier switch with zero gap between the old term date and the new effective date is treated as one continuous membership, not a loss plus a new gain. Placeholder term dates carriers use to mean "not terminated" (like 12/31/99 or 2300-01-01) are automatically ignored, and nothing with a future effective date counts as active yet.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Always reflects whoever's in your most recent upload for each carrier \u2014 upload a clean, current-active-only file, and this updates to match.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
@@ -3141,44 +2999,7 @@ export default function App() {
                 ) : (
                   <div className="pt-card">
                     <h3>Map your columns</h3>
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are all recognized automatically.</p>
-                    <div className="pt-plantype-block" style={{ marginBottom: 16 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input type="checkbox" checked={noTermDatesMode} onChange={(e) => setNoTermDatesMode(e.target.checked)} />
-                        This statement has no term dates \u2014 infer terminations from absence in future statements
-                      </label>
-                      <p className="pt-hint" style={{ marginTop: 6, marginBottom: noTermDatesMode ? 10 : 0 }}>For carriers that no longer send you real production data (e.g. after a hierarchy change), where you're uploading a commission statement instead. Each upload gets compared to the most recent prior one for this carrier \u2014 anyone missing from the new one gets marked termed as of the last day of the prior month.</p>
-                      {noTermDatesMode && (
-                        <>
-                          <div style={{ marginTop: 4, marginBottom: 8 }}>
-                            <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Does this file cover one month, or several months mixed together?</label>
-                            <div className="pt-btn-row">
-                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-                                <input type="radio" checked={statementMonthMode === "fixed"} onChange={() => setStatementMonthMode("fixed")} /> One month \u2014 I'll pick it
-                              </label>
-                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-                                <input type="radio" checked={statementMonthMode === "column"} onChange={() => setStatementMonthMode("column")} /> Several months \u2014 read the month from a date column
-                              </label>
-                            </div>
-                          </div>
-                          {statementMonthMode === "fixed" ? (
-                            <div className="pt-field" style={{ maxWidth: 220 }}>
-                              <label>This statement covers *</label>
-                              <input type="month" value={statementMonth} onChange={(e) => setStatementMonth(e.target.value)} />
-                            </div>
-                          ) : (
-                            <div className="pt-field" style={{ maxWidth: 280 }}>
-                              <label>Date column to read the month from *</label>
-                              <select value={statementMonthCol} onChange={(e) => setStatementMonthCol(e.target.value)}>
-                                <option value="">\u2014 choose \u2014</option>
-                                {headers.map((h) => <option key={h} value={h}>{h}</option>)}
-                              </select>
-                              <p className="pt-hint" style={{ marginTop: 6 }}>Usually Payment Date. Rows are automatically split into one statement per month found in this column, and processed in order \u2014 no need to upload separately.</p>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Upload a clean, current-active-only roster \u2014 whatever's in your most recent upload for a carrier is what counts as active. Status is optional; if there's no status column, everyone defaults to Active. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are recognized automatically if you do map one.</p>
                     <div className="pt-mapping-grid">
                       {MEMBER_MAPPING_FIELDS.map((f) => (
                         <div className="pt-field" key={f.key}>
@@ -4165,6 +3986,26 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {membershipRecords.length > 0 && (
+              <div className="pt-card">
+                <div className="pt-row-between">
+                  <div>
+                    <h3>Reset production data only</h3>
+                    <p className="pt-hint">Wipes all membership/production statements and overrides back to zero. Commission data, revenue, and agent payables are completely untouched.</p>
+                  </div>
+                  {confirmClearProduction ? (
+                    <span className="pt-confirm-inline">
+                      Clear all {membershipRecords.length} production record(s)? Commission data stays exactly as-is.
+                      <button className="pt-btn danger small" disabled={clearingProduction} onClick={clearAllProductionData}>{clearingProduction ? "Working\u2026" : "Yes, clear production data"}</button>
+                      <button className="pt-btn ghost small" onClick={() => setConfirmClearProduction(false)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <button className="pt-btn danger" onClick={() => setConfirmClearProduction(true)}><Trash2 size={14} /> Reset production data to zero</button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -4858,6 +4699,7 @@ const CSS = `
 .pt-card h3 { font-size: 14.5px; margin: 0 0 14px; font-weight: 600; color: var(--ink); }
 
 .pt-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.pt-cards-1 { grid-template-columns: repeat(1, minmax(0, 260px)); }
 .pt-cards-2 { grid-template-columns: repeat(2, 1fr); }
 .pt-cards-3 { grid-template-columns: repeat(3, 1fr); }
 .pt-cards-4 { grid-template-columns: repeat(4, 1fr); }
