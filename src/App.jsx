@@ -816,6 +816,8 @@ export default function App() {
   const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [noTermDatesMode, setNoTermDatesMode] = useState(false);
   const [statementMonth, setStatementMonth] = useState("");
+  const [statementMonthMode, setStatementMonthMode] = useState("fixed"); // "fixed" | "column"
+  const [statementMonthCol, setStatementMonthCol] = useState("");
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
   const [rawFileObject, setRawFileObject] = useState(null);
@@ -824,7 +826,7 @@ export default function App() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
-    setNoTermDatesMode(false); setStatementMonth("");
+    setNoTermDatesMode(false); setStatementMonth(""); setStatementMonthMode("fixed"); setStatementMonthCol("");
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
   }
@@ -1000,7 +1002,7 @@ export default function App() {
     }
   }
 
-  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && memberMapping.status && (carrierMode === "fixed" || carrierColumn) && (!noTermDatesMode || statementMonth);
+  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && (memberMapping.status || noTermDatesMode) && (carrierMode === "fixed" || carrierColumn) && (!noTermDatesMode || (statementMonthMode === "fixed" ? statementMonth : statementMonthCol));
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
@@ -1051,7 +1053,6 @@ export default function App() {
 
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
-    const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
     let memberRows = rawRows.map((r) => {
       const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
@@ -1062,64 +1063,112 @@ export default function App() {
       const rowAgentCarrierId = memberMapping.agentCarrierId ? String(r[memberMapping.agentCarrierId] ?? "").trim() : "";
       const resolvedAgent = resolveAgentName(rawAgent, rowAgentNpn, rowAgentCarrierId, rowCarrier);
       const override = rowClientName && rowEffectiveDate ? findMembershipOverride(rowCarrier, rowClientName, rowEffectiveDate) : null;
+      let rowStatementMonth = "";
+      if (noTermDatesMode) {
+        if (statementMonthMode === "fixed") {
+          rowStatementMonth = statementMonth;
+        } else {
+          const raw = statementMonthCol ? parseDateValue(r[statementMonthCol]) : "";
+          rowStatementMonth = raw ? raw.slice(0, 7) : "";
+        }
+      }
       return {
         carrier: rowCarrier,
         clientName: rowClientName,
-        status: normalizeStatus(r[memberMapping.status]),
+        // No status column in this file usually means every row is an active
+        // residual by definition \u2014 default to Active rather than blocking
+        // the upload over a field that genuinely doesn't exist in this data.
+        status: memberMapping.status ? normalizeStatus(r[memberMapping.status]) : (noTermDatesMode ? "Active" : ""),
         agent: override ? override.agentName : resolvedAgent,
         planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
         pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
         effectiveDate: rowEffectiveDate,
         termDate: noTermDatesMode ? "" : (memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : ""),
-        statementMonth: noTermDatesMode ? statementMonth : "",
+        statementMonth: rowStatementMonth,
       };
-    }).filter((r) => r.clientName);
+    }).filter((r) => r.clientName && (!noTermDatesMode || r.statementMonth));
+    const skippedNoMonth = rawRows.length - memberRows.length;
+
     let dedupedCount = 0;
     if (noTermDatesMode) {
       // A commission file can list the same person on multiple line items
       // (different products, split payments) with inconsistent or missing
-      // effective dates \u2014 collapse to one row per client here, since this
-      // mode is a roster of who's currently being paid, not per-policy detail.
+      // effective dates \u2014 collapse to one row per client PER MONTH here,
+      // since this mode is a roster of who's currently being paid, not
+      // per-policy detail. A client legitimately appearing in several
+      // different months is fine and expected \u2014 only duplicates within the
+      // same month get collapsed.
       const seen = new Set();
       const before = memberRows.length;
       memberRows = memberRows.filter((r) => {
-        const key = normalizeClientKey(r.clientName);
+        const key = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + r.statementMonth;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
       dedupedCount = before - memberRows.length;
     }
-    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", statementMonth: noTermDatesMode ? statementMonth : "", noTermDatesMode };
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
     try {
-      if (rawFileObject) {
-        try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+      if (!noTermDatesMode || statementMonthMode === "fixed") {
+        // Normal case: everything in this file is one statement, one batch.
+        await saveMembershipBatch(carrier, memberRows, statementMonth, dedupedCount, skippedNoMonth);
+      } else {
+        // Multiple months in one file: split into one sub-batch per distinct
+        // month, insert and run absence-comparison for each in chronological
+        // order, so each month correctly sees the previous one as "prior."
+        const months = [...new Set(memberRows.map((r) => r.statementMonth))].sort();
+        for (let i = 0; i < months.length; i++) {
+          const month = months[i];
+          setImportProgress(`Processing ${month} \u2014 statement ${i + 1} of ${months.length}\u2026`);
+          const monthRows = memberRows.filter((r) => r.statementMonth === month);
+          await saveMembershipBatch(carrier, monthRows, month, i === 0 ? dedupedCount : 0, 0);
+        }
+        if (skippedNoMonth > 0) showToast(`${skippedNoMonth} row(s) skipped \u2014 couldn't determine a statement month for them.`, "error");
       }
-      // Insert the raw rows in chunks (safer than one giant request for large files).
-      const toInsertSnake = memberRows.map((r) => ({
-        carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
-        plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
-        statement_month: r.statementMonth || null,
-        upload_batch_id: batchId, source_file: fileName,
-      }));
-      const insertChunks = chunkArray(toInsertSnake, 500);
-      for (let i = 0; i < insertChunks.length; i++) {
-        setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
-        await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
-      }
-      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, statementMonth: r.statementMonth, importedAt: new Date().toISOString() })), ...prev]);
-      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
-      setBatches((prev) => [...prev, batchEntry]);
+      resetImportStaging();
+      setView("dashboard");
+    } catch (e) {
+      setImportError(e.message);
+      showToast("Membership import failed: " + e.message, "error");
+    }
+    setImporting(false);
+    setImportProgress("");
+  }
 
-      if (noTermDatesMode && statementMonth) {
-        await inferAbsenceTerminations(cloudCfg, carrier, statementMonth, memberRows, dedupedCount);
-      } else if (dedupedCount > 0) {
-        showToast(`Collapsed ${dedupedCount} duplicate line item(s) down to one row per client before saving.`);
-      }
+  async function saveMembershipBatch(carrier, memberRows, batchStatementMonth, dedupedCount, skippedNoMonth) {
+    const batchId = "b_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", statementMonth: noTermDatesMode ? batchStatementMonth : "", noTermDatesMode };
 
+    if (rawFileObject) {
+      try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+    }
+    // Insert the raw rows in chunks (safer than one giant request for large files).
+    const toInsertSnake = memberRows.map((r) => ({
+      carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
+      plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
+      statement_month: r.statementMonth || null,
+      upload_batch_id: batchId, source_file: fileName,
+    }));
+    const insertChunks = chunkArray(toInsertSnake, 500);
+    for (let i = 0; i < insertChunks.length; i++) {
+      setImportProgress(`Saving ${batchStatementMonth || "records"} \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
+      await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
+    }
+    const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, statementMonth: r.statementMonth, importedAt: new Date().toISOString() }));
+    setMembershipRecords((prev) => [...newRecords, ...prev]);
+    await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
+    setBatches((prev) => [...prev, batchEntry]);
+
+    if (noTermDatesMode && batchStatementMonth) {
+      await inferAbsenceTerminations(cloudCfg, carrier, batchStatementMonth, memberRows, dedupedCount);
+    } else if (dedupedCount > 0) {
+      showToast(`Collapsed ${dedupedCount} duplicate line item(s) down to one row per client before saving.`);
+    }
+
+    {
       // Group matching clients by carrier + status, then update each group in
       // one request (chunked) instead of one request per client \u2014 this is
       // the part that used to take thousands of round-trips for a big file.
@@ -1157,14 +1206,8 @@ export default function App() {
         }));
       }
       const needsPlanReview = memberRows.filter((r) => !resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).resolved).length;
-      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
-      resetImportStaging();
-      setView("dashboard");
-    } catch (e) {
-      showToast("Membership import failed: " + e.message, "error");
+      showToast(`Imported ${memberRows.length} membership records from ${carrier}${batchStatementMonth ? ` (${batchStatementMonth})` : ""} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
     }
-    setImporting(false);
-    setImportProgress("");
   }
 
   // ---------- MANAGE DATA ----------
@@ -3092,10 +3135,34 @@ export default function App() {
                       </label>
                       <p className="pt-hint" style={{ marginTop: 6, marginBottom: noTermDatesMode ? 10 : 0 }}>For carriers that no longer send you real production data (e.g. after a hierarchy change), where you're uploading a commission statement instead. Each upload gets compared to the most recent prior one for this carrier \u2014 anyone missing from the new one gets marked termed as of the last day of the prior month.</p>
                       {noTermDatesMode && (
-                        <div className="pt-field" style={{ maxWidth: 220 }}>
-                          <label>This statement covers *</label>
-                          <input type="month" value={statementMonth} onChange={(e) => setStatementMonth(e.target.value)} />
-                        </div>
+                        <>
+                          <div style={{ marginTop: 4, marginBottom: 8 }}>
+                            <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Does this file cover one month, or several months mixed together?</label>
+                            <div className="pt-btn-row">
+                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                                <input type="radio" checked={statementMonthMode === "fixed"} onChange={() => setStatementMonthMode("fixed")} /> One month \u2014 I'll pick it
+                              </label>
+                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                                <input type="radio" checked={statementMonthMode === "column"} onChange={() => setStatementMonthMode("column")} /> Several months \u2014 read the month from a date column
+                              </label>
+                            </div>
+                          </div>
+                          {statementMonthMode === "fixed" ? (
+                            <div className="pt-field" style={{ maxWidth: 220 }}>
+                              <label>This statement covers *</label>
+                              <input type="month" value={statementMonth} onChange={(e) => setStatementMonth(e.target.value)} />
+                            </div>
+                          ) : (
+                            <div className="pt-field" style={{ maxWidth: 280 }}>
+                              <label>Date column to read the month from *</label>
+                              <select value={statementMonthCol} onChange={(e) => setStatementMonthCol(e.target.value)}>
+                                <option value="">\u2014 choose \u2014</option>
+                                {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                              </select>
+                              <p className="pt-hint" style={{ marginTop: 6 }}>Usually Payment Date. Rows are automatically split into one statement per month found in this column, and processed in order \u2014 no need to upload separately.</p>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                     <div className="pt-mapping-grid">
