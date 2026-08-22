@@ -3987,25 +3987,23 @@ export default function App() {
               </div>
             )}
 
-            {membershipRecords.length > 0 && (
-              <div className="pt-card">
-                <div className="pt-row-between">
-                  <div>
-                    <h3>Reset production data only</h3>
-                    <p className="pt-hint">Wipes all membership/production statements and overrides back to zero. Commission data, revenue, and agent payables are completely untouched.</p>
-                  </div>
-                  {confirmClearProduction ? (
-                    <span className="pt-confirm-inline">
-                      Clear all {membershipRecords.length} production record(s)? Commission data stays exactly as-is.
-                      <button className="pt-btn danger small" disabled={clearingProduction} onClick={clearAllProductionData}>{clearingProduction ? "Working\u2026" : "Yes, clear production data"}</button>
-                      <button className="pt-btn ghost small" onClick={() => setConfirmClearProduction(false)}>Cancel</button>
-                    </span>
-                  ) : (
-                    <button className="pt-btn danger" onClick={() => setConfirmClearProduction(true)}><Trash2 size={14} /> Reset production data to zero</button>
-                  )}
+            <div className="pt-card">
+              <div className="pt-row-between">
+                <div>
+                  <h3>Reset production data only</h3>
+                  <p className="pt-hint">Wipes all membership/production statements and overrides back to zero. Commission data, revenue, and agent payables are completely untouched.{membershipRecords.length === 0 && " (Currently empty \u2014 nothing to clear.)"}</p>
                 </div>
+                {confirmClearProduction ? (
+                  <span className="pt-confirm-inline">
+                    Clear all {membershipRecords.length} production record(s)? Commission data stays exactly as-is.
+                    <button className="pt-btn danger small" disabled={clearingProduction} onClick={clearAllProductionData}>{clearingProduction ? "Working\u2026" : "Yes, clear production data"}</button>
+                    <button className="pt-btn ghost small" onClick={() => setConfirmClearProduction(false)}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="pt-btn danger" disabled={membershipRecords.length === 0} onClick={() => setConfirmClearProduction(true)}><Trash2 size={14} /> Reset production data to zero</button>
+                )}
               </div>
-            )}
+            </div>
           </div>
         )}
 
