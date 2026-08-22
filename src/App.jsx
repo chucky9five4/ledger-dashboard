@@ -120,8 +120,8 @@ function toCamelRow(row) {
     agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "", termDate: row.term_date || "",
   };
 }
-function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null }; }
-function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "" }; }
+function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null, statement_month: b.statementMonth || null, no_term_dates_mode: b.noTermDatesMode || false }; }
+function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "", statementMonth: b.statement_month || "", noTermDatesMode: b.no_term_dates_mode || false }; }
 function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) {
   const raw = String(commissionType || "").trim().toUpperCase();
   if (raw === "F") return "First Year";
@@ -472,6 +472,8 @@ create policy "allow all - solo use" on agent_comp_rules for all using (true) wi
 create policy "allow all - solo use" on agent_payable_ledger for all using (true) with check (true);`;
 
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
+alter table upload_batches add column if not exists statement_month text;
+alter table upload_batches add column if not exists no_term_dates_mode boolean default false;
 
 create table if not exists membership_updates (
   id uuid primary key default gen_random_uuid(),
@@ -486,6 +488,7 @@ create table if not exists membership_updates (
   source_file text,
   imported_at timestamptz default now()
 );
+alter table membership_updates add column if not exists statement_month text;
 
 alter table membership_updates enable row level security;
 drop policy if exists "allow all - solo use" on membership_updates;
@@ -561,6 +564,10 @@ function addOneDayStr(dateStr) {
   const d = new Date(dateStr + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
+}
+function lastDayOfMonth(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
 }
 function monthsBetweenInclusive(fromYm, toYm) {
   const months = [];
@@ -695,7 +702,7 @@ export default function App() {
     await loadDirectory(cfg);
     try {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", importedAt: r.imported_at })));
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", statementMonth: r.statement_month || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
@@ -807,6 +814,8 @@ export default function App() {
   const [planTypeFixed, setPlanTypeFixed] = useState("D-SNP");
   const [importError, setImportError] = useState("");
   const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+  const [noTermDatesMode, setNoTermDatesMode] = useState(false);
+  const [statementMonth, setStatementMonth] = useState("");
   const [carrierMode, setCarrierMode] = useState("fixed");
   const [carrierColumn, setCarrierColumn] = useState("");
   const [rawFileObject, setRawFileObject] = useState(null);
@@ -815,6 +824,7 @@ export default function App() {
     setFileName(""); setHeaders([]); setRawRows([]); setCarrierInput("");
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
+    setNoTermDatesMode(false); setStatementMonth("");
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
     setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
   }
@@ -990,7 +1000,7 @@ export default function App() {
     }
   }
 
-  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && memberMapping.status && (carrierMode === "fixed" || carrierColumn);
+  const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && memberMapping.status && (carrierMode === "fixed" || carrierColumn) && (!noTermDatesMode || statementMonth);
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
@@ -1002,6 +1012,40 @@ export default function App() {
   }
   function pgInList(values) {
     return "in.(" + values.map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(",") + ")";
+  }
+
+  // For carriers that don't provide term dates (e.g. Humana residuals after a
+  // hierarchy change) \u2014 compares this new statement-month against the most
+  // recent prior one for the same carrier, and marks anyone who was there
+  // before but is missing now as termed on the last day of that prior month.
+  async function inferAbsenceTerminations(cfg, carrier, newStatementMonth, newMemberRows) {
+    const priorMonths = [...new Set(
+      batches.filter((b) => b.carrier === carrier && b.noTermDatesMode && b.statementMonth && b.statementMonth < newStatementMonth).map((b) => b.statementMonth)
+    )];
+    if (priorMonths.length === 0) {
+      showToast(`This is your first statement for ${carrier} in this mode \u2014 nothing to compare against yet, so no one was marked as termed.`);
+      return;
+    }
+    const priorMonth = priorMonths.sort().reverse()[0];
+    const priorClientKeys = new Set(
+      membershipRecords.filter((r) => r.carrier === carrier && r.statementMonth === priorMonth).map((r) => normalizeClientKey(r.clientName))
+    );
+    const newClientKeys = new Set(newMemberRows.map((r) => normalizeClientKey(r.clientName)));
+    const absentKeys = [...priorClientKeys].filter((k) => !newClientKeys.has(k));
+    if (absentKeys.length === 0) {
+      showToast(`Compared against ${priorMonth} \u2014 everyone from that statement is still here, nobody marked as termed.`);
+      return;
+    }
+    const absentKeySet = new Set(absentKeys);
+    const lastDay = lastDayOfMonth(priorMonth);
+    const actualNames = [...new Set(
+      membershipRecords.filter((r) => r.carrier === carrier && r.statementMonth === priorMonth && absentKeySet.has(normalizeClientKey(r.clientName))).map((r) => r.clientName)
+    )];
+    if (actualNames.length === 0) return;
+    const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&statement_month=eq.${priorMonth}&client_name=${encodeURIComponent(pgInList(actualNames))}`;
+    await sbFetch(cfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ term_date: lastDay }) });
+    setMembershipRecords((prev) => prev.map((r) => (r.carrier === carrier && r.statementMonth === priorMonth && absentKeySet.has(normalizeClientKey(r.clientName)) ? { ...r, termDate: lastDay } : r)));
+    showToast(`Compared against ${priorMonth} \u2014 ${actualNames.length} client(s) who were there before but aren't in this statement got marked as termed on ${lastDay}.`);
   }
 
   async function commitMembershipImport() {
@@ -1025,10 +1069,11 @@ export default function App() {
         planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
         pbp: memberMapping.pbp ? String(r[memberMapping.pbp] ?? "").trim() : "",
         effectiveDate: rowEffectiveDate,
-        termDate: memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : "",
+        termDate: noTermDatesMode ? "" : (memberMapping.termDate ? parseDateValue(r[memberMapping.termDate]) : ""),
+        statementMonth: noTermDatesMode ? statementMonth : "",
       };
     }).filter((r) => r.clientName);
-    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
+    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", statementMonth: noTermDatesMode ? statementMonth : "", noTermDatesMode };
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
@@ -1040,6 +1085,7 @@ export default function App() {
       const toInsertSnake = memberRows.map((r) => ({
         carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
         plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
+        statement_month: r.statementMonth || null,
         upload_batch_id: batchId, source_file: fileName,
       }));
       const insertChunks = chunkArray(toInsertSnake, 500);
@@ -1047,9 +1093,13 @@ export default function App() {
         setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
         await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
       }
-      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, importedAt: new Date().toISOString() })), ...prev]);
+      setMembershipRecords((prev) => [...memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, statementMonth: r.statementMonth, importedAt: new Date().toISOString() })), ...prev]);
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
       setBatches((prev) => [...prev, batchEntry]);
+
+      if (noTermDatesMode && statementMonth) {
+        await inferAbsenceTerminations(cloudCfg, carrier, statementMonth, memberRows);
+      }
 
       // Group matching clients by carrier + status, then update each group in
       // one request (chunked) instead of one request per client \u2014 this is
@@ -1247,7 +1297,9 @@ export default function App() {
     try {
       await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agentId, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
       await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(rawName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
+      await sbFetch(cloudCfg, `membership_updates?agent=eq.${encodeURIComponent(rawName)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
       setRecords((prev) => prev.map((r) => (r.agent === rawName ? { ...r, agent: canonicalName } : r)));
+      setMembershipRecords((prev) => prev.map((r) => (r.agent === rawName ? { ...r, agent: canonicalName } : r)));
       await loadDirectory(cloudCfg);
       showToast(`Linked "${rawName}" to ${canonicalName}.`);
     } catch (e) { showToast("Could not link: " + e.message, "error"); }
@@ -1261,31 +1313,43 @@ export default function App() {
 
       // Catch up any sibling spellings already sitting in the data (e.g. an
       // ALL-CAPS variant of the same name) so they get relabeled too, not
-      // just silently marked "known" without their records being fixed.
+      // just silently marked "known" without their records being fixed \u2014
+      // checked across both commission and production data.
       const targetKey = normalizeNameKey(rawName);
-      const siblingNames = [...new Set(records.map((r) => r.agent))].filter((n) => n !== rawName && normalizeNameKey(n) === targetKey);
-      for (const sibling of siblingNames) {
+      const siblingCommNames = [...new Set(records.map((r) => r.agent))].filter((n) => n !== rawName && normalizeNameKey(n) === targetKey);
+      const siblingProdNames = [...new Set(membershipRecords.map((r) => r.agent))].filter((n) => n !== rawName && normalizeNameKey(n) === targetKey);
+      for (const sibling of siblingCommNames) {
         await sbFetch(cloudCfg, `policies?agent=eq.${encodeURIComponent(sibling)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: rawName }) });
       }
-      if (siblingNames.length) {
-        setRecords((prev) => prev.map((r) => (siblingNames.includes(r.agent) ? { ...r, agent: rawName } : r)));
+      for (const sibling of siblingProdNames) {
+        await sbFetch(cloudCfg, `membership_updates?agent=eq.${encodeURIComponent(sibling)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: rawName }) });
       }
+      if (siblingCommNames.length) {
+        setRecords((prev) => prev.map((r) => (siblingCommNames.includes(r.agent) ? { ...r, agent: rawName } : r)));
+      }
+      if (siblingProdNames.length) {
+        setMembershipRecords((prev) => prev.map((r) => (siblingProdNames.includes(r.agent) ? { ...r, agent: rawName } : r)));
+      }
+      const totalSiblings = siblingCommNames.length + siblingProdNames.length;
       await loadDirectory(cloudCfg);
-      showToast(siblingNames.length ? `"${rawName}" added, and ${siblingNames.length} matching spelling(s) merged in.` : `"${rawName}" added as a new agent.`);
+      showToast(totalSiblings ? `"${rawName}" added, and ${totalSiblings} matching spelling(s) merged in.` : `"${rawName}" added as a new agent.`);
     } catch (e) { showToast("Could not create agent: " + e.message, "error"); }
   }
 
   const unmatchedAgentNames = useMemo(() => {
     const { nameTextMap } = agentLookupMaps;
-    const distinct = [...new Set(records.map((r) => r.agent))];
+    const commissionNames = records.map((r) => r.agent);
+    const productionNames = membershipRecords.map((r) => r.agent);
+    const distinct = [...new Set([...commissionNames, ...productionNames])];
     return distinct
-      .filter((n) => !nameTextMap[normalizeNameKey(n)])
+      .filter((n) => n && !nameTextMap[normalizeNameKey(n)])
       .map((n) => {
-        const recs = records.filter((r) => r.agent === n);
-        return { name: n, count: recs.length, revenue: recs.reduce((s, r) => s + r.commissionAmount, 0) };
+        const commRecs = records.filter((r) => r.agent === n);
+        const prodRecs = membershipRecords.filter((r) => r.agent === n);
+        return { name: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
       })
       .sort((a, b) => b.revenue - a.revenue);
-  }, [records, agentLookupMaps]);
+  }, [records, membershipRecords, agentLookupMaps]);
 
   // Roster import (bulk-create agents from a CRM export)
   const [rosterFileName, setRosterFileName] = useState("");
@@ -3002,6 +3066,19 @@ export default function App() {
                   <div className="pt-card">
                     <h3>Map your columns</h3>
                     <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are all recognized automatically.</p>
+                    <div className="pt-plantype-block" style={{ marginBottom: 16 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input type="checkbox" checked={noTermDatesMode} onChange={(e) => setNoTermDatesMode(e.target.checked)} />
+                        This statement has no term dates \u2014 infer terminations from absence in future statements
+                      </label>
+                      <p className="pt-hint" style={{ marginTop: 6, marginBottom: noTermDatesMode ? 10 : 0 }}>For carriers that no longer send you real production data (e.g. after a hierarchy change), where you're uploading a commission statement instead. Each upload gets compared to the most recent prior one for this carrier \u2014 anyone missing from the new one gets marked termed as of the last day of the prior month.</p>
+                      {noTermDatesMode && (
+                        <div className="pt-field" style={{ maxWidth: 220 }}>
+                          <label>This statement covers *</label>
+                          <input type="month" value={statementMonth} onChange={(e) => setStatementMonth(e.target.value)} />
+                        </div>
+                      )}
+                    </div>
                     <div className="pt-mapping-grid">
                       {MEMBER_MAPPING_FIELDS.map((f) => (
                         <div className="pt-field" key={f.key}>
@@ -3618,17 +3695,18 @@ export default function App() {
 
                 {directoryTab === "unmatched" && (
                   <div className="pt-card">
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>These are raw agent names from your imports that aren't linked to a directory entry yet. Link each one to the right agent, or add them as new.</p>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>These are raw agent names from your imports \u2014 commission or production \u2014 that aren't linked to a directory entry yet. Link each one to the right agent, or add them as new. Linking here fixes both commission and production records that use this exact name.</p>
                     {unmatchedAgentNames.length === 0 ? (
                       <p className="pt-hint">Nothing unmatched \u2014 every name in your data is linked. \ud83c\udf89</p>
                     ) : (
                       <table className="pt-table">
-                        <thead><tr><th>Name as imported</th><th className="num">Records</th><th className="num">Revenue</th><th>Link to\u2026</th><th></th></tr></thead>
+                        <thead><tr><th>Name as imported</th><th className="num">Commission rows</th><th className="num">Production rows</th><th className="num">Revenue</th><th>Link to\u2026</th><th></th></tr></thead>
                         <tbody>
                           {unmatchedAgentNames.map((u) => (
                             <tr key={u.name}>
                               <td>{u.name}</td>
-                              <td className="num">{u.count}</td>
+                              <td className="num">{u.commissionCount}</td>
+                              <td className="num">{u.productionCount}</td>
                               <td className="num mono">{<Money v={u.revenue} />}</td>
                               <td>
                                 <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
