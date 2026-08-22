@@ -1858,6 +1858,11 @@ export default function App() {
   // date always belongs to this agent." Tied to effective date so a genuine
   // new enrollment for the same client isn't wrongly grabbed by an old rule.
   const [membershipOverrides, setMembershipOverrides] = useState([]);
+  const [overrideFilterCarrier, setOverrideFilterCarrier] = useState("All");
+  const [overrideFilterAgent, setOverrideFilterAgent] = useState("All");
+  const [selectedOverrideIds, setSelectedOverrideIds] = useState(new Set());
+  const [deletingSelectedOverrides, setDeletingSelectedOverrides] = useState(false);
+  const [confirmDeleteSelectedOverrides, setConfirmDeleteSelectedOverrides] = useState(false);
   const [membershipOverridesAvailable, setMembershipOverridesAvailable] = useState(false);
   function findMembershipOverride(carrier, clientName, effectiveDate) {
     const key = normalizeClientKey(clientName);
@@ -1915,6 +1920,31 @@ export default function App() {
       showToast("Override removed. Records already corrected are not reverted \u2014 there's no dollar amount here, and no stored record of the original agent to go back to.");
       await loadFromCloud(cloudCfg);
     } catch (e) { showToast("Could not remove: " + e.message, "error"); }
+  }
+
+  const overrideCarrierFilterOptions = useMemo(() => [...new Set(membershipOverrides.map((o) => o.carrier))].sort(), [membershipOverrides]);
+  const overrideAgentFilterOptions = useMemo(() => [...new Set(membershipOverrides.map((o) => o.agentName))].sort(), [membershipOverrides]);
+  const filteredMembershipOverrides = useMemo(() => {
+    return membershipOverrides.filter((o) =>
+      (overrideFilterCarrier === "All" || o.carrier === overrideFilterCarrier) &&
+      (overrideFilterAgent === "All" || o.agentName === overrideFilterAgent)
+    );
+  }, [membershipOverrides, overrideFilterCarrier, overrideFilterAgent]);
+  function toggleOverrideSelected(id) {
+    setSelectedOverrideIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  }
+  async function deleteSelectedOverrides() {
+    if (!cloudCfg || selectedOverrideIds.size === 0) return;
+    setDeletingSelectedOverrides(true);
+    try {
+      const ids = Array.from(selectedOverrideIds);
+      await sbFetch(cloudCfg, `membership_agent_overrides?id=${encodeURIComponent(pgInList(ids))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      showToast(`${ids.length} override(s) removed. Records already corrected are not reverted.`);
+      setSelectedOverrideIds(new Set());
+      setConfirmDeleteSelectedOverrides(false);
+      await loadFromCloud(cloudCfg);
+    } catch (e) { showToast("Could not delete selected: " + e.message, "error"); }
+    setDeletingSelectedOverrides(false);
   }
 
   // ---------- BULK MEMBERSHIP OVERRIDE IMPORT ----------
@@ -3442,12 +3472,48 @@ export default function App() {
 
                 {membershipOverrides.length > 0 && (
                   <div className="pt-card">
-                    <h3>Active overrides ({membershipOverrides.length})</h3>
+                    <div className="pt-row-between">
+                      <h3>Active overrides ({filteredMembershipOverrides.length} of {membershipOverrides.length})</h3>
+                      <div className="pt-btn-row">
+                        <button className="pt-btn ghost small" onClick={() => setSelectedOverrideIds(new Set(filteredMembershipOverrides.map((o) => o.id)))}>Select all</button>
+                        {selectedOverrideIds.size > 0 && (
+                          confirmDeleteSelectedOverrides ? (
+                            <span className="pt-confirm-inline">
+                              Delete {selectedOverrideIds.size} override(s)?
+                              <button className="pt-btn danger small" disabled={deletingSelectedOverrides} onClick={deleteSelectedOverrides}>{deletingSelectedOverrides ? "Working\u2026" : "Yes, delete"}</button>
+                              <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedOverrides(false)}>Cancel</button>
+                            </span>
+                          ) : (
+                            <button className="pt-btn danger small" onClick={() => setConfirmDeleteSelectedOverrides(true)}><Trash2 size={12} /> Delete {selectedOverrideIds.size} selected</button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                    <div className="pt-filters" style={{ marginTop: 10, marginBottom: 10 }}>
+                      <div className="pt-filter">
+                        <label>Carrier</label>
+                        <select value={overrideFilterCarrier} onChange={(e) => setOverrideFilterCarrier(e.target.value)}>
+                          <option value="All">All</option>
+                          {overrideCarrierFilterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div className="pt-filter">
+                        <label>Agent</label>
+                        <select value={overrideFilterAgent} onChange={(e) => setOverrideFilterAgent(e.target.value)}>
+                          <option value="All">All</option>
+                          {overrideAgentFilterOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+                        </select>
+                      </div>
+                      {(overrideFilterCarrier !== "All" || overrideFilterAgent !== "All") && (
+                        <button className="pt-btn text" onClick={() => { setOverrideFilterCarrier("All"); setOverrideFilterAgent("All"); }}>Clear filters</button>
+                      )}
+                    </div>
                     <table className="pt-table">
-                      <thead><tr><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th><th></th></tr></thead>
+                      <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th><th></th></tr></thead>
                       <tbody>
-                        {membershipOverrides.map((o) => (
+                        {filteredMembershipOverrides.map((o) => (
                           <tr key={o.id}>
+                            <td><input type="checkbox" checked={selectedOverrideIds.has(o.id)} onChange={() => toggleOverrideSelected(o.id)} /></td>
                             <td><span className={"pt-status-chip " + (o.active ? "pt-status-green" : "pt-status-gray")}>{o.active ? "Active" : "Paused"}</span></td>
                             <td>{o.clientName}</td>
                             <td>{o.carrier}</td>
