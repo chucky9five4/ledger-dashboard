@@ -1869,7 +1869,12 @@ export default function App() {
     const key = normalizeClientKey(clientName);
     const matches = membershipRecords.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate === effectiveDate);
     if (matches.length) {
-      const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&client_name=eq.${encodeURIComponent(clientName)}&effective_date=eq.${effectiveDate}`;
+      // Update using however the name is ACTUALLY spelled in the database
+      // (which may include a middle initial, different word order, etc.) \u2014
+      // not the raw typed name, since an exact-match filter on the typed
+      // name can silently update zero rows if the real spelling differs.
+      const actualNames = [...new Set(matches.map((r) => r.clientName))];
+      const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&client_name=${encodeURIComponent(pgInList(actualNames))}&effective_date=eq.${effectiveDate}`;
       await sbFetch(cfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: agentName }) });
       setMembershipRecords((prev) => prev.map((r) => (r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate === effectiveDate ? { ...r, agent: agentName } : r)));
     }
