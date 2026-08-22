@@ -1018,12 +1018,13 @@ export default function App() {
   // hierarchy change) \u2014 compares this new statement-month against the most
   // recent prior one for the same carrier, and marks anyone who was there
   // before but is missing now as termed on the last day of that prior month.
-  async function inferAbsenceTerminations(cfg, carrier, newStatementMonth, newMemberRows) {
+  async function inferAbsenceTerminations(cfg, carrier, newStatementMonth, newMemberRows, dedupedCount) {
+    const dedupPrefix = dedupedCount > 0 ? `Collapsed ${dedupedCount} duplicate line item(s) to one row per client. ` : "";
     const priorMonths = [...new Set(
       batches.filter((b) => b.carrier === carrier && b.noTermDatesMode && b.statementMonth && b.statementMonth < newStatementMonth).map((b) => b.statementMonth)
     )];
     if (priorMonths.length === 0) {
-      showToast(`This is your first statement for ${carrier} in this mode \u2014 nothing to compare against yet, so no one was marked as termed.`);
+      showToast(`${dedupPrefix}This is your first statement for ${carrier} in this mode \u2014 nothing to compare against yet, so no one was marked as termed.`);
       return;
     }
     const priorMonth = priorMonths.sort().reverse()[0];
@@ -1033,7 +1034,7 @@ export default function App() {
     const newClientKeys = new Set(newMemberRows.map((r) => normalizeClientKey(r.clientName)));
     const absentKeys = [...priorClientKeys].filter((k) => !newClientKeys.has(k));
     if (absentKeys.length === 0) {
-      showToast(`Compared against ${priorMonth} \u2014 everyone from that statement is still here, nobody marked as termed.`);
+      showToast(`${dedupPrefix}Compared against ${priorMonth} \u2014 everyone from that statement is still here, nobody marked as termed.`);
       return;
     }
     const absentKeySet = new Set(absentKeys);
@@ -1045,14 +1046,14 @@ export default function App() {
     const url = `membership_updates?carrier=eq.${encodeURIComponent(carrier)}&statement_month=eq.${priorMonth}&client_name=${encodeURIComponent(pgInList(actualNames))}`;
     await sbFetch(cfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ term_date: lastDay }) });
     setMembershipRecords((prev) => prev.map((r) => (r.carrier === carrier && r.statementMonth === priorMonth && absentKeySet.has(normalizeClientKey(r.clientName)) ? { ...r, termDate: lastDay } : r)));
-    showToast(`Compared against ${priorMonth} \u2014 ${actualNames.length} client(s) who were there before but aren't in this statement got marked as termed on ${lastDay}.`);
+    showToast(`${dedupPrefix}Compared against ${priorMonth} \u2014 ${actualNames.length} client(s) who were there before but aren't in this statement got marked as termed on ${lastDay}.`);
   }
 
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
     const batchId = "b_" + Date.now();
     const carrier = carrierInput.trim();
-    const memberRows = rawRows.map((r) => {
+    let memberRows = rawRows.map((r) => {
       const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rowClientName = memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]);
       const rowEffectiveDate = memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "";
@@ -1073,6 +1074,22 @@ export default function App() {
         statementMonth: noTermDatesMode ? statementMonth : "",
       };
     }).filter((r) => r.clientName);
+    let dedupedCount = 0;
+    if (noTermDatesMode) {
+      // A commission file can list the same person on multiple line items
+      // (different products, split payments) with inconsistent or missing
+      // effective dates \u2014 collapse to one row per client here, since this
+      // mode is a roster of who's currently being paid, not per-policy detail.
+      const seen = new Set();
+      const before = memberRows.length;
+      memberRows = memberRows.filter((r) => {
+        const key = normalizeClientKey(r.clientName);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      dedupedCount = before - memberRows.length;
+    }
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", statementMonth: noTermDatesMode ? statementMonth : "", noTermDatesMode };
 
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
@@ -1098,7 +1115,9 @@ export default function App() {
       setBatches((prev) => [...prev, batchEntry]);
 
       if (noTermDatesMode && statementMonth) {
-        await inferAbsenceTerminations(cloudCfg, carrier, statementMonth, memberRows);
+        await inferAbsenceTerminations(cloudCfg, carrier, statementMonth, memberRows, dedupedCount);
+      } else if (dedupedCount > 0) {
+        showToast(`Collapsed ${dedupedCount} duplicate line item(s) down to one row per client before saving.`);
       }
 
       // Group matching clients by carrier + status, then update each group in
