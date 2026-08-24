@@ -1276,8 +1276,8 @@ export default function App() {
   const [dirSearchQuery, setDirSearchQuery] = useState("");
   const filteredDirAgents = useMemo(() => {
     const q = dirSearchQuery.trim().toLowerCase();
-    if (!q) return agentDirectory.slice(0, 25);
-    return agentDirectory.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q))).slice(0, 50);
+    if (!q) return [];
+    return agentDirectory.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q))).slice(0, 15);
   }, [agentDirectory, dirSearchQuery]);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentNpn, setNewAgentNpn] = useState("");
@@ -3774,21 +3774,21 @@ export default function App() {
                       </div>
                       <div className="pt-field" style={{ marginTop: 14 }}>
                         <label>Search by name or NPN</label>
-                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Start typing\u2026" />
+                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Start typing to find someone\u2026" />
                       </div>
-                      <p className="pt-hint" style={{ marginTop: 6 }}>{dirSearchQuery ? `${filteredDirAgents.length} match(es) shown` : `Showing 25 of ${agentDirectory.length} \u2014 search to find someone specific`}</p>
-                      <table className="pt-table" style={{ marginTop: 8 }}>
-                        <thead><tr><th>Agent</th><th>NPN</th><th className="num">Aliases</th></tr></thead>
-                        <tbody>
-                          {filteredDirAgents.map((a) => (
-                            <tr key={a.id} className={"pt-clickable" + (selectedDirAgent === a.id ? " selected" : "")} onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }}>
-                              <td>{a.canonicalName}</td>
-                              <td className="mono">{a.npn || "\u2014"}</td>
-                              <td className="num">{agentAliases.filter((al) => al.agentId === a.id).length}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      {dirSearchQuery.trim() && (
+                        <div className="pt-search-dropdown" style={{ marginTop: 6 }}>
+                          {filteredDirAgents.length === 0 ? (
+                            <div className="pt-search-dropdown-item" style={{ cursor: "default" }}>No matches.</div>
+                          ) : (
+                            filteredDirAgents.map((a) => (
+                              <div key={a.id} className="pt-search-dropdown-item" onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); setDirSearchQuery(""); }}>
+                                {a.canonicalName} {a.npn && <span className="pt-hint mono">\u00b7 {a.npn}</span>}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {selectedDirAgent && (
