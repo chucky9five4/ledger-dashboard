@@ -470,6 +470,32 @@ alter table membership_agent_overrides enable row level security;
 drop policy if exists "allow all - solo use" on membership_agent_overrides;
 create policy "allow all - solo use" on membership_agent_overrides for all using (true) with check (true);
 
+create table if not exists downline_agencies (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+alter table agent_directory add column if not exists downline_agency_id uuid;
+
+create table if not exists agency_comp_rules (
+  id uuid primary key default gen_random_uuid(),
+  agency_id uuid not null,
+  carrier text not null,
+  rate_type text not null default 'flat',
+  first_year_rate numeric not null default 0,
+  renewal_rate numeric not null default 0,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+
+alter table downline_agencies enable row level security;
+alter table agency_comp_rules enable row level security;
+drop policy if exists "allow all - solo use" on downline_agencies;
+drop policy if exists "allow all - solo use" on agency_comp_rules;
+create policy "allow all - solo use" on downline_agencies for all using (true) with check (true);
+create policy "allow all - solo use" on agency_comp_rules for all using (true) with check (true);
+
 alter table agent_payable_rules enable row level security;
 alter table agent_comp_rules enable row level security;
 alter table agent_payable_ledger enable row level security;
@@ -640,7 +666,7 @@ export default function App() {
     try {
       const dir = await sbFetch(cfg, "agent_directory?select=*&order=canonical_name.asc");
       const al = await sbFetch(cfg, "agent_aliases?select=*");
-      setAgentDirectory((dir || []).map((r) => ({ id: r.id, canonicalName: r.canonical_name, npn: r.npn || "" })));
+      setAgentDirectory((dir || []).map((r) => ({ id: r.id, canonicalName: r.canonical_name, npn: r.npn || "", downlineAgencyId: r.downline_agency_id || "" })));
       setAgentAliases((al || []).map((r) => ({ id: r.id, agentId: r.agent_id, aliasType: r.alias_type, carrier: r.carrier || "", aliasValue: r.alias_value })));
       setDirectoryAvailable(true);
     } catch (e) {
@@ -693,6 +719,13 @@ export default function App() {
       setMembershipOverrides((overrides || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "", createdAt: r.created_at || "" })));
       setMembershipOverridesAvailable(true);
     } catch (e) { setMembershipOverridesAvailable(false); }
+    try {
+      const agencies = await sbFetchAll(cfg, "downline_agencies?select=*&order=created_at.desc");
+      setDownlineAgencies((agencies || []).map((r) => ({ id: r.id, name: r.name, active: r.active !== false })));
+      const agencyRules = await sbFetchAll(cfg, "agency_comp_rules?select=*&order=created_at.desc");
+      setAgencyCompRules((agencyRules || []).map((r) => ({ id: r.id, agencyId: r.agency_id, carrier: r.carrier, rateType: r.rate_type || "flat", firstYearRate: Number(r.first_year_rate), renewalRate: Number(r.renewal_rate), active: r.active !== false })));
+      setDownlineAgenciesAvailable(true);
+    } catch (e) { setDownlineAgenciesAvailable(false); }
   }
 
   useEffect(() => {
@@ -891,6 +924,27 @@ export default function App() {
             agentPortion = calcAgentCompPortion(compRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
           }
           if (agentPortion !== 0) { matchedRuleId = compRule.id; matchedAgentName = compRule.agentName; matchedSourceType = "agent_comp"; }
+        } else {
+          // No individual rule for this agent \u2014 check whether they belong to
+          // a downline agency with its own carrier rule instead. An agent's
+          // own rule always takes precedence if one exists; this only fills
+          // in when there isn't one, so nobody gets double-adjusted.
+          const agencyRule = findAgencyCompRule(rowCarrier, resolvedAgent);
+          if (agencyRule) {
+            const category = classifyCommissionCategory(rowCommissionType, rowEffectiveDate, rowPaymentDate);
+            if (category === "First Year" && !rowTermDate && rawCommissionAmount > 0 && agencyRule.rateType !== "percentage") {
+              const groupKey = rowCarrier + "::" + normalizeClientKey(rowClientName) + "::" + rowEffectiveDate;
+              if (firstYearLumpSumSeen.has(groupKey)) {
+                agentPortion = 0;
+              } else {
+                agentPortion = calcAgencyCompPortion(agencyRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+                firstYearLumpSumSeen.add(groupKey);
+              }
+            } else {
+              agentPortion = calcAgencyCompPortion(agencyRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+            }
+            if (agentPortion !== 0) { matchedRuleId = agencyRule.id; matchedAgentName = resolvedAgent; matchedSourceType = "agency_comp"; }
+          }
         }
       }
       const finalCommissionAmount = matchedRuleId ? rawCommissionAmount - agentPortion : rawCommissionAmount;
@@ -1888,6 +1942,9 @@ export default function App() {
   const [deletingSelectedOverrides, setDeletingSelectedOverrides] = useState(false);
   const [confirmDeleteSelectedOverrides, setConfirmDeleteSelectedOverrides] = useState(false);
   const [membershipOverridesAvailable, setMembershipOverridesAvailable] = useState(false);
+  const [downlineAgencies, setDownlineAgencies] = useState([]);
+  const [agencyCompRules, setAgencyCompRules] = useState([]);
+  const [downlineAgenciesAvailable, setDownlineAgenciesAvailable] = useState(false);
   function findMembershipOverride(carrier, clientName, effectiveDate) {
     const key = normalizeClientKey(clientName);
     return membershipOverrides.find((o) => o.active && o.carrier === carrier && normalizeClientKey(o.clientName) === key && o.effectiveDate && effectiveDate && o.effectiveDate === effectiveDate);
@@ -2089,6 +2146,100 @@ export default function App() {
       return totalMonths * compRule.firstYearAmountPerMonth;
     }
     return 0; // Unclassified \u2014 don't guess
+  }
+
+  // ---------- DOWNLINE AGENCY OVERRIDES ----------
+  const agentNameToAgencyId = useMemo(() => {
+    const map = {};
+    agentDirectory.forEach((a) => { if (a.downlineAgencyId) map[normalizeNameKey(a.canonicalName)] = a.downlineAgencyId; });
+    return map;
+  }, [agentDirectory]);
+  function findAgencyCompRule(carrier, agentName) {
+    const agencyId = agentNameToAgencyId[normalizeNameKey(agentName)];
+    if (!agencyId) return null;
+    return agencyCompRules.find((r) => r.active && r.carrier === carrier && r.agencyId === agencyId) || null;
+  }
+  function calcAgencyCompPortion(compRule, category, rawAmount, effectiveDate, termDate) {
+    if (compRule.rateType === "percentage") {
+      // A straight cut of whatever was actually paid \u2014 naturally symmetric
+      // for chargebacks, since a negative raw amount produces a negative
+      // agency cut automatically, no separate reversal logic needed.
+      const rate = category === "First Year" ? compRule.firstYearRate : category === "Renewal" ? compRule.renewalRate : 0;
+      if (!rate) return 0;
+      return rawAmount * (rate / 100);
+    }
+    // Flat dollar mode: identical shape to individual Agent Compensation
+    // Rules, just using the agency's own rates.
+    const direction = rawAmount >= 0 ? 1 : -1;
+    if (category === "Renewal") return direction * compRule.renewalRate;
+    if (category === "First Year") {
+      const totalMonths = monthsRemainingInYear(effectiveDate);
+      if (totalMonths === null) return 0;
+      if (termDate) {
+        const used = monthsActuallyStayed(effectiveDate, termDate);
+        const unusedMonths = used <= 3 ? totalMonths : Math.max(0, totalMonths - used);
+        return -(unusedMonths * compRule.firstYearRate);
+      }
+      if (rawAmount < 0) return 0;
+      return totalMonths * compRule.firstYearRate;
+    }
+    return 0;
+  }
+
+  const [newAgencyName, setNewAgencyName] = useState("");
+  const [addingAgency, setAddingAgency] = useState(false);
+  async function addDownlineAgency() {
+    if (!cloudCfg || !newAgencyName.trim()) return;
+    setAddingAgency(true);
+    try {
+      await sbFetch(cloudCfg, "downline_agencies", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ name: newAgencyName.trim() }]) });
+      showToast(`"${newAgencyName.trim()}" added.`);
+      setNewAgencyName("");
+      await loadDirectory(cloudCfg);
+    } catch (e) { showToast("Could not add agency: " + e.message, "error"); }
+    setAddingAgency(false);
+  }
+  async function assignAgentToAgency(agentId, agencyId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agent_directory?id=eq.${agentId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ downline_agency_id: agencyId || null }) });
+      setAgentDirectory((prev) => prev.map((a) => (a.id === agentId ? { ...a, downlineAgencyId: agencyId || "" } : a)));
+      showToast(agencyId ? "Agent assigned." : "Agent unassigned.");
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+  const [agencyRuleAgencyId, setAgencyRuleAgencyId] = useState("");
+  const [agencyRuleCarrier, setAgencyRuleCarrier] = useState("");
+  const [agencyRuleType, setAgencyRuleType] = useState("flat");
+  const [agencyRuleFirstYear, setAgencyRuleFirstYear] = useState("");
+  const [agencyRuleRenewal, setAgencyRuleRenewal] = useState("");
+  const [addingAgencyRule, setAddingAgencyRule] = useState(false);
+  async function addAgencyCompRule() {
+    if (!cloudCfg || !agencyRuleAgencyId || !agencyRuleCarrier.trim() || !agencyRuleFirstYear || !agencyRuleRenewal) return;
+    setAddingAgencyRule(true);
+    try {
+      await sbFetch(cloudCfg, "agency_comp_rules", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agency_id: agencyRuleAgencyId, carrier: agencyRuleCarrier.trim(), rate_type: agencyRuleType, first_year_rate: Number(agencyRuleFirstYear), renewal_rate: Number(agencyRuleRenewal) }]) });
+      showToast("Rule added.");
+      setAgencyRuleCarrier(""); setAgencyRuleFirstYear(""); setAgencyRuleRenewal("");
+      await loadDirectory(cloudCfg);
+    } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
+    setAddingAgencyRule(false);
+  }
+  async function toggleAgencyRuleActive(ruleId, currentlyActive) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agency_comp_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
+      setAgencyCompRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, active: !currentlyActive } : r)));
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+  async function deleteAgencyCompRule(ruleId) {
+    // No dollar reversal here \u2014 same reasoning as membership overrides:
+    // deleting only stops the rule from applying going forward.
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agency_comp_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setAgencyCompRules((prev) => prev.filter((r) => r.id !== ruleId));
+      showToast("Rule removed. Records already corrected are not reverted.");
+    } catch (e) { showToast("Could not remove: " + e.message, "error"); }
   }
 
   const [payableClientName, setPayableClientName] = useState("");
@@ -4389,6 +4540,94 @@ export default function App() {
                         })}
                       </tbody>
                     </table>
+                  )}
+                </div>
+
+                <div className="pt-card">
+                  <h3>Downline agencies</h3>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>For a sub-agency under you that you owe an override to. Assign their agents below, then set up one rule per carrier \u2014 it applies automatically to every agent tagged under that agency. An agent's own personal rule always takes priority if they happen to have one.</p>
+                  <div className="pt-inline-form">
+                    <input placeholder="New agency name" value={newAgencyName} onChange={(e) => setNewAgencyName(e.target.value)} style={{ minWidth: 220 }} />
+                    <button className="pt-btn ghost small" disabled={addingAgency || !newAgencyName.trim()} onClick={addDownlineAgency}>{addingAgency ? "Adding\u2026" : "Add agency"}</button>
+                  </div>
+                  {downlineAgencies.length > 0 && (
+                    <>
+                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Assign agents</h4>
+                      <table className="pt-table">
+                        <thead><tr><th>Agent</th><th>Agency</th></tr></thead>
+                        <tbody>
+                          {agentDirectory.map((a) => (
+                            <tr key={a.id}>
+                              <td>{a.canonicalName}</td>
+                              <td>
+                                <select value={a.downlineAgencyId || ""} onChange={(e) => assignAgentToAgency(a.id, e.target.value)}>
+                                  <option value="">\u2014 not in an agency \u2014</option>
+                                  {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
+                                </select>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Add a carrier rule</h4>
+                      <div className="pt-mapping-grid">
+                        <div className="pt-field">
+                          <label>Agency</label>
+                          <select value={agencyRuleAgencyId} onChange={(e) => setAgencyRuleAgencyId(e.target.value)}>
+                            <option value="">\u2014 choose \u2014</option>
+                            {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>Carrier</label>
+                          <input list="carrier-options-agency" value={agencyRuleCarrier} onChange={(e) => setAgencyRuleCarrier(e.target.value)} placeholder="e.g. Aetna" />
+                          <datalist id="carrier-options-agency">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
+                        </div>
+                        <div className="pt-field">
+                          <label>Rate structure</label>
+                          <select value={agencyRuleType} onChange={(e) => setAgencyRuleType(e.target.value)}>
+                            <option value="flat">Flat dollar</option>
+                            <option value="percentage">Percentage</option>
+                          </select>
+                        </div>
+                        <div className="pt-field">
+                          <label>First year rate {agencyRuleType === "percentage" ? "(%)" : "($/month)"}</label>
+                          <input type="number" step="0.01" value={agencyRuleFirstYear} onChange={(e) => setAgencyRuleFirstYear(e.target.value)} placeholder={agencyRuleType === "percentage" ? "25" : "10.00"} />
+                        </div>
+                        <div className="pt-field">
+                          <label>Renewal rate {agencyRuleType === "percentage" ? "(%)" : "($/transaction)"}</label>
+                          <input type="number" step="0.01" value={agencyRuleRenewal} onChange={(e) => setAgencyRuleRenewal(e.target.value)} placeholder={agencyRuleType === "percentage" ? "40" : "25.00"} />
+                        </div>
+                      </div>
+                      <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingAgencyRule || !agencyRuleAgencyId || !agencyRuleCarrier.trim() || !agencyRuleFirstYear || !agencyRuleRenewal} onClick={addAgencyCompRule}>
+                        {addingAgencyRule ? "Adding\u2026" : "Add rule"}
+                      </button>
+
+                      {agencyCompRules.length > 0 && (
+                        <table className="pt-table" style={{ marginTop: 16 }}>
+                          <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Structure</th><th className="num">First year</th><th className="num">Renewal</th><th></th></tr></thead>
+                          <tbody>
+                            {agencyCompRules.map((rule) => (
+                              <tr key={rule.id}>
+                                <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
+                                <td>{downlineAgencies.find((ag) => ag.id === rule.agencyId)?.name || "\u2014"}</td>
+                                <td>{rule.carrier}</td>
+                                <td>{rule.rateType === "percentage" ? "Percentage" : "Flat dollar"}</td>
+                                <td className="num mono">{rule.rateType === "percentage" ? `${rule.firstYearRate}%` : fmtMoney(rule.firstYearRate)}</td>
+                                <td className="num mono">{rule.rateType === "percentage" ? `${rule.renewalRate}%` : fmtMoney(rule.renewalRate)}</td>
+                                <td className="num">
+                                  <div className="pt-btn-row">
+                                    <button className="pt-btn ghost small" onClick={() => toggleAgencyRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                    <button className="pt-btn ghost small" onClick={() => deleteAgencyCompRule(rule.id)}><X size={12} /></button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </>
                   )}
                 </div>
 
