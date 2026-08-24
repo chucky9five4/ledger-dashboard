@@ -1602,18 +1602,22 @@ export default function App() {
   // Carepoint, plus Humana via a commission-as-production upload from an old
   // upline) that should add together, not overwrite each other. Only a NEW
   // upload from the SAME source replaces the previous one from that source.
+  // When Paid To is set, this becomes a point-in-time snapshot \u2014 "what was
+  // active as of that date" \u2014 instead of always "as of right now."
+  const activeAsOfDate = dateTo || todayStr;
   const latestBatchIdByCarrierSource = useMemo(() => {
     const map = {};
     membershipRecords.forEach((r) => {
       const batch = batchById[r.uploadBatchId];
       if (!batch || batch.batchType !== "membership") return;
+      if (batch.uploadedAt.slice(0, 10) > activeAsOfDate) return; // uploaded after the snapshot date, doesn't count yet
       const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
       if (!map[key] || new Date(batch.uploadedAt) > new Date(batchById[map[key]].uploadedAt)) {
         map[key] = r.uploadBatchId;
       }
     });
     return map;
-  }, [membershipRecords, batchById]);
+  }, [membershipRecords, batchById, activeAsOfDate]);
   const activeMembersList = useMemo(() => {
     const rows = membershipRecords.filter((r) => {
       const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
@@ -1650,17 +1654,17 @@ export default function App() {
     if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
     return "Total";
   }, [dateFrom, dateTo]);
-  const asOfTodayLabel = "As of today";
+  const asOfTodayLabel = dateTo ? `As of ${fmtMonthDay(dateTo)}` : "As of today";
   const allTimeLabel = "All time";
   const membershipDrillDownData = useMemo(() => {
     if (!membershipDrillDown) return null;
-    if (membershipDrillDown.type === "total") return { title: "Active members", rows: activeMembersList };
+    if (membershipDrillDown.type === "total") return { title: `Active members \u2014 ${asOfTodayLabel}`, rows: activeMembersList };
     if (membershipDrillDown.type === "agent") {
       const rows = activeMembersList.filter((r) => resolveAgentName(r.agent, "", "", "") === membershipDrillDown.agentName);
       return { title: `${membershipDrillDown.agentName} \u2014 active members`, rows };
     }
     return null;
-  }, [membershipDrillDown, activeMembersList]);
+  }, [membershipDrillDown, activeMembersList, asOfTodayLabel]);
   const drillDownCarrierOptions = useMemo(() => {
     if (!membershipDrillDownData) return [];
     return [...new Set(membershipDrillDownData.rows.map((r) => r.carrier))].sort();
@@ -2780,7 +2784,7 @@ export default function App() {
                   <div className="pt-cards pt-cards-1">
                     <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => openMembershipDrillDown({ type: "total" })} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Always reflects whoever's in your most recent upload for each carrier \u2014 upload a clean, current-active-only file, and this updates to match.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Reflects whichever upload was current for each carrier as of the date shown above \u2014 leave Paid To blank for right now, or set it to look back at what your active count was as of an earlier date.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
