@@ -129,8 +129,8 @@ function toCamelRow(row) {
     agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "", termDate: row.term_date || "",
   };
 }
-function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null, statement_month: b.statementMonth || null, no_term_dates_mode: b.noTermDatesMode || false }; }
-function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "", statementMonth: b.statement_month || "", noTermDatesMode: b.no_term_dates_mode || false }; }
+function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null, statement_month: b.statementMonth || null, no_term_dates_mode: b.noTermDatesMode || false, source_label: b.sourceLabel || null }; }
+function toCamelBatch(b) { return { id: b.id, carrier: b.carrier, fileName: b.file_name, uploadedAt: b.uploaded_at, rowCount: b.row_count, batchType: b.batch_type || "commission", storagePath: b.storage_path || "", statementMonth: b.statement_month || "", noTermDatesMode: b.no_term_dates_mode || false, sourceLabel: b.source_label || "" }; }
 function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) {
   const raw = String(commissionType || "").trim().toUpperCase();
   if (raw === "F") return "First Year";
@@ -483,6 +483,7 @@ create policy "allow all - solo use" on agent_payable_ledger for all using (true
 const MIGRATION_SQL2 = `alter table upload_batches add column if not exists batch_type text default 'commission';
 alter table upload_batches add column if not exists statement_month text;
 alter table upload_batches add column if not exists no_term_dates_mode boolean default false;
+alter table upload_batches add column if not exists source_label text;
 
 create table if not exists membership_updates (
   id uuid primary key default gen_random_uuid(),
@@ -498,6 +499,7 @@ create table if not exists membership_updates (
   imported_at timestamptz default now()
 );
 alter table membership_updates add column if not exists statement_month text;
+alter table membership_updates add column if not exists source_label text;
 
 alter table membership_updates enable row level security;
 drop policy if exists "allow all - solo use" on membership_updates;
@@ -674,7 +676,7 @@ export default function App() {
     await loadDirectory(cfg);
     try {
       const mem = await sbFetchAll(cfg, "membership_updates?select=*&order=imported_at.desc");
-      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", statementMonth: r.statement_month || "", uploadBatchId: r.upload_batch_id || "", importedAt: r.imported_at })));
+      setMembershipRecords((mem || []).map((r) => ({ carrier: r.carrier, clientName: r.client_name, status: r.status, agent: r.agent || "", planName: r.plan_name || "", pbp: r.pbp || "", effectiveDate: r.effective_date || "", termDate: r.term_date || "", statementMonth: r.statement_month || "", uploadBatchId: r.upload_batch_id || "", sourceLabel: r.source_label || "", importedAt: r.imported_at })));
     } catch (e) { setMembershipRecords([]); }
     try {
       const rules = await sbFetchAll(cfg, "agent_payable_rules?select=*&order=created_at.desc");
@@ -787,6 +789,7 @@ export default function App() {
   const [importError, setImportError] = useState("");
   const [memberMapping, setMemberMapping] = useState({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
   const [carrierMode, setCarrierMode] = useState("fixed");
+  const [sourceLabel, setSourceLabel] = useState("");
   const [carrierColumn, setCarrierColumn] = useState("");
   const [rawFileObject, setRawFileObject] = useState(null);
 
@@ -795,7 +798,7 @@ export default function App() {
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setPlanTypeMode("column"); setPlanTypeColumn(""); setPlanTypeFixed("D-SNP"); setImportError("");
-    setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null);
+    setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null); setSourceLabel("");
   }
 
   function handleFile(e) {
@@ -1029,7 +1032,7 @@ export default function App() {
     if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
     try {
-      await saveMembershipBatch(carrier, memberRows, dedupedCount);
+      await saveMembershipBatch(carrier, memberRows, dedupedCount, sourceLabel.trim());
       resetImportStaging();
       setView("dashboard");
     } catch (e) {
@@ -1040,9 +1043,9 @@ export default function App() {
     setImportProgress("");
   }
 
-  async function saveMembershipBatch(carrier, memberRows, dedupedCount) {
+  async function saveMembershipBatch(carrier, memberRows, dedupedCount, sourceLabelArg) {
     const batchId = "b_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
-    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership" };
+    const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", sourceLabel: sourceLabelArg || "" };
 
     if (rawFileObject) {
       try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
@@ -1051,14 +1054,14 @@ export default function App() {
     const toInsertSnake = memberRows.map((r) => ({
       carrier: r.carrier, client_name: r.clientName, status: r.status, agent: r.agent || null,
       plan_name: r.planName || null, pbp: r.pbp || null, effective_date: r.effectiveDate || null, term_date: r.termDate || null,
-      upload_batch_id: batchId, source_file: fileName,
+      upload_batch_id: batchId, source_file: fileName, source_label: sourceLabelArg || null,
     }));
     const insertChunks = chunkArray(toInsertSnake, 500);
     for (let i = 0; i < insertChunks.length; i++) {
       setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
       await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
     }
-    const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, uploadBatchId: batchId, importedAt: new Date().toISOString() }));
+    const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, uploadBatchId: batchId, sourceLabel: sourceLabelArg || "", importedAt: new Date().toISOString() }));
     setMembershipRecords((prev) => [...newRecords, ...prev]);
     await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([toSnakeBatch(batchEntry)]) });
     setBatches((prev) => [...prev, batchEntry]);
@@ -1589,30 +1592,43 @@ export default function App() {
   // batch counts as "current." No date math, no term dates \u2014 you clean the
   // data to only include active clients before uploading, and the system just
   // shows whatever's in that latest file.
-  const latestBatchByCarrier = useMemo(() => {
+  const batchById = useMemo(() => {
     const map = {};
-    batches.filter((b) => b.batchType === "membership").forEach((b) => {
-      if (!map[b.carrier] || new Date(b.uploadedAt) > new Date(map[b.carrier].uploadedAt)) {
-        map[b.carrier] = { id: b.id, uploadedAt: b.uploadedAt };
+    batches.forEach((b) => { map[b.id] = b; });
+    return map;
+  }, [batches]);
+  // "Latest" is tracked per (carrier + source) pair, not just per carrier \u2014
+  // a carrier can have multiple independent feeds (e.g. Humana direct from
+  // Carepoint, plus Humana via a commission-as-production upload from an old
+  // upline) that should add together, not overwrite each other. Only a NEW
+  // upload from the SAME source replaces the previous one from that source.
+  const latestBatchIdByCarrierSource = useMemo(() => {
+    const map = {};
+    membershipRecords.forEach((r) => {
+      const batch = batchById[r.uploadBatchId];
+      if (!batch || batch.batchType !== "membership") return;
+      const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
+      if (!map[key] || new Date(batch.uploadedAt) > new Date(batchById[map[key]].uploadedAt)) {
+        map[key] = r.uploadBatchId;
       }
     });
     return map;
-  }, [batches]);
+  }, [membershipRecords, batchById]);
   const activeMembersList = useMemo(() => {
-    const latestIds = new Set(Object.values(latestBatchByCarrier).map((b) => b.id));
-    const rows = membershipRecords.filter((r) =>
-      latestIds.has(r.uploadBatchId) &&
-      (filterCarrier === "All" || r.carrier === filterCarrier) &&
-      (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent)))
-    );
+    const rows = membershipRecords.filter((r) => {
+      const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
+      return latestBatchIdByCarrierSource[key] === r.uploadBatchId &&
+        (filterCarrier === "All" || r.carrier === filterCarrier) &&
+        (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent)));
+    });
     const seen = new Set();
     return rows.filter((r) => {
-      const key = r.carrier + "::" + normalizeClientKey(r.clientName);
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const dedupKey = r.carrier + "::" + normalizeClientKey(r.clientName);
+      if (seen.has(dedupKey)) return false;
+      seen.add(dedupKey);
       return true;
     });
-  }, [membershipRecords, latestBatchByCarrier, filterCarrier, filterAgent]);
+  }, [membershipRecords, latestBatchIdByCarrierSource, filterCarrier, filterAgent]);
   const totalActiveMembers = activeMembersList.length;
   const activeMembersByAgent = useMemo(() => {
     const map = {};
@@ -3010,6 +3026,11 @@ export default function App() {
                           </select>
                         </div>
                       ))}
+                    </div>
+                    <div className="pt-plantype-block">
+                      <label>Source (optional \u2014 only needed if this carrier has more than one independent feed)</label>
+                      <p className="pt-hint" style={{ marginBottom: 8 }}>Leave blank for a normal single-source carrier. If a carrier gets data from two separate places that shouldn't overwrite each other \u2014 like Humana from both a current upline and an old one \u2014 give each one its own consistent label (e.g. "Carepoint" and "Commission"). Each source tracks its own latest upload independently, and all of them get added together for the carrier's total.</p>
+                      <input value={sourceLabel} onChange={(e) => setSourceLabel(e.target.value)} placeholder="e.g. Carepoint" style={{ maxWidth: 260 }} />
                     </div>
                   </div>
                 )}
