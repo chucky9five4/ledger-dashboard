@@ -1602,28 +1602,31 @@ export default function App() {
   // Carepoint, plus Humana via a commission-as-production upload from an old
   // upline) that should add together, not overwrite each other. Only a NEW
   // upload from the SAME source replaces the previous one from that source.
-  // When Paid To is set, this becomes a point-in-time snapshot \u2014 "what was
-  // active as of that date" \u2014 instead of always "as of right now."
-  const activeAsOfDate = dateTo || todayStr;
+  // Always "as of right now" \u2014 not tied to the Paid From/To filter, since
+  // that filter is based on payment dates in commission data, and production
+  // data has no comparable date to filter by. Always shows the latest.
   const latestBatchIdByCarrierSource = useMemo(() => {
     const map = {};
     membershipRecords.forEach((r) => {
       const batch = batchById[r.uploadBatchId];
       if (!batch || batch.batchType !== "membership") return;
-      if (batch.uploadedAt.slice(0, 10) > activeAsOfDate) return; // uploaded after the snapshot date, doesn't count yet
       const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
       if (!map[key] || new Date(batch.uploadedAt) > new Date(batchById[map[key]].uploadedAt)) {
         map[key] = r.uploadBatchId;
       }
     });
     return map;
-  }, [membershipRecords, batchById, activeAsOfDate]);
+  }, [membershipRecords, batchById]);
   const activeMembersList = useMemo(() => {
     const rows = membershipRecords.filter((r) => {
       const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
       return latestBatchIdByCarrierSource[key] === r.uploadBatchId &&
         (filterCarrier === "All" || r.carrier === filterCarrier) &&
-        (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent)));
+        (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent))) &&
+        // Effective date filtering, only when the range is set AND this row
+        // actually has an effective date to check \u2014 rows without one (an
+        // optional field) stay unaffected rather than getting dropped.
+        (!(dateFrom && dateTo) || !r.effectiveDate || (r.effectiveDate >= dateFrom && r.effectiveDate <= dateTo));
     });
     const seen = new Set();
     return rows.filter((r) => {
@@ -1632,7 +1635,7 @@ export default function App() {
       seen.add(dedupKey);
       return true;
     });
-  }, [membershipRecords, latestBatchIdByCarrierSource, filterCarrier, filterAgent]);
+  }, [membershipRecords, latestBatchIdByCarrierSource, filterCarrier, filterAgent, dateFrom, dateTo]);
   const totalActiveMembers = activeMembersList.length;
   const activeMembersByAgent = useMemo(() => {
     const map = {};
@@ -1654,7 +1657,7 @@ export default function App() {
     if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
     return "Total";
   }, [dateFrom, dateTo]);
-  const asOfTodayLabel = dateTo ? `As of ${fmtMonthDay(dateTo)}` : "As of today";
+  const asOfTodayLabel = (dateFrom && dateTo) ? `Eff. ${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}` : "As of today";
   const allTimeLabel = "All time";
   const membershipDrillDownData = useMemo(() => {
     if (!membershipDrillDown) return null;
@@ -2784,7 +2787,7 @@ export default function App() {
                   <div className="pt-cards pt-cards-1">
                     <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => openMembershipDrillDown({ type: "total" })} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Reflects whichever upload was current for each carrier as of the date shown above \u2014 leave Paid To blank for right now, or set it to look back at what your active count was as of an earlier date.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Always uses whoever's in the most recent upload for each carrier and source. If you map an Effective Date column on import, setting a Paid From/To range narrows this to clients within your current active list whose effective date falls in that range \u2014 anyone without an effective date stays included regardless of the filter.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
