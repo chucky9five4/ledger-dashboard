@@ -1273,6 +1273,12 @@ export default function App() {
   // ---------- AGENT DIRECTORY ----------
   const [directoryTab, setDirectoryTab] = useState("directory");
   const [selectedDirAgent, setSelectedDirAgent] = useState(null);
+  const [dirSearchQuery, setDirSearchQuery] = useState("");
+  const filteredDirAgents = useMemo(() => {
+    const q = dirSearchQuery.trim().toLowerCase();
+    if (!q) return agentDirectory.slice(0, 25);
+    return agentDirectory.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q))).slice(0, 50);
+  }, [agentDirectory, dirSearchQuery]);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentNpn, setNewAgentNpn] = useState("");
   const [editAgentName, setEditAgentName] = useState("");
@@ -2189,6 +2195,19 @@ export default function App() {
   }
 
   const [newAgencyName, setNewAgencyName] = useState("");
+  const [selectedAgencyForDetail, setSelectedAgencyForDetail] = useState("");
+  const [agencyAgentSearchQuery, setAgencyAgentSearchQuery] = useState("");
+  const agentsInSelectedAgency = useMemo(() => {
+    if (!selectedAgencyForDetail) return [];
+    return agentDirectory.filter((a) => a.downlineAgencyId === selectedAgencyForDetail);
+  }, [agentDirectory, selectedAgencyForDetail]);
+  const agencyAgentSearchResults = useMemo(() => {
+    const q = agencyAgentSearchQuery.trim().toLowerCase();
+    if (!q || !selectedAgencyForDetail) return [];
+    return agentDirectory
+      .filter((a) => a.downlineAgencyId !== selectedAgencyForDetail && a.canonicalName.toLowerCase().includes(q))
+      .slice(0, 15);
+  }, [agentDirectory, agencyAgentSearchQuery, selectedAgencyForDetail]);
   const [addingAgency, setAddingAgency] = useState(false);
   async function addDownlineAgency() {
     if (!cloudCfg || !newAgencyName.trim()) return;
@@ -3753,10 +3772,15 @@ export default function App() {
                         <input placeholder="NPN (optional)" value={newAgentNpn} onChange={(e) => setNewAgentNpn(e.target.value)} style={{ maxWidth: 140 }} />
                         <button className="pt-btn primary small" disabled={!newAgentName.trim()} onClick={addAgentManual}><UserPlus size={13} /> Add</button>
                       </div>
-                      <table className="pt-table" style={{ marginTop: 14 }}>
+                      <div className="pt-field" style={{ marginTop: 14 }}>
+                        <label>Search by name or NPN</label>
+                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Start typing\u2026" />
+                      </div>
+                      <p className="pt-hint" style={{ marginTop: 6 }}>{dirSearchQuery ? `${filteredDirAgents.length} match(es) shown` : `Showing 25 of ${agentDirectory.length} \u2014 search to find someone specific`}</p>
+                      <table className="pt-table" style={{ marginTop: 8 }}>
                         <thead><tr><th>Agent</th><th>NPN</th><th className="num">Aliases</th></tr></thead>
                         <tbody>
-                          {agentDirectory.map((a) => (
+                          {filteredDirAgents.map((a) => (
                             <tr key={a.id} className={"pt-clickable" + (selectedDirAgent === a.id ? " selected" : "")} onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }}>
                               <td>{a.canonicalName}</td>
                               <td className="mono">{a.npn || "\u2014"}</td>
@@ -4594,23 +4618,47 @@ export default function App() {
                   </div>
                   {downlineAgencies.length > 0 && (
                     <>
-                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Assign agents</h4>
-                      <table className="pt-table">
-                        <thead><tr><th>Agent</th><th>Agency</th></tr></thead>
-                        <tbody>
-                          {agentDirectory.map((a) => (
-                            <tr key={a.id}>
-                              <td>{a.canonicalName}</td>
-                              <td>
-                                <select value={a.downlineAgencyId || ""} onChange={(e) => assignAgentToAgency(a.id, e.target.value)}>
-                                  <option value="">\u2014 not in an agency \u2014</option>
-                                  {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
-                                </select>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Manage an agency's agents</h4>
+                      <div className="pt-field" style={{ maxWidth: 260, marginBottom: 12 }}>
+                        <label>Which agency?</label>
+                        <select value={selectedAgencyForDetail} onChange={(e) => { setSelectedAgencyForDetail(e.target.value); setAgencyAgentSearchQuery(""); }}>
+                          <option value="">\u2014 choose an agency \u2014</option>
+                          {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
+                        </select>
+                      </div>
+                      {selectedAgencyForDetail && (
+                        <>
+                          <div className="pt-field" style={{ maxWidth: 320 }}>
+                            <label>Search agents to add</label>
+                            <input value={agencyAgentSearchQuery} onChange={(e) => setAgencyAgentSearchQuery(e.target.value)} placeholder="Start typing a name\u2026" />
+                          </div>
+                          {agencyAgentSearchResults.length > 0 && (
+                            <div className="pt-search-dropdown">
+                              {agencyAgentSearchResults.map((a) => (
+                                <div key={a.id} className="pt-search-dropdown-item" onClick={() => { assignAgentToAgency(a.id, selectedAgencyForDetail); setAgencyAgentSearchQuery(""); }}>
+                                  {a.canonicalName} {a.downlineAgencyId && <span className="pt-hint">(currently: {downlineAgencies.find((ag) => ag.id === a.downlineAgencyId)?.name})</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <p className="pt-hint" style={{ marginTop: 10, marginBottom: 8 }}>{agentsInSelectedAgency.length} agent(s) currently in {downlineAgencies.find((ag) => ag.id === selectedAgencyForDetail)?.name}</p>
+                          {agentsInSelectedAgency.length === 0 ? (
+                            <p className="pt-hint">Nobody assigned yet \u2014 search above to add someone.</p>
+                          ) : (
+                            <table className="pt-table">
+                              <thead><tr><th>Agent</th><th></th></tr></thead>
+                              <tbody>
+                                {agentsInSelectedAgency.map((a) => (
+                                  <tr key={a.id}>
+                                    <td>{a.canonicalName}</td>
+                                    <td className="num"><button className="pt-btn ghost small" onClick={() => assignAgentToAgency(a.id, "")}>Remove</button></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </>
+                      )}
 
                       <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Add a carrier rule</h4>
                       <div className="pt-mapping-grid">
@@ -5020,6 +5068,10 @@ const CSS = `
 .pt-stat-card-clickable:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(206,51,52,0.12); }
 .pt-row-clickable { cursor: pointer; }
 .pt-row-clickable:hover { background: #FAF7EF; }
+.pt-search-dropdown { border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; max-height: 220px; overflow-y: auto; background: var(--card); box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+.pt-search-dropdown-item { padding: 8px 12px; cursor: pointer; font-size: 13.5px; border-bottom: 1px solid var(--border); }
+.pt-search-dropdown-item:last-child { border-bottom: none; }
+.pt-search-dropdown-item:hover { background: #FAF7EF; }
 .pt-modal-backdrop { position: fixed; inset: 0; background: rgba(20,16,10,0.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; z-index: 1000; overflow-y: auto; }
 .pt-modal { background: var(--card); border-radius: 10px; padding: 24px; max-width: 900px; width: 100%; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
 .pt-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
