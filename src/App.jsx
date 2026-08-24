@@ -1274,10 +1274,11 @@ export default function App() {
   const [directoryTab, setDirectoryTab] = useState("directory");
   const [selectedDirAgent, setSelectedDirAgent] = useState(null);
   const [dirSearchQuery, setDirSearchQuery] = useState("");
-  const filteredDirAgents = useMemo(() => {
+  const dirListAgents = useMemo(() => {
+    const sorted = [...agentDirectory].sort((a, b) => a.canonicalName.localeCompare(b.canonicalName));
     const q = dirSearchQuery.trim().toLowerCase();
-    if (!q) return [];
-    return agentDirectory.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q))).slice(0, 15);
+    if (!q) return sorted;
+    return sorted.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q)));
   }, [agentDirectory, dirSearchQuery]);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentNpn, setNewAgentNpn] = useState("");
@@ -3773,22 +3774,18 @@ export default function App() {
                         <button className="pt-btn primary small" disabled={!newAgentName.trim()} onClick={addAgentManual}><UserPlus size={13} /> Add</button>
                       </div>
                       <div className="pt-field" style={{ marginTop: 14 }}>
-                        <label>Search by name or NPN</label>
-                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Start typing to find someone\u2026" />
+                        <label>Filter (optional)</label>
+                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Narrow the list below, or leave blank to browse everyone" />
                       </div>
-                      {dirSearchQuery.trim() && (
-                        <div className="pt-search-dropdown" style={{ marginTop: 6 }}>
-                          {filteredDirAgents.length === 0 ? (
-                            <div className="pt-search-dropdown-item" style={{ cursor: "default" }}>No matches.</div>
-                          ) : (
-                            filteredDirAgents.map((a) => (
-                              <div key={a.id} className="pt-search-dropdown-item" onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); setDirSearchQuery(""); }}>
-                                {a.canonicalName} {a.npn && <span className="pt-hint mono">\u00b7 {a.npn}</span>}
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      )}
+                      <select size={10} className="pt-listbox" style={{ marginTop: 8 }} value={selectedDirAgent || ""} onChange={(e) => {
+                        const a = agentDirectory.find((ag) => ag.id === e.target.value);
+                        if (a) { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }
+                      }}>
+                        {dirListAgents.map((a) => (
+                          <option key={a.id} value={a.id}>{a.canonicalName}{a.npn ? ` \u00b7 ${a.npn}` : ""}</option>
+                        ))}
+                      </select>
+                      <p className="pt-hint" style={{ marginTop: 6 }}>{dirListAgents.length} agent(s) \u2014 scroll to see more, click one to open it below.</p>
                     </div>
 
                     {selectedDirAgent && (
@@ -5071,6 +5068,9 @@ const CSS = `
 .pt-search-dropdown { border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; max-height: 220px; overflow-y: auto; background: var(--card); box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
 .pt-search-dropdown-item { padding: 8px 12px; cursor: pointer; font-size: 13.5px; border-bottom: 1px solid var(--border); }
 .pt-search-dropdown-item:last-child { border-bottom: none; }
+.pt-listbox { width: 100%; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13.5px; padding: 4px; background: var(--card); }
+.pt-listbox option { padding: 7px 8px; border-radius: 4px; }
+.pt-listbox option:checked { background: var(--gold); color: #fff; }
 .pt-search-dropdown-item:hover { background: #FAF7EF; }
 .pt-modal-backdrop { position: fixed; inset: 0; background: rgba(20,16,10,0.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; z-index: 1000; overflow-y: auto; }
 .pt-modal { background: var(--card); border-radius: 10px; padding: 24px; max-width: 900px; width: 100%; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
