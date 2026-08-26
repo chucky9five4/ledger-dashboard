@@ -2239,6 +2239,8 @@ export default function App() {
   // shown up in your commission data but have no rule yet \u2014 grouped so each
   // one only needs to be ruled once no matter how many rows it appears on.
   const [numericRuleAgencyFilter, setNumericRuleAgencyFilter] = useState("");
+  const [needsRuleExpanded, setNeedsRuleExpanded] = useState(false);
+  const [numericRulesExpanded, setNumericRulesExpanded] = useState(false);
   const agencyAmountsNeedingRules = useMemo(() => {
     const groups = {};
     records.forEach((r) => {
@@ -2282,10 +2284,11 @@ export default function App() {
     if (!cloudCfg || !newAgencyName.trim()) return;
     setAddingAgency(true);
     try {
-      await sbFetch(cloudCfg, "downline_agencies", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ name: newAgencyName.trim() }]) });
+      const created = await sbFetch(cloudCfg, "downline_agencies", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ name: newAgencyName.trim() }]) });
+      const row = Array.isArray(created) ? created[0] : created;
+      if (row) setDownlineAgencies((prev) => [{ id: row.id, name: row.name, active: row.active !== false }, ...prev]);
       showToast(`"${newAgencyName.trim()}" added.`);
       setNewAgencyName("");
-      await loadDirectory(cloudCfg);
     } catch (e) { showToast("Could not add agency: " + e.message, "error"); }
     setAddingAgency(false);
   }
@@ -2342,10 +2345,11 @@ export default function App() {
     if (!cloudCfg || !agencyRuleAgencyId || !agencyRuleCarrier.trim() || !agencyRuleFirstYear || !agencyRuleRenewal) return;
     setAddingAgencyRule(true);
     try {
-      await sbFetch(cloudCfg, "agency_comp_rules", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agency_id: agencyRuleAgencyId, carrier: agencyRuleCarrier.trim(), rate_type: agencyRuleType, first_year_rate: Number(agencyRuleFirstYear), renewal_rate: Number(agencyRuleRenewal) }]) });
+      const created = await sbFetch(cloudCfg, "agency_comp_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ agency_id: agencyRuleAgencyId, carrier: agencyRuleCarrier.trim(), rate_type: agencyRuleType, first_year_rate: Number(agencyRuleFirstYear), renewal_rate: Number(agencyRuleRenewal) }]) });
+      const row = Array.isArray(created) ? created[0] : created;
+      if (row) setAgencyCompRules((prev) => [{ id: row.id, agencyId: row.agency_id, carrier: row.carrier, rateType: row.rate_type || "flat", firstYearRate: Number(row.first_year_rate), renewalRate: Number(row.renewal_rate), active: row.active !== false }, ...prev]);
       showToast("Rule added.");
       setAgencyRuleCarrier(""); setAgencyRuleFirstYear(""); setAgencyRuleRenewal("");
-      await loadDirectory(cloudCfg);
     } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
     setAddingAgencyRule(false);
   }
@@ -2378,13 +2382,14 @@ export default function App() {
     if (!cloudCfg) return;
     setSavingNumericRule(key);
     try {
-      await sbFetch(cloudCfg, "agency_numeric_rules", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{
+      const created = await sbFetch(cloudCfg, "agency_numeric_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{
         agency_id: item.agencyId, carrier: item.carrier, category: item.category, amount: item.amount,
         outcome_type: draft.outcomeType, flat_payout: draft.outcomeType === "flat" ? Number(draft.flatPayout) : null,
       }]) });
+      const row = Array.isArray(created) ? created[0] : created;
+      if (row) setAgencyNumericRules((prev) => [{ id: row.id, agencyId: row.agency_id, carrier: row.carrier, category: row.category, amount: Number(row.amount), outcomeType: row.outcome_type || "flat", flatPayout: row.flat_payout === null ? null : Number(row.flat_payout), active: row.active !== false }, ...prev]);
       showToast(`Ruled ${fmtMoney(item.amount)} for ${item.category} \u2014 every future occurrence of this exact amount is now handled automatically.`);
       setNumericRuleDrafts((prev) => { const next = { ...prev }; delete next[key]; return next; });
-      await loadDirectory(cloudCfg);
     } catch (e) { showToast("Could not save rule: " + e.message, "error"); }
     setSavingNumericRule(null);
   }
@@ -4892,53 +4897,63 @@ export default function App() {
                 </div>
 
                 <div className="pt-card" style={{ border: agencyAmountsNeedingRulesFiltered.length > 0 ? "2px solid var(--gold)" : undefined }}>
-                  <h3>Needs a rule ({agencyAmountsNeedingRulesFiltered.length})</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Every distinct dollar amount from a downline agency's agents shows up here until you rule it, once \u2014 after that, every future occurrence of that exact amount is handled automatically.</p>
-                  {agencyAmountsNeedingRulesFiltered.length === 0 ? (
-                    <p className="pt-hint">Nothing waiting on a rule right now. \ud83c\udf89</p>
-                  ) : (
-                    <table className="pt-table">
-                      <thead><tr><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th className="num">Seen</th><th>Rule it as\u2026</th><th></th></tr></thead>
-                      <tbody>
-                        {agencyAmountsNeedingRulesFiltered.map((item) => {
-                          const key = item.agencyId + "::" + item.carrier + "::" + item.category + "::" + item.amount;
-                          const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
-                          return (
-                            <tr key={key}>
-                              <td>{downlineAgencies.find((ag) => ag.id === item.agencyId)?.name || "\u2014"}</td>
-                              <td>{item.carrier}</td>
-                              <td>{item.category}</td>
-                              <td className="num mono">{fmtMoney(item.amount)}</td>
-                              <td className="num">{item.count}</td>
-                              <td>
-                                <div className="pt-btn-row">
-                                  <select value={draft.outcomeType} onChange={(e) => updateNumericRuleDraft(key, { outcomeType: e.target.value })}>
-                                    <option value="flat">Pay flat $</option>
-                                    <option value="exclude">Exclude \u2014 no contract</option>
-                                    <option value="percentage">Prorate at standard rate</option>
-                                  </select>
-                                  {draft.outcomeType === "flat" && (
-                                    <input type="number" step="0.01" placeholder="Payout $" value={draft.flatPayout} onChange={(e) => updateNumericRuleDraft(key, { flatPayout: e.target.value })} style={{ maxWidth: 100 }} />
-                                  )}
-                                </div>
-                              </td>
-                              <td className="num">
-                                <button className="pt-btn primary small" disabled={savingNumericRule === key || (draft.outcomeType === "flat" && draft.flatPayout === "")} onClick={() => saveAgencyNumericRule(item, key)}>
-                                  {savingNumericRule === key ? "Saving\u2026" : "Save rule"}
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                  <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setNeedsRuleExpanded(!needsRuleExpanded)}>
+                    <h3>{needsRuleExpanded ? "\u25be" : "\u25b8"} Needs a rule ({agencyAmountsNeedingRulesFiltered.length})</h3>
+                  </div>
+                  {needsRuleExpanded && (
+                    <>
+                      <p className="pt-hint" style={{ marginBottom: 12 }}>Every distinct dollar amount from a downline agency's agents shows up here until you rule it, once \u2014 after that, every future occurrence of that exact amount is handled automatically.</p>
+                      {agencyAmountsNeedingRulesFiltered.length === 0 ? (
+                        <p className="pt-hint">Nothing waiting on a rule right now. \ud83c\udf89</p>
+                      ) : (
+                        <table className="pt-table">
+                          <thead><tr><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th className="num">Seen</th><th>Rule it as\u2026</th><th></th></tr></thead>
+                          <tbody>
+                            {agencyAmountsNeedingRulesFiltered.map((item) => {
+                              const key = item.agencyId + "::" + item.carrier + "::" + item.category + "::" + item.amount;
+                              const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
+                              return (
+                                <tr key={key}>
+                                  <td>{downlineAgencies.find((ag) => ag.id === item.agencyId)?.name || "\u2014"}</td>
+                                  <td>{item.carrier}</td>
+                                  <td>{item.category}</td>
+                                  <td className="num mono">{fmtMoney(item.amount)}</td>
+                                  <td className="num">{item.count}</td>
+                                  <td>
+                                    <div className="pt-btn-row">
+                                      <select value={draft.outcomeType} onChange={(e) => updateNumericRuleDraft(key, { outcomeType: e.target.value })}>
+                                        <option value="flat">Pay flat $</option>
+                                        <option value="exclude">Exclude \u2014 no contract</option>
+                                        <option value="percentage">Prorate at standard rate</option>
+                                      </select>
+                                      {draft.outcomeType === "flat" && (
+                                        <input type="number" step="0.01" placeholder="Payout $" value={draft.flatPayout} onChange={(e) => updateNumericRuleDraft(key, { flatPayout: e.target.value })} style={{ maxWidth: 100 }} />
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="num">
+                                    <button className="pt-btn primary small" disabled={savingNumericRule === key || (draft.outcomeType === "flat" && draft.flatPayout === "")} onClick={() => saveAgencyNumericRule(item, key)}>
+                                      {savingNumericRule === key ? "Saving\u2026" : "Save rule"}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </>
                   )}
                 </div>
 
                 {agencyNumericRulesFiltered.length > 0 && (
                   <div className="pt-card">
-                    <h3>Numeric rules ({agencyNumericRulesFiltered.length})</h3>
-                    <p className="pt-hint" style={{ marginBottom: 10 }}>If your negotiated rate with an agency changes, edit the payout here directly \u2014 no need to delete and recreate the rule. Changes only apply going forward.</p>
+                    <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setNumericRulesExpanded(!numericRulesExpanded)}>
+                      <h3>{numericRulesExpanded ? "\u25be" : "\u25b8"} Numeric rules ({agencyNumericRulesFiltered.length})</h3>
+                    </div>
+                    {numericRulesExpanded && (
+                      <>
+                        <p className="pt-hint" style={{ marginBottom: 10 }}>If your negotiated rate with an agency changes, edit the payout here directly \u2014 no need to delete and recreate the rule. Changes only apply going forward.</p>
                     <table className="pt-table">
                       <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th>Outcome</th><th></th></tr></thead>
                       <tbody>
@@ -4983,6 +4998,8 @@ export default function App() {
                         ))}
                       </tbody>
                     </table>
+                      </>
+                    )}
                   </div>
                 )}
 
