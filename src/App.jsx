@@ -2238,6 +2238,7 @@ export default function App() {
   // Distinct (agency, carrier, category, exact amount) combos that have
   // shown up in your commission data but have no rule yet \u2014 grouped so each
   // one only needs to be ruled once no matter how many rows it appears on.
+  const [numericRuleAgencyFilter, setNumericRuleAgencyFilter] = useState("");
   const agencyAmountsNeedingRules = useMemo(() => {
     const groups = {};
     records.forEach((r) => {
@@ -2264,7 +2265,6 @@ export default function App() {
 
   const [newAgencyName, setNewAgencyName] = useState("");
   const [selectedAgencyForDetail, setSelectedAgencyForDetail] = useState("");
-  const [numericRuleAgencyFilter, setNumericRuleAgencyFilter] = useState("");
   const [agencyAgentSearchQuery, setAgencyAgentSearchQuery] = useState("");
   const agentsInSelectedAgency = useMemo(() => {
     if (!selectedAgencyForDetail) return [];
@@ -2288,6 +2288,31 @@ export default function App() {
       await loadDirectory(cloudCfg);
     } catch (e) { showToast("Could not add agency: " + e.message, "error"); }
     setAddingAgency(false);
+  }
+  const [confirmDeleteAgency, setConfirmDeleteAgency] = useState(null);
+  const [deletingAgency, setDeletingAgency] = useState(false);
+  async function deleteDownlineAgency(agencyId) {
+    // Full cleanup so nothing orphaned is left behind: unassign every agent
+    // tagged under it, remove its standard rate and numeric rules, then
+    // remove the agency itself. Doesn't touch any commission data already
+    // saved \u2014 only stops future imports from applying anything for it.
+    if (!cloudCfg) return;
+    setDeletingAgency(true);
+    try {
+      await sbFetch(cloudCfg, `agent_directory?downline_agency_id=eq.${agencyId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ downline_agency_id: null }) });
+      await sbFetch(cloudCfg, `agency_comp_rules?agency_id=eq.${agencyId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, `agency_numeric_rules?agency_id=eq.${agencyId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      await sbFetch(cloudCfg, `downline_agencies?id=eq.${agencyId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setAgentDirectory((prev) => prev.map((a) => (a.downlineAgencyId === agencyId ? { ...a, downlineAgencyId: "" } : a)));
+      setAgencyCompRules((prev) => prev.filter((r) => r.agencyId !== agencyId));
+      setAgencyNumericRules((prev) => prev.filter((r) => r.agencyId !== agencyId));
+      setDownlineAgencies((prev) => prev.filter((a) => a.id !== agencyId));
+      if (selectedAgencyForDetail === agencyId) setSelectedAgencyForDetail("");
+      if (numericRuleAgencyFilter === agencyId) setNumericRuleAgencyFilter("");
+      showToast("Agency removed, and every agent under it unassigned.");
+    } catch (e) { showToast("Could not remove agency: " + e.message, "error"); }
+    setDeletingAgency(false);
+    setConfirmDeleteAgency(null);
   }
   async function assignAgentToAgency(agentId, agencyId) {
     if (!cloudCfg) return;
@@ -2377,6 +2402,29 @@ export default function App() {
       setAgencyNumericRules((prev) => prev.filter((r) => r.id !== ruleId));
       showToast("Rule removed. Records already corrected are not reverted \u2014 it'll show back up in Needs a rule.");
     } catch (e) { showToast("Could not remove: " + e.message, "error"); }
+  }
+  const [editingNumericRuleId, setEditingNumericRuleId] = useState(null);
+  const [editNumericRuleDraft, setEditNumericRuleDraft] = useState({ outcomeType: "flat", flatPayout: "" });
+  function startEditNumericRule(rule) {
+    setEditingNumericRuleId(rule.id);
+    setEditNumericRuleDraft({ outcomeType: rule.outcomeType, flatPayout: rule.flatPayout === null || rule.flatPayout === undefined ? "" : String(rule.flatPayout) });
+  }
+  const [savingEditedNumericRule, setSavingEditedNumericRule] = useState(false);
+  async function saveEditedNumericRule(ruleId) {
+    // For when the negotiated override rate changes \u2014 updates the payout on
+    // an existing rule directly instead of deleting and recreating it, so
+    // the amount, carrier, and category it's tied to never have to change.
+    if (!cloudCfg) return;
+    if (editNumericRuleDraft.outcomeType === "flat" && editNumericRuleDraft.flatPayout === "") return;
+    setSavingEditedNumericRule(true);
+    try {
+      const body = { outcome_type: editNumericRuleDraft.outcomeType, flat_payout: editNumericRuleDraft.outcomeType === "flat" ? Number(editNumericRuleDraft.flatPayout) : null };
+      await sbFetch(cloudCfg, `agency_numeric_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(body) });
+      setAgencyNumericRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, outcomeType: body.outcome_type, flatPayout: body.flat_payout } : r)));
+      showToast("Rule updated \u2014 applies to every future commission at this amount from now on. Records already imported keep their original payout.");
+      setEditingNumericRuleId(null);
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+    setSavingEditedNumericRule(false);
   }
 
   const [payableClientName, setPayableClientName] = useState("");
@@ -4729,6 +4777,17 @@ export default function App() {
                         </select>
                       </div>
                       {selectedAgencyForDetail && (
+                        confirmDeleteAgency === selectedAgencyForDetail ? (
+                          <span className="pt-confirm-inline">
+                            Remove this agency? Every agent under it gets unassigned, and its rules are deleted \u2014 doesn't touch commission data already imported.
+                            <button className="pt-btn danger small" disabled={deletingAgency} onClick={() => deleteDownlineAgency(selectedAgencyForDetail)}>{deletingAgency ? "Removing\u2026" : "Yes, remove agency"}</button>
+                            <button className="pt-btn ghost small" onClick={() => setConfirmDeleteAgency(null)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button className="pt-btn danger small" style={{ marginBottom: 12 }} onClick={() => setConfirmDeleteAgency(selectedAgencyForDetail)}><Trash2 size={12} /> Remove this agency</button>
+                        )
+                      )}
+                      {selectedAgencyForDetail && (
                         <>
                           <div className="pt-field" style={{ maxWidth: 320 }}>
                             <label>Search agents to add</label>
@@ -4879,6 +4938,7 @@ export default function App() {
                 {agencyNumericRulesFiltered.length > 0 && (
                   <div className="pt-card">
                     <h3>Numeric rules ({agencyNumericRulesFiltered.length})</h3>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>If your negotiated rate with an agency changes, edit the payout here directly \u2014 no need to delete and recreate the rule. Changes only apply going forward.</p>
                     <table className="pt-table">
                       <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th>Outcome</th><th></th></tr></thead>
                       <tbody>
@@ -4889,12 +4949,35 @@ export default function App() {
                             <td>{rule.carrier}</td>
                             <td>{rule.category}</td>
                             <td className="num mono">{fmtMoney(rule.amount)}</td>
-                            <td>{rule.outcomeType === "exclude" ? "Excluded, no contract" : rule.outcomeType === "percentage" ? "Standard rate" : `Pay ${fmtMoney(rule.flatPayout)}`}</td>
+                            <td>
+                              {editingNumericRuleId === rule.id ? (
+                                <div className="pt-btn-row">
+                                  <select value={editNumericRuleDraft.outcomeType} onChange={(e) => setEditNumericRuleDraft({ ...editNumericRuleDraft, outcomeType: e.target.value })}>
+                                    <option value="flat">Pay flat $</option>
+                                    <option value="exclude">Exclude \u2014 no contract</option>
+                                    <option value="percentage">Prorate at standard rate</option>
+                                  </select>
+                                  {editNumericRuleDraft.outcomeType === "flat" && (
+                                    <input type="number" step="0.01" placeholder="Payout $" value={editNumericRuleDraft.flatPayout} onChange={(e) => setEditNumericRuleDraft({ ...editNumericRuleDraft, flatPayout: e.target.value })} style={{ maxWidth: 100 }} />
+                                  )}
+                                </div>
+                              ) : (
+                                rule.outcomeType === "exclude" ? "Excluded, no contract" : rule.outcomeType === "percentage" ? "Standard rate" : `Pay ${fmtMoney(rule.flatPayout)}`
+                              )}
+                            </td>
                             <td className="num">
-                              <div className="pt-btn-row">
-                                <button className="pt-btn ghost small" onClick={() => toggleAgencyNumericRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
-                                <button className="pt-btn ghost small" onClick={() => deleteAgencyNumericRule(rule.id)}><X size={12} /></button>
-                              </div>
+                              {editingNumericRuleId === rule.id ? (
+                                <div className="pt-btn-row">
+                                  <button className="pt-btn primary small" disabled={savingEditedNumericRule || (editNumericRuleDraft.outcomeType === "flat" && editNumericRuleDraft.flatPayout === "")} onClick={() => saveEditedNumericRule(rule.id)}>{savingEditedNumericRule ? "Saving\u2026" : "Save"}</button>
+                                  <button className="pt-btn ghost small" onClick={() => setEditingNumericRuleId(null)}>Cancel</button>
+                                </div>
+                              ) : (
+                                <div className="pt-btn-row">
+                                  <button className="pt-btn ghost small" onClick={() => startEditNumericRule(rule)}>Edit</button>
+                                  <button className="pt-btn ghost small" onClick={() => toggleAgencyNumericRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                  <button className="pt-btn ghost small" onClick={() => deleteAgencyNumericRule(rule.id)}><X size={12} /></button>
+                                </div>
+                              )}
                             </td>
                           </tr>
                         ))}
