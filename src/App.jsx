@@ -110,7 +110,7 @@ const FIELD_TO_COLUMN = {
   clientName: "client_name", saleDate: "sale_date", effectiveDate: "effective_date",
   status: "status", commissionAmount: "commission_amount", commissionType: "commission_type",
   paymentDate: "payment_date", uploadBatchId: "upload_batch_id", sourceFile: "source_file", importedAt: "imported_at",
-  agentNpn: "agent_npn", agentCarrierId: "carrier_agent_id", termDate: "term_date",
+  agentNpn: "agent_npn", agentCarrierId: "carrier_agent_id", termDate: "term_date", rawCommissionAmount: "raw_commission_amount",
 };
 function toSnakeRow(rec) {
   const out = {};
@@ -127,6 +127,7 @@ function toCamelRow(row) {
     paymentDate: row.payment_date || "", uploadBatchId: row.upload_batch_id,
     sourceFile: row.source_file, importedAt: row.imported_at,
     agentNpn: row.agent_npn || "", agentCarrierId: row.carrier_agent_id || "", termDate: row.term_date || "",
+    rawCommissionAmount: row.raw_commission_amount === null || row.raw_commission_amount === undefined ? Number(row.commission_amount) || 0 : Number(row.raw_commission_amount),
   };
 }
 function toSnakeBatch(b) { return { id: b.id, carrier: b.carrier, file_name: b.fileName, uploaded_at: b.uploadedAt, row_count: b.rowCount, batch_type: b.batchType || "commission", storage_path: b.storagePath || null, statement_month: b.statementMonth || null, no_term_dates_mode: b.noTermDatesMode || false, source_label: b.sourceLabel || null }; }
@@ -455,6 +456,7 @@ alter table agent_payable_ledger add column if not exists source_type text defau
 alter table agent_payable_ledger drop constraint if exists agent_payable_ledger_rule_id_fkey;
 alter table agent_payable_ledger add column if not exists batch_id text;
 alter table policies add column if not exists term_date date;
+alter table policies add column if not exists raw_commission_amount numeric;
 
 create table if not exists membership_agent_overrides (
   id uuid primary key default gen_random_uuid(),
@@ -490,12 +492,27 @@ create table if not exists agency_comp_rules (
   created_at timestamptz default now()
 );
 
+create table if not exists agency_numeric_rules (
+  id uuid primary key default gen_random_uuid(),
+  agency_id uuid not null,
+  carrier text not null,
+  category text not null,
+  amount numeric not null,
+  outcome_type text not null default 'flat',
+  flat_payout numeric,
+  active boolean default true,
+  created_at timestamptz default now()
+);
+
 alter table downline_agencies enable row level security;
 alter table agency_comp_rules enable row level security;
+alter table agency_numeric_rules enable row level security;
 drop policy if exists "allow all - solo use" on downline_agencies;
 drop policy if exists "allow all - solo use" on agency_comp_rules;
+drop policy if exists "allow all - solo use" on agency_numeric_rules;
 create policy "allow all - solo use" on downline_agencies for all using (true) with check (true);
 create policy "allow all - solo use" on agency_comp_rules for all using (true) with check (true);
+create policy "allow all - solo use" on agency_numeric_rules for all using (true) with check (true);
 
 alter table agent_payable_rules enable row level security;
 alter table agent_comp_rules enable row level security;
@@ -725,6 +742,8 @@ export default function App() {
       setDownlineAgencies((agencies || []).map((r) => ({ id: r.id, name: r.name, active: r.active !== false })));
       const agencyRules = await sbFetchAll(cfg, "agency_comp_rules?select=*&order=created_at.desc");
       setAgencyCompRules((agencyRules || []).map((r) => ({ id: r.id, agencyId: r.agency_id, carrier: r.carrier, rateType: r.rate_type || "flat", firstYearRate: Number(r.first_year_rate), renewalRate: Number(r.renewal_rate), active: r.active !== false })));
+      const numericRules = await sbFetchAll(cfg, "agency_numeric_rules?select=*&order=created_at.desc");
+      setAgencyNumericRules((numericRules || []).map((r) => ({ id: r.id, agencyId: r.agency_id, carrier: r.carrier, category: r.category, amount: Number(r.amount), outcomeType: r.outcome_type || "flat", flatPayout: r.flat_payout === null ? null : Number(r.flat_payout), active: r.active !== false })));
       setDownlineAgenciesAvailable(true);
     } catch (e) { setDownlineAgenciesAvailable(false); }
   }
@@ -897,6 +916,8 @@ export default function App() {
       const rowPaymentDate = mapping.paymentDate ? parseDateValue(r[mapping.paymentDate]) : "";
       const resolvedAgent = resolveAgentName(rawAgent, agentNpn, agentCarrierId, rowCarrier);
       const rawCommissionAmount = parseMoney(r[mapping.commissionAmount]);
+      const rowProduct = String(r[mapping.product] ?? "").trim();
+      const isDentalOrVision = /dental|vision/i.test(rowProduct);
       // Same fixed amount splits off either direction: a positive payment sends
       // it to the agent; a negative chargeback reverses that same amount back
       // out of what's owed to them, so both sides are charged back together.
@@ -927,24 +948,22 @@ export default function App() {
           if (agentPortion !== 0) { matchedRuleId = compRule.id; matchedAgentName = compRule.agentName; matchedSourceType = "agent_comp"; }
         } else {
           // No individual rule for this agent \u2014 check whether they belong to
-          // a downline agency with its own carrier rule instead. An agent's
-          // own rule always takes precedence if one exists; this only fills
-          // in when there isn't one, so nobody gets double-adjusted.
-          const agencyRule = findAgencyCompRule(rowCarrier, resolvedAgent);
-          if (agencyRule) {
+          // a downline agency instead. An agent's own rule always takes
+          // precedence if one exists; this only fills in when there isn't
+          // one, so nobody gets double-adjusted.
+          const agencyId = agentNameToAgencyId[normalizeNameKey(resolvedAgent)];
+          if (agencyId && !isDentalOrVision) {
             const category = classifyCommissionCategory(rowCommissionType, rowEffectiveDate, rowPaymentDate);
-            if (category === "First Year" && !rowTermDate && rawCommissionAmount > 0 && agencyRule.rateType !== "percentage") {
-              const groupKey = rowCarrier + "::" + normalizeClientKey(rowClientName) + "::" + rowEffectiveDate;
-              if (firstYearLumpSumSeen.has(groupKey)) {
-                agentPortion = 0;
-              } else {
-                agentPortion = calcAgencyCompPortion(agencyRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
-                firstYearLumpSumSeen.add(groupKey);
-              }
-            } else {
-              agentPortion = calcAgencyCompPortion(agencyRule, category, rawCommissionAmount, rowEffectiveDate, rowTermDate);
+            // Ruled per exact dollar amount \u2014 an amount with no rule yet does
+            // nothing automatically and surfaces in "Needs a rule" instead of
+            // guessing. Dental/Vision text match (when available) skips
+            // straight to excluded without needing its own numeric rule.
+            const numericRule = findAgencyNumericRule(agencyId, rowCarrier, category, rawCommissionAmount);
+            if (numericRule) {
+              const compRule = numericRule.outcomeType === "percentage" ? agencyCompRules.find((r) => r.active && r.carrier === rowCarrier && r.agencyId === agencyId) : null;
+              agentPortion = calcAgencyNumericPortion(numericRule, compRule, category, rawCommissionAmount);
+              if (agentPortion !== 0) { matchedRuleId = numericRule.id; matchedAgentName = resolvedAgent; matchedSourceType = "agency_numeric"; }
             }
-            if (agentPortion !== 0) { matchedRuleId = agencyRule.id; matchedAgentName = resolvedAgent; matchedSourceType = "agency_comp"; }
           }
         }
       }
@@ -956,13 +975,14 @@ export default function App() {
         agentNpn,
         agentCarrierId,
         planType: planTypeMode === "fixed" ? (planTypeFixed || "Unspecified") : normalizePlanType(r[planTypeColumn]),
-        product: String(r[mapping.product] ?? "").trim() || "Unspecified",
+        product: rowProduct || "Unspecified",
         clientName: rowClientName,
         saleDate: mapping.saleDate ? parseDateValue(r[mapping.saleDate]) : "",
         effectiveDate: rowEffectiveDate,
         termDate: rowTermDate,
         status: mapping.status ? (String(r[mapping.status] ?? "").trim() || "Active") : "Active",
         commissionAmount: finalCommissionAmount,
+        rawCommissionAmount,
         payableRuleId: matchedRuleId,
         payableAmount: agentPortion,
         payableAgentName: matchedAgentName,
@@ -1953,6 +1973,7 @@ export default function App() {
   const [membershipOverridesAvailable, setMembershipOverridesAvailable] = useState(false);
   const [downlineAgencies, setDownlineAgencies] = useState([]);
   const [agencyCompRules, setAgencyCompRules] = useState([]);
+  const [agencyNumericRules, setAgencyNumericRules] = useState([]);
   const [downlineAgenciesAvailable, setDownlineAgenciesAvailable] = useState(false);
   function findMembershipOverride(carrier, clientName, effectiveDate) {
     const key = normalizeClientKey(clientName);
@@ -2194,6 +2215,44 @@ export default function App() {
     }
     return 0;
   }
+  // A downline agency can be ruled per exact dollar amount instead of a
+  // formula \u2014 real-world payments repeat the same handful of numbers month
+  // after month, so once a number is ruled, every future occurrence of that
+  // exact amount is handled automatically. Anything never seen before does
+  // nothing on its own and surfaces in "Needs a rule" instead.
+  function findAgencyNumericRule(agencyId, carrier, category, amount) {
+    if (!agencyId) return null;
+    const rounded = Math.round(amount * 100) / 100;
+    return agencyNumericRules.find((r) => r.active && r.agencyId === agencyId && r.carrier === carrier && r.category === category && Math.round(r.amount * 100) / 100 === rounded) || null;
+  }
+  function calcAgencyNumericPortion(numericRule, compRule, category, rawAmount) {
+    if (numericRule.outcomeType === "exclude") return 0;
+    if (numericRule.outcomeType === "flat") return numericRule.flatPayout || 0;
+    if (numericRule.outcomeType === "percentage") {
+      if (!compRule) return 0;
+      const rate = category === "First Year" ? compRule.firstYearRate : category === "Renewal" ? compRule.renewalRate : 0;
+      return rawAmount * (rate / 100);
+    }
+    return 0;
+  }
+  // Distinct (agency, carrier, category, exact amount) combos that have
+  // shown up in your commission data but have no rule yet \u2014 grouped so each
+  // one only needs to be ruled once no matter how many rows it appears on.
+  const agencyAmountsNeedingRules = useMemo(() => {
+    const groups = {};
+    records.forEach((r) => {
+      const agencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
+      if (!agencyId) return;
+      if (/dental|vision/i.test(r.product || "")) return;
+      const category = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
+      const amount = r.rawCommissionAmount ?? r.commissionAmount;
+      if (findAgencyNumericRule(agencyId, r.carrier, category, amount)) return;
+      const key = agencyId + "::" + r.carrier + "::" + category + "::" + Math.round(amount * 100) / 100;
+      if (!groups[key]) groups[key] = { agencyId, carrier: r.carrier, category, amount: Math.round(amount * 100) / 100, count: 0 };
+      groups[key].count++;
+    });
+    return Object.values(groups).sort((a, b) => b.count - a.count);
+  }, [records, agentNameToAgencyId, agencyNumericRules]);
 
   const [newAgencyName, setNewAgencyName] = useState("");
   const [selectedAgencyForDetail, setSelectedAgencyForDetail] = useState("");
@@ -2271,6 +2330,43 @@ export default function App() {
       await sbFetch(cloudCfg, `agency_comp_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
       setAgencyCompRules((prev) => prev.filter((r) => r.id !== ruleId));
       showToast("Rule removed. Records already corrected are not reverted.");
+    } catch (e) { showToast("Could not remove: " + e.message, "error"); }
+  }
+
+  const [numericRuleDrafts, setNumericRuleDrafts] = useState({});
+  function updateNumericRuleDraft(key, patch) {
+    setNumericRuleDrafts((prev) => ({ ...prev, [key]: { ...(prev[key] || { outcomeType: "flat", flatPayout: "" }), ...patch } }));
+  }
+  const [savingNumericRule, setSavingNumericRule] = useState(null);
+  async function saveAgencyNumericRule(item, key) {
+    const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
+    if (draft.outcomeType === "flat" && draft.flatPayout === "") return;
+    if (!cloudCfg) return;
+    setSavingNumericRule(key);
+    try {
+      await sbFetch(cloudCfg, "agency_numeric_rules", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{
+        agency_id: item.agencyId, carrier: item.carrier, category: item.category, amount: item.amount,
+        outcome_type: draft.outcomeType, flat_payout: draft.outcomeType === "flat" ? Number(draft.flatPayout) : null,
+      }]) });
+      showToast(`Ruled ${fmtMoney(item.amount)} for ${item.category} \u2014 every future occurrence of this exact amount is now handled automatically.`);
+      setNumericRuleDrafts((prev) => { const next = { ...prev }; delete next[key]; return next; });
+      await loadDirectory(cloudCfg);
+    } catch (e) { showToast("Could not save rule: " + e.message, "error"); }
+    setSavingNumericRule(null);
+  }
+  async function toggleAgencyNumericRuleActive(ruleId, currentlyActive) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agency_numeric_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
+      setAgencyNumericRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, active: !currentlyActive } : r)));
+    } catch (e) { showToast("Could not update: " + e.message, "error"); }
+  }
+  async function deleteAgencyNumericRule(ruleId) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `agency_numeric_rules?id=eq.${ruleId}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setAgencyNumericRules((prev) => prev.filter((r) => r.id !== ruleId));
+      showToast("Rule removed. Records already corrected are not reverted \u2014 it'll show back up in Needs a rule.");
     } catch (e) { showToast("Could not remove: " + e.message, "error"); }
   }
 
@@ -4657,7 +4753,8 @@ export default function App() {
                         </>
                       )}
 
-                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Add a carrier rule</h4>
+                      <h4 style={{ marginTop: 20, marginBottom: 8, fontSize: 14 }}>Standard percentage rate</h4>
+                      <p className="pt-hint" style={{ marginBottom: 8 }}>This is only used when you rule a specific dollar amount as "prorate at standard rate" below \u2014 it's not applied automatically on its own anymore. Set your normal percentage here once per carrier.</p>
                       <div className="pt-mapping-grid">
                         <div className="pt-field">
                           <label>Agency</label>
@@ -4717,6 +4814,77 @@ export default function App() {
                     </>
                   )}
                 </div>
+
+                <div className="pt-card" style={{ border: agencyAmountsNeedingRules.length > 0 ? "2px solid var(--gold)" : undefined }}>
+                  <h3>Needs a rule ({agencyAmountsNeedingRules.length})</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Every distinct dollar amount from a downline agency's agents shows up here until you rule it, once \u2014 after that, every future occurrence of that exact amount is handled automatically.</p>
+                  {agencyAmountsNeedingRules.length === 0 ? (
+                    <p className="pt-hint">Nothing waiting on a rule right now. \ud83c\udf89</p>
+                  ) : (
+                    <table className="pt-table">
+                      <thead><tr><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th className="num">Seen</th><th>Rule it as\u2026</th><th></th></tr></thead>
+                      <tbody>
+                        {agencyAmountsNeedingRules.map((item) => {
+                          const key = item.agencyId + "::" + item.carrier + "::" + item.category + "::" + item.amount;
+                          const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
+                          return (
+                            <tr key={key}>
+                              <td>{downlineAgencies.find((ag) => ag.id === item.agencyId)?.name || "\u2014"}</td>
+                              <td>{item.carrier}</td>
+                              <td>{item.category}</td>
+                              <td className="num mono">{fmtMoney(item.amount)}</td>
+                              <td className="num">{item.count}</td>
+                              <td>
+                                <div className="pt-btn-row">
+                                  <select value={draft.outcomeType} onChange={(e) => updateNumericRuleDraft(key, { outcomeType: e.target.value })}>
+                                    <option value="flat">Pay flat $</option>
+                                    <option value="exclude">Exclude \u2014 no contract</option>
+                                    <option value="percentage">Prorate at standard rate</option>
+                                  </select>
+                                  {draft.outcomeType === "flat" && (
+                                    <input type="number" step="0.01" placeholder="Payout $" value={draft.flatPayout} onChange={(e) => updateNumericRuleDraft(key, { flatPayout: e.target.value })} style={{ maxWidth: 100 }} />
+                                  )}
+                                </div>
+                              </td>
+                              <td className="num">
+                                <button className="pt-btn primary small" disabled={savingNumericRule === key || (draft.outcomeType === "flat" && draft.flatPayout === "")} onClick={() => saveAgencyNumericRule(item, key)}>
+                                  {savingNumericRule === key ? "Saving\u2026" : "Save rule"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {agencyNumericRules.length > 0 && (
+                  <div className="pt-card">
+                    <h3>Numeric rules ({agencyNumericRules.length})</h3>
+                    <table className="pt-table">
+                      <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th>Outcome</th><th></th></tr></thead>
+                      <tbody>
+                        {agencyNumericRules.map((rule) => (
+                          <tr key={rule.id}>
+                            <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
+                            <td>{downlineAgencies.find((ag) => ag.id === rule.agencyId)?.name || "\u2014"}</td>
+                            <td>{rule.carrier}</td>
+                            <td>{rule.category}</td>
+                            <td className="num mono">{fmtMoney(rule.amount)}</td>
+                            <td>{rule.outcomeType === "exclude" ? "Excluded, no contract" : rule.outcomeType === "percentage" ? "Standard rate" : `Pay ${fmtMoney(rule.flatPayout)}`}</td>
+                            <td className="num">
+                              <div className="pt-btn-row">
+                                <button className="pt-btn ghost small" onClick={() => toggleAgencyNumericRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
+                                <button className="pt-btn ghost small" onClick={() => deleteAgencyNumericRule(rule.id)}><X size={12} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 <div className="pt-card">
                   <div className="pt-row-between">
