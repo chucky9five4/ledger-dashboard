@@ -3481,10 +3481,10 @@ export default function App() {
                 ) : (
                   <>
                     <table className="pt-table" style={{ marginTop: 12 }}>
-                      <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Product</th><th>Plan type</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                      <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th className="num">Amount</th></tr></thead>
                       <tbody>
                         {clientMatches.map((r) => (
-                          <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.product}</td><td>{r.planType}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                          <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td>{r.carrier}</td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                         ))}
                       </tbody>
                     </table>
