@@ -2253,9 +2253,18 @@ export default function App() {
     });
     return Object.values(groups).sort((a, b) => b.count - a.count);
   }, [records, agentNameToAgencyId, agencyNumericRules]);
+  const agencyAmountsNeedingRulesFiltered = useMemo(() => {
+    if (!numericRuleAgencyFilter) return agencyAmountsNeedingRules;
+    return agencyAmountsNeedingRules.filter((item) => item.agencyId === numericRuleAgencyFilter);
+  }, [agencyAmountsNeedingRules, numericRuleAgencyFilter]);
+  const agencyNumericRulesFiltered = useMemo(() => {
+    if (!numericRuleAgencyFilter) return agencyNumericRules;
+    return agencyNumericRules.filter((r) => r.agencyId === numericRuleAgencyFilter);
+  }, [agencyNumericRules, numericRuleAgencyFilter]);
 
   const [newAgencyName, setNewAgencyName] = useState("");
   const [selectedAgencyForDetail, setSelectedAgencyForDetail] = useState("");
+  const [numericRuleAgencyFilter, setNumericRuleAgencyFilter] = useState("");
   const [agencyAgentSearchQuery, setAgencyAgentSearchQuery] = useState("");
   const agentsInSelectedAgency = useMemo(() => {
     if (!selectedAgencyForDetail) return [];
@@ -4815,16 +4824,24 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="pt-card" style={{ border: agencyAmountsNeedingRules.length > 0 ? "2px solid var(--gold)" : undefined }}>
-                  <h3>Needs a rule ({agencyAmountsNeedingRules.length})</h3>
+                <div className="pt-field" style={{ maxWidth: 260, marginBottom: 4 }}>
+                  <label>Filter by agency</label>
+                  <select value={numericRuleAgencyFilter} onChange={(e) => setNumericRuleAgencyFilter(e.target.value)}>
+                    <option value="">All agencies</option>
+                    {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="pt-card" style={{ border: agencyAmountsNeedingRulesFiltered.length > 0 ? "2px solid var(--gold)" : undefined }}>
+                  <h3>Needs a rule ({agencyAmountsNeedingRulesFiltered.length})</h3>
                   <p className="pt-hint" style={{ marginBottom: 12 }}>Every distinct dollar amount from a downline agency's agents shows up here until you rule it, once \u2014 after that, every future occurrence of that exact amount is handled automatically.</p>
-                  {agencyAmountsNeedingRules.length === 0 ? (
+                  {agencyAmountsNeedingRulesFiltered.length === 0 ? (
                     <p className="pt-hint">Nothing waiting on a rule right now. \ud83c\udf89</p>
                   ) : (
                     <table className="pt-table">
                       <thead><tr><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th className="num">Seen</th><th>Rule it as\u2026</th><th></th></tr></thead>
                       <tbody>
-                        {agencyAmountsNeedingRules.map((item) => {
+                        {agencyAmountsNeedingRulesFiltered.map((item) => {
                           const key = item.agencyId + "::" + item.carrier + "::" + item.category + "::" + item.amount;
                           const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
                           return (
@@ -4859,13 +4876,13 @@ export default function App() {
                   )}
                 </div>
 
-                {agencyNumericRules.length > 0 && (
+                {agencyNumericRulesFiltered.length > 0 && (
                   <div className="pt-card">
-                    <h3>Numeric rules ({agencyNumericRules.length})</h3>
+                    <h3>Numeric rules ({agencyNumericRulesFiltered.length})</h3>
                     <table className="pt-table">
                       <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th>Outcome</th><th></th></tr></thead>
                       <tbody>
-                        {agencyNumericRules.map((rule) => (
+                        {agencyNumericRulesFiltered.map((rule) => (
                           <tr key={rule.id}>
                             <td><span className={"pt-status-chip " + (rule.active ? "pt-status-green" : "pt-status-gray")}>{rule.active ? "Active" : "Paused"}</span></td>
                             <td>{downlineAgencies.find((ag) => ag.id === rule.agencyId)?.name || "\u2014"}</td>
