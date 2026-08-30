@@ -2265,6 +2265,20 @@ export default function App() {
     return agencyNumericRules.filter((r) => r.agencyId === numericRuleAgencyFilter);
   }, [agencyNumericRules, numericRuleAgencyFilter]);
 
+  const [numericRuleClientView, setNumericRuleClientView] = useState(null);
+  const numericRuleClientRows = useMemo(() => {
+    if (!numericRuleClientView) return [];
+    const { agencyId, carrier, category, amount } = numericRuleClientView;
+    return records.filter((r) => {
+      const rAgencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
+      if (rAgencyId !== agencyId || r.carrier !== carrier) return false;
+      const rCategory = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
+      if (rCategory !== category) return false;
+      const rAmount = r.rawCommissionAmount ?? r.commissionAmount;
+      return Math.round(rAmount * 100) / 100 === amount;
+    }).sort((a, b) => (a.effectiveDate || "").localeCompare(b.effectiveDate || ""));
+  }, [numericRuleClientView, records, agentNameToAgencyId]);
+
   const [newAgencyName, setNewAgencyName] = useState("");
   const [selectedAgencyForDetail, setSelectedAgencyForDetail] = useState("");
   const [agencyAgentSearchQuery, setAgencyAgentSearchQuery] = useState("");
@@ -3255,6 +3269,36 @@ export default function App() {
                         <td>{fmtDate(r.effectiveDate)}</td>
                         <td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td>
                         <td><StatusBadge status={r.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {numericRuleClientView && (
+          <div className="pt-modal-backdrop" onClick={() => setNumericRuleClientView(null)}>
+            <div className="pt-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="pt-row-between" style={{ marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>{downlineAgencies.find((ag) => ag.id === numericRuleClientView.agencyId)?.name || "\u2014"} \u2014 {numericRuleClientView.carrier} {numericRuleClientView.category} at {fmtMoney(numericRuleClientView.amount)}</h3>
+                <button className="pt-btn ghost small" onClick={() => setNumericRuleClientView(null)}><X size={14} /></button>
+              </div>
+              <p className="pt-hint" style={{ marginBottom: 12 }}>{numericRuleClientRows.length} record(s) at this exact amount.</p>
+              {numericRuleClientRows.length === 0 ? (
+                <p className="pt-hint">No matching records found \u2014 this can happen if the underlying data changed since this amount was flagged.</p>
+              ) : (
+                <table className="pt-table">
+                  <thead><tr><th>Client</th><th>Agent</th><th>Effective date</th><th>Paid date</th><th className="num">Amount</th></tr></thead>
+                  <tbody>
+                    {numericRuleClientRows.map((r) => (
+                      <tr key={r.id}>
+                        <td>{r.clientName}</td>
+                        <td>{r.agent}</td>
+                        <td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td>
+                        <td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td>
+                        <td className="num mono">{<Money v={r.rawCommissionAmount ?? r.commissionAmount} />}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -4918,7 +4962,9 @@ export default function App() {
                                   <td>{item.carrier}</td>
                                   <td>{item.category}</td>
                                   <td className="num mono">{fmtMoney(item.amount)}</td>
-                                  <td className="num">{item.count}</td>
+                                  <td className="num">
+                                    <button className="pt-btn text small" onClick={() => setNumericRuleClientView({ agencyId: item.agencyId, carrier: item.carrier, category: item.category, amount: item.amount })}>{item.count}</button>
+                                  </td>
                                   <td>
                                     <div className="pt-btn-row">
                                       <select value={draft.outcomeType} onChange={(e) => updateNumericRuleDraft(key, { outcomeType: e.target.value })}>
@@ -4932,9 +4978,12 @@ export default function App() {
                                     </div>
                                   </td>
                                   <td className="num">
-                                    <button className="pt-btn primary small" disabled={savingNumericRule === key || (draft.outcomeType === "flat" && draft.flatPayout === "")} onClick={() => saveAgencyNumericRule(item, key)}>
-                                      {savingNumericRule === key ? "Saving\u2026" : "Save rule"}
-                                    </button>
+                                    <div className="pt-btn-row">
+                                      <button className="pt-btn ghost small" onClick={() => setNumericRuleClientView({ agencyId: item.agencyId, carrier: item.carrier, category: item.category, amount: item.amount })}>View clients</button>
+                                      <button className="pt-btn primary small" disabled={savingNumericRule === key || (draft.outcomeType === "flat" && draft.flatPayout === "")} onClick={() => saveAgencyNumericRule(item, key)}>
+                                        {savingNumericRule === key ? "Saving\u2026" : "Save rule"}
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               );
