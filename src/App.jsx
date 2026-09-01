@@ -2254,6 +2254,7 @@ export default function App() {
     records.forEach((r) => {
       const agencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
       if (!agencyId) return;
+      if (r.payableSourceType && r.payableSourceType !== "agency_numeric") return; // already covered by something more specific
       if (/dental|vision/i.test(r.product || "")) return;
       const category = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
       const amount = r.rawCommissionAmount ?? r.commissionAmount;
@@ -2449,9 +2450,49 @@ export default function App() {
         outcome_type: draft.outcomeType, flat_payout: draft.outcomeType === "flat" ? Number(draft.flatPayout) : null,
       }]) });
       const row = Array.isArray(created) ? created[0] : created;
-      if (row) setAgencyNumericRules((prev) => [{ id: row.id, agencyId: row.agency_id, carrier: row.carrier, category: row.category, amount: Number(row.amount), outcomeType: row.outcome_type || "flat", flatPayout: row.flat_payout === null ? null : Number(row.flat_payout), active: row.active !== false }, ...prev]);
-      showToast(`Ruled ${fmtMoney(item.amount)} for ${item.category} \u2014 every future occurrence of this exact amount is now handled automatically.`);
+      if (!row) { showToast("Could not save rule.", "error"); setSavingNumericRule(null); return; }
+      const rule = { id: row.id, agencyId: row.agency_id, carrier: row.carrier, category: row.category, amount: Number(row.amount), outcomeType: row.outcome_type || "flat", flatPayout: row.flat_payout === null ? null : Number(row.flat_payout), active: row.active !== false };
+      setAgencyNumericRules((prev) => [rule, ...prev]);
       setNumericRuleDrafts((prev) => { const next = { ...prev }; delete next[key]; return next; });
+
+      // Retroactively apply to matching commission rows already in the
+      // system \u2014 not just future imports \u2014 so the Dashboard's Net Revenue
+      // reflects this agency payout immediately, not only going forward.
+      // Skip anything already covered by a more specific rule (client-level
+      // or the agent's own individual rule), matching the same precedence
+      // used at import time.
+      const agencyStandardRule = draft.outcomeType === "percentage" ? agencyCompRules.find((r) => r.active && r.carrier === item.carrier && r.agencyId === item.agencyId) : null;
+      const matches = records.filter((r) => {
+        if (r.carrier !== item.carrier) return false;
+        if (r.payableSourceType) return false; // already covered by something more specific
+        const rAgencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
+        if (rAgencyId !== item.agencyId) return false;
+        if (/dental|vision/i.test(r.product || "")) return false;
+        const rCategory = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
+        if (rCategory !== item.category) return false;
+        const rAmount = r.rawCommissionAmount ?? r.commissionAmount;
+        return Math.round(rAmount * 100) / 100 === item.amount;
+      });
+      const ledgerToInsert = [];
+      const matchAdjustments = {};
+      let appliedCount = 0;
+      for (const rec of matches) {
+        const rawAmt = rec.rawCommissionAmount ?? rec.commissionAmount;
+        const agentPortion = calcAgencyNumericPortion(rule, agencyStandardRule, item.category, rawAmt);
+        if (agentPortion === 0) continue;
+        const newAmount = rec.commissionAmount - agentPortion;
+        await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+        ledgerToInsert.push({ rule_id: rule.id, source_type: "agency_numeric", carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.agent, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+        matchAdjustments[rec.id] = agentPortion;
+        appliedCount++;
+      }
+      if (ledgerToInsert.length) {
+        const insertedLedger = await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(ledgerToInsert) });
+        const ledgerRows = (Array.isArray(insertedLedger) ? insertedLedger : []).map((l) => ({ id: l.id, ruleId: l.rule_id, batchId: l.batch_id || "", sourceType: l.source_type, carrier: l.carrier, clientName: l.client_name, agentName: l.agent_name, amount: Number(l.amount), policyId: l.policy_id, transactionDate: l.transaction_date || "", paid: false, paidDate: null, createdAt: l.created_at || "" }));
+        setPayableLedger((prev) => [...ledgerRows, ...prev]);
+      }
+      setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id], payableSourceType: "agency_numeric" } : r)));
+      showToast(`Ruled ${fmtMoney(item.amount)} for ${item.category} \u2014 applied to ${appliedCount} existing record(s), and every future occurrence is now handled automatically.`);
     } catch (e) { showToast("Could not save rule: " + e.message, "error"); }
     setSavingNumericRule(null);
   }
