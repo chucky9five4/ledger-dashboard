@@ -2675,6 +2675,16 @@ export default function App() {
   const [compCarrier, setCompCarrier] = useState("");
   const [compAgentName, setCompAgentName] = useState("");
   const [compRenewalAmount, setCompRenewalAmount] = useState("");
+  const [compRulesExpanded, setCompRulesExpanded] = useState(false);
+  const [payableRulesExpanded, setPayableRulesExpanded] = useState(false);
+  const [payableRulesSearch, setPayableRulesSearch] = useState("");
+  const payableRulesFiltered = useMemo(() => {
+    const q = payableRulesSearch.trim().toLowerCase();
+    if (!q) return payableRules;
+    return payableRules.filter((r) => (r.clientName || "").toLowerCase().includes(q));
+  }, [payableRules, payableRulesSearch]);
+  const [oneTimeCorrectionsExpanded, setOneTimeCorrectionsExpanded] = useState(false);
+  const [payableAgentSearch, setPayableAgentSearch] = useState("");
   const [compFirstYearAmount, setCompFirstYearAmount] = useState("");
   const [addingCompRule, setAddingCompRule] = useState(false);
 
@@ -4637,17 +4647,14 @@ export default function App() {
                     {totalOwedByAgentThisMonth.length === 0 ? (
                       <p className="pt-hint">Nothing recognized for this period.</p>
                     ) : (
-                      <table className="pt-table">
-                        <thead><tr><th>Agent</th><th className="num">Total owed</th></tr></thead>
-                        <tbody>
-                          {totalOwedByAgentThisMonth.map((a) => (
-                            <tr key={a.key} className={"pt-clickable" + (selectedPayableAgent === a.key ? " selected" : "")} onClick={() => setSelectedPayableAgent(a.key)}>
-                              <td>{a.key}</td>
-                              <td className="num"><Money v={a.revenue} /></td>
-                            </tr>
+                      <>
+                        <input value={payableAgentSearch} onChange={(e) => setPayableAgentSearch(e.target.value)} placeholder="Filter agents\u2026" style={{ marginBottom: 8, width: "100%" }} />
+                        <select size={10} className="pt-listbox" value={selectedPayableAgent || ""} onChange={(e) => setSelectedPayableAgent(e.target.value)}>
+                          {totalOwedByAgentThisMonth.filter((a) => !payableAgentSearch.trim() || a.key.toLowerCase().includes(payableAgentSearch.trim().toLowerCase())).map((a) => (
+                            <option key={a.key} value={a.key}>{a.key} \u2014 {fmtMoney(a.revenue)}</option>
                           ))}
-                        </tbody>
-                      </table>
+                        </select>
+                      </>
                     )}
                   </div>
 
@@ -4911,7 +4918,12 @@ export default function App() {
                     {addingCompRule ? "Applying\u2026" : "Add rule"}
                   </button>
                   {agentCompRules.length > 0 && (
-                    <table className="pt-table" style={{ marginTop: 16 }}>
+                    <>
+                      <div className="pt-row-between" style={{ cursor: "pointer", marginTop: 16 }} onClick={() => setCompRulesExpanded(!compRulesExpanded)}>
+                        <span style={{ fontWeight: 600, fontSize: 13.5 }}>{compRulesExpanded ? "\u25be" : "\u25b8"} Existing rules ({agentCompRules.length})</span>
+                      </div>
+                      {compRulesExpanded && (
+                    <table className="pt-table" style={{ marginTop: 8 }}>
                       <thead><tr><th>Status</th><th>Carrier</th><th>Agent</th><th className="num">Renewal/txn</th><th className="num">First year/mo</th><th className="num">Currently tracked</th><th></th></tr></thead>
                       <tbody>
                         {agentCompRules.map((rule) => {
@@ -4951,6 +4963,8 @@ export default function App() {
                         })}
                       </tbody>
                     </table>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -5302,11 +5316,16 @@ export default function App() {
                 )}
 
                 <div className="pt-card">
-                  <div className="pt-row-between">
-                    <h3>Rules</h3>
+                  <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setPayableRulesExpanded(!payableRulesExpanded)}>
+                    <h3>{payableRulesExpanded ? "\u25be" : "\u25b8"} Rules ({payableRules.length})</h3>
+                  </div>
+                  {payableRulesExpanded && (
+                    <>
+                  <div className="pt-row-between" style={{ marginTop: 10 }}>
+                    <input value={payableRulesSearch} onChange={(e) => setPayableRulesSearch(e.target.value)} placeholder="Filter by client name\u2026" style={{ maxWidth: 280 }} />
                     <div className="pt-btn-row">
-                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRules.map((r) => r.id)))}>Select all ({payableRules.length})</button>
-                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRules.filter((r) => r.createdAt && (Date.now() - new Date(r.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((r) => r.id)))}>Select last 2 hours</button>
+                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRulesFiltered.map((r) => r.id)))}>Select all ({payableRulesFiltered.length})</button>
+                      <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRulesFiltered.filter((r) => r.createdAt && (Date.now() - new Date(r.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((r) => r.id)))}>Select last 2 hours</button>
                       {selectedRuleIds.size > 0 && (
                         confirmDeleteSelectedRules ? (
                           <span className="pt-confirm-inline">
@@ -5320,12 +5339,12 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
-                  {payableRules.length === 0 ? <p className="pt-hint">No payable rules yet.</p> : (
+                  <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
+                  {payableRulesFiltered.length === 0 ? <p className="pt-hint">{payableRulesSearch ? "No matching rules." : "No payable rules yet."}</p> : (
                     <table className="pt-table">
                       <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>Owed to</th><th className="num">Per payment</th><th className="num">Total recognized</th><th>Created</th><th></th></tr></thead>
                       <tbody>
-                        {payableRules.map((rule) => {
+                        {payableRulesFiltered.map((rule) => {
                           const entries = payableLedger.filter((l) => l.ruleId === rule.id);
                           const total = entries.reduce((s, l) => s + l.amount, 0);
                           return (
@@ -5351,13 +5370,18 @@ export default function App() {
                       </tbody>
                     </table>
                   )}
+                    </>
+                  )}
                 </div>
 
                 {oneTimeCorrectionEntries.length > 0 && (
                   <div className="pt-card">
-                    <div className="pt-row-between">
-                      <h3>One-time corrections</h3>
-                      <div className="pt-btn-row">
+                    <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setOneTimeCorrectionsExpanded(!oneTimeCorrectionsExpanded)}>
+                      <h3>{oneTimeCorrectionsExpanded ? "\u25be" : "\u25b8"} One-time corrections ({oneTimeCorrectionEntries.length})</h3>
+                    </div>
+                    {oneTimeCorrectionsExpanded && (
+                      <>
+                    <div className="pt-btn-row" style={{ marginTop: 10 }}>
                         <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.map((e) => e.id)))}>Select all ({oneTimeCorrectionEntries.length})</button>
                         <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.filter((e) => e.createdAt && (Date.now() - new Date(e.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((e) => e.id)))}>Select last 2 hours</button>
                         {selectedCorrectionIds.size > 0 && (
@@ -5365,9 +5389,8 @@ export default function App() {
                             {deletingSelectedCorrections ? "Working\u2026" : <><Trash2 size={12} /> Undo {selectedCorrectionIds.size} selected</>}
                           </button>
                         )}
-                      </div>
                     </div>
-                    <p className="pt-hint" style={{ marginBottom: 10 }}>These came from the "One-time historical correction" tool \u2014 no rule attached, so they're listed individually here. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
+                    <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>These came from the "One-time historical correction" tool \u2014 no rule attached, so they're listed individually here. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
                     <table className="pt-table">
                       <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th className="num">Amount</th><th>Created</th></tr></thead>
                       <tbody>
@@ -5383,6 +5406,8 @@ export default function App() {
                         ))}
                       </tbody>
                     </table>
+                      </>
+                    )}
                   </div>
                 )}
               </>
