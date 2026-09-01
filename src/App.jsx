@@ -2439,6 +2439,40 @@ export default function App() {
     setNumericRuleDrafts((prev) => ({ ...prev, [key]: { ...(prev[key] || { outcomeType: "flat", flatPayout: "" }), ...patch } }));
   }
   const [savingNumericRule, setSavingNumericRule] = useState(null);
+  function findAgencyNumericRuleMatches(rule, recordsList) {
+    return recordsList.filter((r) => {
+      if (r.carrier !== rule.carrier) return false;
+      if (r.payableSourceType) return false; // already covered by something more specific
+      const rAgencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
+      if (rAgencyId !== rule.agencyId) return false;
+      if (/dental|vision/i.test(r.product || "")) return false;
+      const rCategory = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
+      if (rCategory !== rule.category) return false;
+      const rAmount = r.rawCommissionAmount ?? r.commissionAmount;
+      return Math.round(rAmount * 100) / 100 === rule.amount;
+    });
+  }
+  async function applyAgencyNumericRuleToMatches(rule, matches) {
+    const agencyStandardRule = rule.outcomeType === "percentage" ? agencyCompRules.find((r) => r.active && r.carrier === rule.carrier && r.agencyId === rule.agencyId) : null;
+    const ledgerToInsert = [];
+    const matchAdjustments = {};
+    for (const rec of matches) {
+      const rawAmt = rec.rawCommissionAmount ?? rec.commissionAmount;
+      const agentPortion = calcAgencyNumericPortion(rule, agencyStandardRule, rule.category, rawAmt);
+      if (agentPortion === 0) continue;
+      const newAmount = rec.commissionAmount - agentPortion;
+      await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
+      ledgerToInsert.push({ rule_id: rule.id, source_type: "agency_numeric", carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.agent, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
+      matchAdjustments[rec.id] = agentPortion;
+    }
+    let ledgerRows = [];
+    if (ledgerToInsert.length) {
+      const insertedLedger = await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(ledgerToInsert) });
+      ledgerRows = (Array.isArray(insertedLedger) ? insertedLedger : []).map((l) => ({ id: l.id, ruleId: l.rule_id, batchId: l.batch_id || "", sourceType: l.source_type, carrier: l.carrier, clientName: l.client_name, agentName: l.agent_name, amount: Number(l.amount), policyId: l.policy_id, transactionDate: l.transaction_date || "", paid: false, paidDate: null, createdAt: l.created_at || "" }));
+    }
+    return { matchAdjustments, ledgerRows, appliedCount: Object.keys(matchAdjustments).length };
+  }
+
   async function saveAgencyNumericRule(item, key) {
     const draft = numericRuleDrafts[key] || { outcomeType: "flat", flatPayout: "" };
     if (draft.outcomeType === "flat" && draft.flatPayout === "") return;
@@ -2461,36 +2495,9 @@ export default function App() {
       // Skip anything already covered by a more specific rule (client-level
       // or the agent's own individual rule), matching the same precedence
       // used at import time.
-      const agencyStandardRule = draft.outcomeType === "percentage" ? agencyCompRules.find((r) => r.active && r.carrier === item.carrier && r.agencyId === item.agencyId) : null;
-      const matches = records.filter((r) => {
-        if (r.carrier !== item.carrier) return false;
-        if (r.payableSourceType) return false; // already covered by something more specific
-        const rAgencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
-        if (rAgencyId !== item.agencyId) return false;
-        if (/dental|vision/i.test(r.product || "")) return false;
-        const rCategory = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
-        if (rCategory !== item.category) return false;
-        const rAmount = r.rawCommissionAmount ?? r.commissionAmount;
-        return Math.round(rAmount * 100) / 100 === item.amount;
-      });
-      const ledgerToInsert = [];
-      const matchAdjustments = {};
-      let appliedCount = 0;
-      for (const rec of matches) {
-        const rawAmt = rec.rawCommissionAmount ?? rec.commissionAmount;
-        const agentPortion = calcAgencyNumericPortion(rule, agencyStandardRule, item.category, rawAmt);
-        if (agentPortion === 0) continue;
-        const newAmount = rec.commissionAmount - agentPortion;
-        await sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
-        ledgerToInsert.push({ rule_id: rule.id, source_type: "agency_numeric", carrier: rec.carrier, client_name: rec.clientName, agent_name: rec.agent, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
-        matchAdjustments[rec.id] = agentPortion;
-        appliedCount++;
-      }
-      if (ledgerToInsert.length) {
-        const insertedLedger = await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(ledgerToInsert) });
-        const ledgerRows = (Array.isArray(insertedLedger) ? insertedLedger : []).map((l) => ({ id: l.id, ruleId: l.rule_id, batchId: l.batch_id || "", sourceType: l.source_type, carrier: l.carrier, clientName: l.client_name, agentName: l.agent_name, amount: Number(l.amount), policyId: l.policy_id, transactionDate: l.transaction_date || "", paid: false, paidDate: null, createdAt: l.created_at || "" }));
-        setPayableLedger((prev) => [...ledgerRows, ...prev]);
-      }
+      const matches = findAgencyNumericRuleMatches(rule, records);
+      const { matchAdjustments, ledgerRows, appliedCount } = await applyAgencyNumericRuleToMatches(rule, matches);
+      if (ledgerRows.length) setPayableLedger((prev) => [...ledgerRows, ...prev]);
       setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id], payableSourceType: "agency_numeric" } : r)));
       showToast(`Ruled ${fmtMoney(item.amount)} for ${item.category} \u2014 applied to ${appliedCount} existing record(s), and every future occurrence is now handled automatically.`);
     } catch (e) { showToast("Could not save rule: " + e.message, "error"); }
@@ -2510,6 +2517,36 @@ export default function App() {
       setAgencyNumericRules((prev) => prev.filter((r) => r.id !== ruleId));
       showToast("Rule removed. Records already corrected are not reverted \u2014 it'll show back up in Needs a rule.");
     } catch (e) { showToast("Could not remove: " + e.message, "error"); }
+  }
+  const [reapplyingAllRules, setReapplyingAllRules] = useState(false);
+  const [reapplyProgress, setReapplyProgress] = useState("");
+  async function reapplyAllAgencyRules() {
+    if (!cloudCfg) return;
+    setReapplyingAllRules(true);
+    let currentRecords = records;
+    let totalApplied = 0;
+    let rulesTouched = 0;
+    try {
+      for (let i = 0; i < agencyNumericRules.length; i++) {
+        const rule = agencyNumericRules[i];
+        if (!rule.active) continue;
+        setReapplyProgress(`Checking rule ${i + 1} of ${agencyNumericRules.length} \u2014 ${fmtMoney(rule.amount)} (${rule.carrier}, ${rule.category})\u2026`);
+        const matches = findAgencyNumericRuleMatches(rule, currentRecords);
+        if (matches.length === 0) continue;
+        const { matchAdjustments, ledgerRows, appliedCount } = await applyAgencyNumericRuleToMatches(rule, matches);
+        if (appliedCount === 0) continue;
+        if (ledgerRows.length) setPayableLedger((prev) => [...ledgerRows, ...prev]);
+        // Update the local working copy so the NEXT rule in this same pass
+        // sees these records as already covered, same as a live import would.
+        currentRecords = currentRecords.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id], payableSourceType: "agency_numeric" } : r));
+        totalApplied += appliedCount;
+        rulesTouched++;
+      }
+      setRecords(currentRecords);
+      showToast(rulesTouched === 0 ? "Nothing to catch up \u2014 every existing rule was already applied." : `Caught up ${rulesTouched} rule(s), correcting ${totalApplied} existing record(s) total.`);
+    } catch (e) { showToast("Could not finish re-applying: " + e.message, "error"); }
+    setReapplyingAllRules(false);
+    setReapplyProgress("");
   }
   const [editingNumericRuleId, setEditingNumericRuleId] = useState(null);
   const [editNumericRuleDraft, setEditNumericRuleDraft] = useState({ outcomeType: "flat", flatPayout: "" });
@@ -5168,6 +5205,15 @@ export default function App() {
                     </div>
                     {numericRulesExpanded && (
                       <>
+                        <div className="pt-card" style={{ background: "var(--paper)", marginBottom: 12 }}>
+                          <div className="pt-row-between" style={{ alignItems: "center" }}>
+                            <div>
+                              <div style={{ fontWeight: 600, marginBottom: 2 }}>Catch up existing commission data</div>
+                              <p className="pt-hint">One-time only \u2014 rules you create from now on already apply themselves automatically the moment you save them. This is only for rules that existed before that started, or if you're not sure everything's been applied.</p>
+                            </div>
+                            <button className="pt-btn primary" disabled={reapplyingAllRules} onClick={reapplyAllAgencyRules}>{reapplyingAllRules ? (reapplyProgress || "Working\u2026") : "Re-apply all rules now"}</button>
+                          </div>
+                        </div>
                         <p className="pt-hint" style={{ marginBottom: 10 }}>If your negotiated rate with an agency changes, edit the payout here directly \u2014 no need to delete and recreate the rule. Changes only apply going forward.</p>
                     <table className="pt-table">
                       <thead><tr><th>Status</th><th>Agency</th><th>Carrier</th><th>Category</th><th className="num">Amount</th><th>Outcome</th><th></th></tr></thead>
