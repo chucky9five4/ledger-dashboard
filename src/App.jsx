@@ -2321,19 +2321,22 @@ export default function App() {
       (l.sourceType === "agency_numeric" || l.sourceType === "agency_comp") &&
       namesInAgency.has(normalizeNameKey(resolveAgentName(l.agentName, "", "", "")))
     ).map((l) => {
+      // Reconstructed as (what's left after this deduction) + (this deduction)
+      // rather than trusting a stored "raw" field, since older records from
+      // before that field existed would otherwise show the already-reduced
+      // amount as if it were the original carrier payment.
       const rec = recordById[l.policyId];
-      const gross = rec ? (rec.rawCommissionAmount ?? rec.commissionAmount) : l.amount; // fall back if the source record isn't found
-      return { ...l, gross, ourGross: gross - l.amount };
+      const gross = rec ? rec.commissionAmount + l.amount : l.amount;
+      return { ...l, gross };
     });
   }, [payableLedger, selectedAgencyForDetail, agentsInSelectedAgency, agentLookupMaps, records]);
   const agencyOwedByMonth = useMemo(() => {
     const map = {};
     agencyAllLedgerRows.forEach((l) => {
       const month = l.transactionDate ? l.transactionDate.slice(0, 7) : "Unknown date";
-      if (!map[month]) map[month] = { month, owed: 0, paid: 0, gross: 0, ourGross: 0, rows: [], byCarrier: {} };
+      if (!map[month]) map[month] = { month, owed: 0, paid: 0, gross: 0, rows: [], byCarrier: {} };
       map[month].owed += l.amount;
       map[month].gross += l.gross;
-      map[month].ourGross += l.ourGross;
       if (l.paid) map[month].paid += l.amount;
       map[month].rows.push(l);
       map[month].byCarrier[l.carrier] = (map[month].byCarrier[l.carrier] || 0) + l.amount;
@@ -2343,7 +2346,6 @@ export default function App() {
   const agencyOwedGrandTotal = useMemo(() => agencyAllLedgerRows.reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
   const agencyPaidGrandTotal = useMemo(() => agencyAllLedgerRows.filter((l) => l.paid).reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
   const agencyGrossGrandTotal = useMemo(() => agencyAllLedgerRows.reduce((s, l) => s + l.gross, 0), [agencyAllLedgerRows]);
-  const agencyOurGrossGrandTotal = useMemo(() => agencyAllLedgerRows.reduce((s, l) => s + l.ourGross, 0), [agencyAllLedgerRows]);
   const agencyOwedByCarrierAllTime = useMemo(() => {
     const map = {};
     agencyAllLedgerRows.forEach((l) => { map[l.carrier] = (map[l.carrier] || 0) + l.amount; });
@@ -4971,11 +4973,8 @@ export default function App() {
                       </div>
                       {selectedAgencyForDetail && (
                         <div className="pt-card" style={{ background: "var(--paper)", marginBottom: 14 }}>
-                          <div className="pt-btn-row" style={{ marginBottom: 10 }}>
-                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Total commission paid by carrier: <strong style={{ color: "var(--ink)" }}>{fmtMoney(agencyGrossGrandTotal)}</strong></div>
-                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Our gross (after agency split): <strong style={{ color: "var(--green)" }}>{fmtMoney(agencyOurGrossGrandTotal)}</strong></div>
-                          </div>
                           <div className="pt-btn-row" style={{ marginBottom: 14 }}>
+                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Total commission paid by carrier: <strong style={{ color: "var(--ink)" }}>{fmtMoney(agencyGrossGrandTotal)}</strong></div>
                             <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>All-time owed: <strong style={{ color: "var(--ink)" }}>{fmtMoney(agencyOwedGrandTotal)}</strong></div>
                             <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>All-time paid: <strong style={{ color: "var(--green)" }}>{fmtMoney(agencyPaidGrandTotal)}</strong></div>
                             <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Still outstanding: <strong style={{ color: "var(--gold)" }}>{fmtMoney(agencyOwedGrandTotal - agencyPaidGrandTotal)}</strong></div>
@@ -4991,7 +4990,7 @@ export default function App() {
                             <p className="pt-hint">No payouts recorded for this agency yet.</p>
                           ) : (
                             <table className="pt-table">
-                              <thead><tr><th>Month</th><th className="num">Carrier paid</th><th className="num">Owed</th><th className="num">Our gross</th><th className="num">Paid</th><th className="num">Outstanding</th><th></th></tr></thead>
+                              <thead><tr><th>Month</th><th className="num">Carrier paid</th><th className="num">Owed</th><th className="num">Paid</th><th className="num">Outstanding</th><th></th></tr></thead>
                               <tbody>
                                 {agencyOwedByMonth.map((m) => {
                                   const outstanding = m.owed - m.paid;
@@ -5002,7 +5001,6 @@ export default function App() {
                                         <td>{expandedAgencyMonth === m.month ? "\u25be" : "\u25b8"} {m.month === "Unknown date" ? m.month : fmtMonthLabel(m.month)}</td>
                                         <td className="num mono">{fmtMoney(m.gross)}</td>
                                         <td className="num mono">{fmtMoney(m.owed)}</td>
-                                        <td className="num mono" style={{ color: "var(--green)" }}>{fmtMoney(m.ourGross)}</td>
                                         <td className="num mono">{fmtMoney(m.paid)}</td>
                                         <td className="num mono" style={{ color: outstanding > 0 ? "var(--gold)" : "var(--green)" }}>{fmtMoney(outstanding)}</td>
                                         <td className="num">
@@ -5013,7 +5011,7 @@ export default function App() {
                                       </tr>
                                       {expandedAgencyMonth === m.month && (
                                         <tr>
-                                          <td colSpan={7} style={{ padding: 0 }}>
+                                          <td colSpan={6} style={{ padding: 0 }}>
                                             {Object.keys(m.byCarrier).length > 1 && (
                                               <div className="pt-btn-row" style={{ margin: "8px 0 8px 24px", flexWrap: "wrap" }}>
                                                 {Object.entries(m.byCarrier).sort((a, b) => b[1] - a[1]).map(([carrier, amt]) => (
@@ -5022,7 +5020,7 @@ export default function App() {
                                               </div>
                                             )}
                                             <table className="pt-table" style={{ margin: "0 0 8px 24px", width: "calc(100% - 24px)" }}>
-                                              <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th className="num">Carrier paid</th><th className="num">Paid to agency</th><th className="num">Our gross</th><th>Status</th></tr></thead>
+                                              <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th className="num">Carrier paid</th><th className="num">Paid to agency</th><th>Status</th></tr></thead>
                                               <tbody>
                                                 {m.rows.map((l) => (
                                                   <tr key={l.id}>
@@ -5031,7 +5029,6 @@ export default function App() {
                                                     <td>{l.carrier}</td>
                                                     <td className="num mono">{fmtMoney(l.gross)}</td>
                                                     <td className="num mono">{fmtMoney(l.amount)}</td>
-                                                    <td className="num mono" style={{ color: "var(--green)" }}>{fmtMoney(l.ourGross)}</td>
                                                     <td>{l.paid ? <span className="pt-status-chip pt-status-green">Paid {l.paidDate ? fmtDate(l.paidDate) : ""}</span> : <span className="pt-status-chip pt-status-gray">Outstanding</span>}</td>
                                                   </tr>
                                                 ))}
