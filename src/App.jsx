@@ -2239,6 +2239,8 @@ export default function App() {
   // shown up in your commission data but have no rule yet \u2014 grouped so each
   // one only needs to be ruled once no matter how many rows it appears on.
   const [numericRuleAgencyFilter, setNumericRuleAgencyFilter] = useState("");
+  const [numericRuleCarrierFilter, setNumericRuleCarrierFilter] = useState("");
+  const [numericRuleCategoryFilter, setNumericRuleCategoryFilter] = useState("");
   const [needsRuleExpanded, setNeedsRuleExpanded] = useState(false);
   const [numericRulesExpanded, setNumericRulesExpanded] = useState(false);
   const agencyAmountsNeedingRules = useMemo(() => {
@@ -2257,13 +2259,25 @@ export default function App() {
     return Object.values(groups).sort((a, b) => b.count - a.count);
   }, [records, agentNameToAgencyId, agencyNumericRules]);
   const agencyAmountsNeedingRulesFiltered = useMemo(() => {
-    if (!numericRuleAgencyFilter) return agencyAmountsNeedingRules;
-    return agencyAmountsNeedingRules.filter((item) => item.agencyId === numericRuleAgencyFilter);
-  }, [agencyAmountsNeedingRules, numericRuleAgencyFilter]);
+    return agencyAmountsNeedingRules.filter((item) =>
+      (!numericRuleAgencyFilter || item.agencyId === numericRuleAgencyFilter) &&
+      (!numericRuleCarrierFilter || item.carrier === numericRuleCarrierFilter) &&
+      (!numericRuleCategoryFilter || item.category === numericRuleCategoryFilter)
+    );
+  }, [agencyAmountsNeedingRules, numericRuleAgencyFilter, numericRuleCarrierFilter, numericRuleCategoryFilter]);
   const agencyNumericRulesFiltered = useMemo(() => {
-    if (!numericRuleAgencyFilter) return agencyNumericRules;
-    return agencyNumericRules.filter((r) => r.agencyId === numericRuleAgencyFilter);
-  }, [agencyNumericRules, numericRuleAgencyFilter]);
+    return agencyNumericRules.filter((r) =>
+      (!numericRuleAgencyFilter || r.agencyId === numericRuleAgencyFilter) &&
+      (!numericRuleCarrierFilter || r.carrier === numericRuleCarrierFilter) &&
+      (!numericRuleCategoryFilter || r.category === numericRuleCategoryFilter)
+    );
+  }, [agencyNumericRules, numericRuleAgencyFilter, numericRuleCarrierFilter, numericRuleCategoryFilter]);
+  const numericRuleCarrierOptions = useMemo(() => {
+    const set = new Set();
+    agencyAmountsNeedingRules.forEach((item) => set.add(item.carrier));
+    agencyNumericRules.forEach((r) => set.add(r.carrier));
+    return [...set].sort();
+  }, [agencyAmountsNeedingRules, agencyNumericRules]);
 
   const [numericRuleClientView, setNumericRuleClientView] = useState(null);
   const numericRuleClientRows = useMemo(() => {
@@ -4932,12 +4946,32 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="pt-field" style={{ maxWidth: 260, marginBottom: 4 }}>
-                  <label>Filter by agency</label>
-                  <select value={numericRuleAgencyFilter} onChange={(e) => setNumericRuleAgencyFilter(e.target.value)}>
-                    <option value="">All agencies</option>
-                    {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
-                  </select>
+                <div className="pt-inline-form" style={{ marginBottom: 4, alignItems: "flex-end" }}>
+                  <div className="pt-field" style={{ maxWidth: 220 }}>
+                    <label>Filter by agency</label>
+                    <select value={numericRuleAgencyFilter} onChange={(e) => setNumericRuleAgencyFilter(e.target.value)}>
+                      <option value="">All agencies</option>
+                      {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="pt-field" style={{ maxWidth: 180 }}>
+                    <label>Filter by carrier</label>
+                    <select value={numericRuleCarrierFilter} onChange={(e) => setNumericRuleCarrierFilter(e.target.value)}>
+                      <option value="">All carriers</option>
+                      {numericRuleCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="pt-field" style={{ maxWidth: 180 }}>
+                    <label>Filter by category</label>
+                    <select value={numericRuleCategoryFilter} onChange={(e) => setNumericRuleCategoryFilter(e.target.value)}>
+                      <option value="">First Year & Renewal</option>
+                      <option value="First Year">First Year</option>
+                      <option value="Renewal">Renewal</option>
+                    </select>
+                  </div>
+                  {(numericRuleAgencyFilter || numericRuleCarrierFilter || numericRuleCategoryFilter) && (
+                    <button className="pt-btn text small" onClick={() => { setNumericRuleAgencyFilter(""); setNumericRuleCarrierFilter(""); setNumericRuleCategoryFilter(""); }}>Clear filters</button>
+                  )}
                 </div>
 
                 <div className="pt-card" style={{ border: agencyAmountsNeedingRulesFiltered.length > 0 ? "2px solid var(--gold)" : undefined }}>
