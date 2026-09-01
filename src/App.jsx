@@ -2324,15 +2324,21 @@ export default function App() {
     const map = {};
     agencyAllLedgerRows.forEach((l) => {
       const month = l.transactionDate ? l.transactionDate.slice(0, 7) : "Unknown date";
-      if (!map[month]) map[month] = { month, owed: 0, paid: 0, rows: [] };
+      if (!map[month]) map[month] = { month, owed: 0, paid: 0, rows: [], byCarrier: {} };
       map[month].owed += l.amount;
       if (l.paid) map[month].paid += l.amount;
       map[month].rows.push(l);
+      map[month].byCarrier[l.carrier] = (map[month].byCarrier[l.carrier] || 0) + l.amount;
     });
     return Object.values(map).sort((a, b) => b.month.localeCompare(a.month));
   }, [agencyAllLedgerRows]);
   const agencyOwedGrandTotal = useMemo(() => agencyAllLedgerRows.reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
   const agencyPaidGrandTotal = useMemo(() => agencyAllLedgerRows.filter((l) => l.paid).reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
+  const agencyOwedByCarrierAllTime = useMemo(() => {
+    const map = {};
+    agencyAllLedgerRows.forEach((l) => { map[l.carrier] = (map[l.carrier] || 0) + l.amount; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [agencyAllLedgerRows]);
   const [expandedAgencyMonth, setExpandedAgencyMonth] = useState(null);
 
   const agencyAgentSearchResults = useMemo(() => {
@@ -3050,7 +3056,7 @@ export default function App() {
   const [payablesMonth, setPayablesMonth] = useState("");
   const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
   const owedByAgentThisMonth = useMemo(() => {
-    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " \u2014 " + l.carrier);
     return grouped.map((g) => {
       const [agentName, carrier] = g.key.split(" \u2014 ");
@@ -3059,9 +3065,11 @@ export default function App() {
   }, [payableLedger, payablesMonth, agentLookupMaps]);
   // Always the true grand total per agent for the selected month, regardless of
   // the carrier filter above \u2014 so you can see "everything owed to me" even
-  // while the breakdown table is narrowed to one company.
+  // while the breakdown table is narrowed to one company. Downline agency
+  // payouts never show up here \u2014 those are a completely separate concept,
+  // tracked exclusively under Downline Agencies, not owed to any individual.
   const totalOwedByAgentThisMonth = useMemo(() => {
-    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     return groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "")).sort((a, b) => b.revenue - a.revenue);
   }, [payableLedger, payablesMonth, agentLookupMaps]);
   const [selectedPayableAgent, setSelectedPayableAgent] = useState(null);
@@ -3073,7 +3081,7 @@ export default function App() {
     if (!selectedPayableAgent) return [];
     const recordById = {};
     records.forEach((r) => { recordById[r.id] = r; });
-    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
+    const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && resolveAgentName(l.agentName, "", "", "") === selectedPayableAgent && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     return scoped.map((l) => {
       const rec = recordById[l.policyId];
       return { id: l.id, clientName: l.clientName || "Unknown", carrier: l.carrier, amount: l.amount, effectiveDate: rec ? rec.effectiveDate : "", transactionDate: l.transactionDate };
@@ -4958,6 +4966,13 @@ export default function App() {
                             <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>All-time paid: <strong style={{ color: "var(--green)" }}>{fmtMoney(agencyPaidGrandTotal)}</strong></div>
                             <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Still outstanding: <strong style={{ color: "var(--gold)" }}>{fmtMoney(agencyOwedGrandTotal - agencyPaidGrandTotal)}</strong></div>
                           </div>
+                          {agencyOwedByCarrierAllTime.length > 0 && (
+                            <div className="pt-btn-row" style={{ marginBottom: 14, flexWrap: "wrap" }}>
+                              {agencyOwedByCarrierAllTime.map(([carrier, amt]) => (
+                                <span key={carrier} className="pt-hint" style={{ background: "var(--card)", padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)" }}>{carrier}: {fmtMoney(amt)}</span>
+                              ))}
+                            </div>
+                          )}
                           {agencyOwedByMonth.length === 0 ? (
                             <p className="pt-hint">No payouts recorded for this agency yet.</p>
                           ) : (
@@ -4983,6 +4998,13 @@ export default function App() {
                                       {expandedAgencyMonth === m.month && (
                                         <tr>
                                           <td colSpan={5} style={{ padding: 0 }}>
+                                            {Object.keys(m.byCarrier).length > 1 && (
+                                              <div className="pt-btn-row" style={{ margin: "8px 0 8px 24px", flexWrap: "wrap" }}>
+                                                {Object.entries(m.byCarrier).sort((a, b) => b[1] - a[1]).map(([carrier, amt]) => (
+                                                  <span key={carrier} className="pt-hint" style={{ background: "var(--paper)", padding: "3px 8px", borderRadius: 6, border: "1px solid var(--border)" }}>{carrier}: {fmtMoney(amt)}</span>
+                                                ))}
+                                              </div>
+                                            )}
                                             <table className="pt-table" style={{ margin: "0 0 8px 24px", width: "calc(100% - 24px)" }}>
                                               <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th className="num">Amount</th><th>Status</th></tr></thead>
                                               <tbody>
