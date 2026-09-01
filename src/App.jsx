@@ -2254,7 +2254,7 @@ export default function App() {
     records.forEach((r) => {
       const agencyId = agentNameToAgencyId[normalizeNameKey(r.agent)];
       if (!agencyId) return;
-      if (r.payableSourceType && r.payableSourceType !== "agency_numeric") return; // already covered by something more specific
+      if (r.payableSourceType) return; // already covered by some rule, don't re-examine its (now-adjusted) amount
       if (/dental|vision/i.test(r.product || "")) return;
       const category = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate);
       const amount = r.rawCommissionAmount ?? r.commissionAmount;
