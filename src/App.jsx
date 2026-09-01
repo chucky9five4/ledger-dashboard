@@ -632,6 +632,12 @@ function fmtDate(iso) {
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
+function fmtMonthLabel(ym) {
+  if (!ym) return "\u2014";
+  const d = new Date(ym + "-01T00:00:00");
+  if (isNaN(d.getTime())) return ym;
+  return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
 function groupBy(arr, keyFn) {
   const map = new Map();
   arr.forEach((item) => {
@@ -2300,6 +2306,34 @@ export default function App() {
     if (!selectedAgencyForDetail) return [];
     return agentDirectory.filter((a) => a.downlineAgencyId === selectedAgencyForDetail);
   }, [agentDirectory, selectedAgencyForDetail]);
+  // Payouts to this agency's agents are still recorded under each agent's own
+  // name in the ledger (same table individual agents use) \u2014 this rolls those
+  // entries up into one history for the agency itself, since that's who
+  // actually gets paid, broken out month by month with what's been marked
+  // paid vs what's still outstanding.
+  const agencyAllLedgerRows = useMemo(() => {
+    if (!selectedAgencyForDetail) return [];
+    const namesInAgency = new Set(agentsInSelectedAgency.map((a) => normalizeNameKey(a.canonicalName)));
+    return payableLedger.filter((l) =>
+      (l.sourceType === "agency_numeric" || l.sourceType === "agency_comp") &&
+      namesInAgency.has(normalizeNameKey(resolveAgentName(l.agentName, "", "", "")))
+    );
+  }, [payableLedger, selectedAgencyForDetail, agentsInSelectedAgency, agentLookupMaps]);
+  const agencyOwedByMonth = useMemo(() => {
+    const map = {};
+    agencyAllLedgerRows.forEach((l) => {
+      const month = l.transactionDate ? l.transactionDate.slice(0, 7) : "Unknown date";
+      if (!map[month]) map[month] = { month, owed: 0, paid: 0, rows: [] };
+      map[month].owed += l.amount;
+      if (l.paid) map[month].paid += l.amount;
+      map[month].rows.push(l);
+    });
+    return Object.values(map).sort((a, b) => b.month.localeCompare(a.month));
+  }, [agencyAllLedgerRows]);
+  const agencyOwedGrandTotal = useMemo(() => agencyAllLedgerRows.reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
+  const agencyPaidGrandTotal = useMemo(() => agencyAllLedgerRows.filter((l) => l.paid).reduce((s, l) => s + l.amount, 0), [agencyAllLedgerRows]);
+  const [expandedAgencyMonth, setExpandedAgencyMonth] = useState(null);
+
   const agencyAgentSearchResults = useMemo(() => {
     const q = agencyAgentSearchQuery.trim().toLowerCase();
     if (!q || !selectedAgencyForDetail) return [];
@@ -4839,6 +4873,63 @@ export default function App() {
                           {downlineAgencies.map((ag) => <option key={ag.id} value={ag.id}>{ag.name}</option>)}
                         </select>
                       </div>
+                      {selectedAgencyForDetail && (
+                        <div className="pt-card" style={{ background: "var(--paper)", marginBottom: 14 }}>
+                          <div className="pt-btn-row" style={{ marginBottom: 14 }}>
+                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>All-time owed: <strong style={{ color: "var(--ink)" }}>{fmtMoney(agencyOwedGrandTotal)}</strong></div>
+                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>All-time paid: <strong style={{ color: "var(--green)" }}>{fmtMoney(agencyPaidGrandTotal)}</strong></div>
+                            <div className="pt-hint" style={{ background: "var(--card)", padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>Still outstanding: <strong style={{ color: "var(--gold)" }}>{fmtMoney(agencyOwedGrandTotal - agencyPaidGrandTotal)}</strong></div>
+                          </div>
+                          {agencyOwedByMonth.length === 0 ? (
+                            <p className="pt-hint">No payouts recorded for this agency yet.</p>
+                          ) : (
+                            <table className="pt-table">
+                              <thead><tr><th>Month</th><th className="num">Owed</th><th className="num">Paid</th><th className="num">Outstanding</th><th></th></tr></thead>
+                              <tbody>
+                                {agencyOwedByMonth.map((m) => {
+                                  const outstanding = m.owed - m.paid;
+                                  const unpaidIds = m.rows.filter((l) => !l.paid).map((l) => l.id);
+                                  return (
+                                    <React.Fragment key={m.month}>
+                                      <tr className="pt-clickable" onClick={() => setExpandedAgencyMonth(expandedAgencyMonth === m.month ? null : m.month)}>
+                                        <td>{expandedAgencyMonth === m.month ? "\u25be" : "\u25b8"} {m.month === "Unknown date" ? m.month : fmtMonthLabel(m.month)}</td>
+                                        <td className="num mono">{fmtMoney(m.owed)}</td>
+                                        <td className="num mono">{fmtMoney(m.paid)}</td>
+                                        <td className="num mono" style={{ color: outstanding > 0 ? "var(--gold)" : "var(--green)" }}>{fmtMoney(outstanding)}</td>
+                                        <td className="num">
+                                          {unpaidIds.length > 0 && (
+                                            <button className="pt-btn ghost small" onClick={(e) => { e.stopPropagation(); markLedgerPaid(unpaidIds); }}>Mark month paid</button>
+                                          )}
+                                        </td>
+                                      </tr>
+                                      {expandedAgencyMonth === m.month && (
+                                        <tr>
+                                          <td colSpan={5} style={{ padding: 0 }}>
+                                            <table className="pt-table" style={{ margin: "0 0 8px 24px", width: "calc(100% - 24px)" }}>
+                                              <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th className="num">Amount</th><th>Status</th></tr></thead>
+                                              <tbody>
+                                                {m.rows.map((l) => (
+                                                  <tr key={l.id}>
+                                                    <td>{l.clientName || "\u2014"}</td>
+                                                    <td>{resolveAgentName(l.agentName, "", "", "")}</td>
+                                                    <td>{l.carrier}</td>
+                                                    <td className="num mono">{fmtMoney(l.amount)}</td>
+                                                    <td>{l.paid ? <span className="pt-status-chip pt-status-green">Paid {l.paidDate ? fmtDate(l.paidDate) : ""}</span> : <span className="pt-status-chip pt-status-gray">Outstanding</span>}</td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      )}
                       {selectedAgencyForDetail && (
                         confirmDeleteAgency === selectedAgencyForDetail ? (
                           <span className="pt-confirm-inline">
