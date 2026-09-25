@@ -1498,6 +1498,19 @@ export default function App() {
   }, [filteredRecords, membershipRecords, filterCarrier, filterAgent]);
   const activeAgentCount = new Set(filteredRecords.map((r) => resolveAgentName(r.agent, "", "", ""))).size;
 
+  // The latest imported row per policy \u2014 same client + same carrier + same
+  // effective date collapses to one, no matter how many times it's shown up
+  // across imports. A different effective date under the same carrier is a
+  // real, separate policy (e.g. they switched plans).
+  const membershipLatestByPolicy = useMemo(() => {
+    const map = {};
+    [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
+      const key = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + (r.effectiveDate || "");
+      if (!map[key]) map[key] = r;
+    });
+    return map;
+  }, [membershipRecords]);
+
   const filteredMembershipLatest = useMemo(() => {
     return Object.values(membershipLatestByPolicy).filter((r) =>
       (filterCarrier === "All" || r.carrier === filterCarrier) &&
