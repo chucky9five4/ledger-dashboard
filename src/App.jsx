@@ -206,23 +206,6 @@ function statusBucket(status) {
   if (s === "term" || s === "rapid disenrollment") return "inactive";
   return "pending";
 }
-function classifyPlanFromName(raw) {
-  if (!raw) return { base: "", snp: "" };
-  const s = String(raw).toLowerCase();
-  const isDSnp = /d[\s-]?snp|dual/.test(s);
-  const isCSnp = /c[\s-]?snp|chronic/.test(s);
-  const isHmo = /\bhmo\b/.test(s);
-  const isPpo = /\bppo\b/.test(s);
-  return { base: isHmo ? "HMO" : isPpo ? "PPO" : "", snp: isDSnp ? "D-SNP" : isCSnp ? "C-SNP" : "" };
-}
-function resolvePlanCategory(carrier, planName, pbp, planCodeMap) {
-  const key = (carrier || "") + "::" + String(pbp || "").trim();
-  if (pbp && planCodeMap[key]) return { base: planCodeMap[key].base || "", snp: planCodeMap[key].snp || "", resolved: true };
-  const text = classifyPlanFromName(planName);
-  if (text.snp) return { base: text.base, snp: text.snp, resolved: true };
-  if (pbp && String(pbp).trim()) return { base: text.base, snp: text.snp, resolved: false };
-  return { base: text.base, snp: text.snp, resolved: true };
-}
 async function sbFetch(cfg, path, options = {}) {
   const res = await fetch(cfg.url.replace(/\/$/, "") + "/rest/v1/" + path, {
     ...options,
@@ -683,8 +666,6 @@ export default function App() {
   const [payableRules, setPayableRules] = useState([]);
   const [payableLedger, setPayableLedger] = useState([]);
   const [payablesAvailable, setPayablesAvailable] = useState(false);
-  const [planCodeDirectory, setPlanCodeDirectory] = useState([]);
-  const [planCodesAvailable, setPlanCodesAvailable] = useState(false);
 
   async function loadDirectory(cfg) {
     try {
@@ -695,13 +676,6 @@ export default function App() {
       setDirectoryAvailable(true);
     } catch (e) {
       setDirectoryAvailable(false);
-    }
-    try {
-      const codes = await sbFetch(cfg, "plan_code_directory?select=*&order=carrier.asc");
-      setPlanCodeDirectory((codes || []).map((r) => ({ id: r.id, carrier: r.carrier, pbp: r.pbp, baseType: r.base_type || "", snpType: r.snp_type || "" })));
-      setPlanCodesAvailable(true);
-    } catch (e) {
-      setPlanCodesAvailable(false);
     }
   }
 
@@ -1188,8 +1162,7 @@ export default function App() {
           return statusByKey[key] ? { ...rec, status: statusByKey[key] } : rec;
         }));
       }
-      const needsPlanReview = memberRows.filter((r) => !resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap).resolved).length;
-      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated${needsPlanReview ? `, ${needsPlanReview} plan code(s) need review` : ""}.`);
+      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated.`);
     }
   }
 
@@ -1473,150 +1446,6 @@ export default function App() {
       setRosterFileName(""); setRosterHeaders([]); setRosterRows([]); setRosterNameCol(""); setRosterNpnCol("");
     } catch (e) { showToast("Roster import failed: " + e.message, "error"); }
   }
-
-  // ---------- PLAN CODE DIRECTORY ----------
-  const [planDirTab, setPlanDirTab] = useState("directory");
-  const [newPlanCarrier, setNewPlanCarrier] = useState("");
-  const [newPlanPbp, setNewPlanPbp] = useState("");
-  const [newPlanBase, setNewPlanBase] = useState("HMO");
-  const [newPlanSnp, setNewPlanSnp] = useState("None");
-  const [planChoice, setPlanChoice] = useState({});
-
-  const BASE_TYPES = ["HMO", "PPO", "Unspecified"];
-  const SNP_TYPES = ["D-SNP", "C-SNP", "None"];
-
-  const planCodeMap = useMemo(() => {
-    const map = {};
-    planCodeDirectory.forEach((p) => { map[p.carrier + "::" + p.pbp] = { base: p.baseType, snp: p.snpType }; });
-    return map;
-  }, [planCodeDirectory]);
-
-  async function addPlanCode(carrier, pbp, base, snp) {
-    if (!cloudCfg || !carrier.trim() || !pbp.trim()) return;
-    try {
-      await sbFetch(cloudCfg, "plan_code_directory?on_conflict=carrier,pbp", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: carrier.trim(), pbp: pbp.trim(), base_type: base === "Unspecified" ? null : base, snp_type: snp === "None" ? null : snp }]) });
-      await loadDirectory(cloudCfg);
-      showToast(`Taught: ${carrier.trim()} PBP ${pbp.trim()} \u2192 ${base}${snp !== "None" ? " " + snp : ""}.`);
-    } catch (e) { showToast("Could not save: " + e.message, "error"); }
-  }
-  async function deletePlanCode(id) {
-    if (!cloudCfg) return;
-    try {
-      await sbFetch(cloudCfg, `plan_code_directory?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await loadDirectory(cloudCfg);
-    } catch (e) { showToast("Could not delete: " + e.message, "error"); }
-  }
-
-  // ---------- BULK PBP CODE IMPORT ----------
-  const [pbpFileName, setPbpFileName] = useState("");
-  const [pbpHeaders, setPbpHeaders] = useState([]);
-  const [pbpRows, setPbpRows] = useState([]);
-  const [pbpCarrierCol, setPbpCarrierCol] = useState("");
-  const [pbpPbpCol, setPbpPbpCol] = useState("");
-  const [pbpBaseCol, setPbpBaseCol] = useState("");
-  const [pbpSnpCol, setPbpSnpCol] = useState("");
-
-  function handlePbpFile(e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const data = new Uint8Array(evt.target.result);
-        const wb = XLSX.read(data, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
-        if (!json.length) return;
-        setPbpHeaders(Object.keys(json[0]));
-        setPbpRows(json);
-        setPbpFileName(file.name);
-      } catch (err) { showToast("Couldn't read that file.", "error"); }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-  function normalizeBaseInput(raw) {
-    const s = String(raw || "").toLowerCase();
-    if (s.includes("hmo")) return "HMO";
-    if (s.includes("ppo")) return "PPO";
-    return null;
-  }
-  function normalizeSnpInput(raw) {
-    const s = String(raw || "").toLowerCase();
-    if (s.includes("d-snp") || s.includes("dsnp") || s.includes("dual")) return "D-SNP";
-    if (s.includes("c-snp") || s.includes("csnp") || s.includes("chronic")) return "C-SNP";
-    return null;
-  }
-  async function commitPbpImport() {
-    if (!pbpCarrierCol || !pbpPbpCol || !cloudCfg) return;
-    try {
-      const rawRowsMapped = pbpRows
-        .map((r) => ({
-          carrier: String(r[pbpCarrierCol] ?? "").trim(),
-          pbp: String(r[pbpPbpCol] ?? "").trim(),
-          base_type: pbpBaseCol ? normalizeBaseInput(r[pbpBaseCol]) : null,
-          snp_type: pbpSnpCol ? normalizeSnpInput(r[pbpSnpCol]) : null,
-        }))
-        .filter((r) => r.carrier && r.pbp);
-      // Dedupe by carrier+pbp (last one wins) \u2014 Postgres can't apply an
-      // upsert to the same key twice within a single insert statement.
-      const dedupMap = {};
-      rawRowsMapped.forEach((r) => { dedupMap[r.carrier + "::" + r.pbp] = r; });
-      const toInsert = Object.values(dedupMap);
-      if (!toInsert.length) { showToast("No valid rows found \u2014 check your column mapping.", "error"); return; }
-      const chunks = [];
-      for (let i = 0; i < toInsert.length; i += 500) chunks.push(toInsert.slice(i, i + 500));
-      for (const chunk of chunks) {
-        await sbFetch(cloudCfg, "plan_code_directory?on_conflict=carrier,pbp", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(chunk) });
-      }
-      await loadDirectory(cloudCfg);
-      const skipped = rawRowsMapped.length - toInsert.length;
-      showToast(`Taught ${toInsert.length} unique PBP code(s)${skipped ? ` (${skipped} duplicate row(s) in your file were combined)` : ""}.`);
-      setPbpFileName(""); setPbpHeaders([]); setPbpRows([]); setPbpCarrierCol(""); setPbpPbpCol(""); setPbpBaseCol(""); setPbpSnpCol("");
-    } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
-  }
-
-  const unclassifiedPlanCodes = useMemo(() => {
-    const seen = {};
-    membershipRecords.forEach((r) => {
-      if (!r.pbp) return;
-      const result = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap);
-      if (result.resolved) return;
-      const key = r.carrier + "::" + r.pbp;
-      if (!seen[key]) seen[key] = { carrier: r.carrier, pbp: r.pbp, planName: r.planName, count: 0 };
-      seen[key].count += 1;
-    });
-    return Object.values(seen).sort((a, b) => b.count - a.count);
-  }, [membershipRecords, planCodeMap]);
-
-  // Cross-tab: base type (HMO/PPO/Unspecified) x SNP type (D-SNP/C-SNP/None), so any
-  // combination can be read off directly \u2014 total HMO, total D-SNP, or just HMO+D-SNP.
-  const membershipLatestByPolicy = useMemo(() => {
-    const map = {};
-    [...membershipRecords].sort((a, b) => new Date(b.importedAt) - new Date(a.importedAt)).forEach((r) => {
-      // Same client + same carrier + same effective date = one policy, no
-      // matter how many times it shows up (duplicates collapse to the latest
-      // import). A different effective date under the same carrier is a real,
-      // separate policy \u2014 e.g. they switched plans \u2014 and the old one will
-      // naturally pick up its own term date over time.
-      const key = r.carrier + "::" + normalizeClientKey(r.clientName) + "::" + (r.effectiveDate || "");
-      if (!map[key]) map[key] = r;
-    });
-    return map;
-  }, [membershipRecords]);
-
-  const planCrossTab = useMemo(() => {
-    const grid = {};
-    BASE_TYPES.forEach((b) => { grid[b] = {}; SNP_TYPES.forEach((s) => { grid[b][s] = 0; }); });
-    Object.values(membershipLatestByPolicy).forEach((r) => {
-      if (statusBucket(r.status) !== "active") return;
-      const result = resolvePlanCategory(r.carrier, r.planName, r.pbp, planCodeMap);
-      const base = result.base || "Unspecified";
-      const snp = result.snp || "None";
-      if (!grid[base]) grid[base] = {}; SNP_TYPES.forEach((s) => { if (grid[base][s] === undefined) grid[base][s] = 0; });
-      grid[base][snp] = (grid[base][snp] || 0) + 1;
-    });
-    return grid;
-  }, [membershipLatestByPolicy, planCodeMap]);
 
   // ---------- DASHBOARD FILTERS ----------
   const [filterCarrier, setFilterCarrier] = useState("All");
@@ -3173,7 +3002,6 @@ export default function App() {
     { key: "import", label: "Import statement", icon: UploadCloud },
     { key: "agents", label: "Agents", icon: Users },
     { key: "directory", label: "Agent directory", icon: Contact },
-    { key: "plantypes", label: "Plan types", icon: Layers },
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
     { key: "manage", label: "Manage data", icon: Database },
@@ -4286,186 +4114,6 @@ export default function App() {
                     </>
                   )}
                 </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {view === "plantypes" && (
-          <div>
-            <div className="pt-page-head"><div><h1>Plan types</h1><p>Track base type (HMO/PPO) and SNP type (D-SNP/C-SNP) independently, so you can see any total or cross-section you want.</p></div></div>
-
-            {!cloudCfg ? (
-              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use Plan Types.</p></div>
-            ) : !planCodesAvailable ? (
-              <div className="pt-card">
-                <p className="pt-error">Your database doesn't have the plan code table yet (or it's using an older version of it).</p>
-                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
-                <pre className="pt-sql">{MIGRATION_SQL3}</pre>
-              </div>
-            ) : (
-              <>
-                <div className="pt-card">
-                  <h3>Membership by plan type</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Based on your active policies from production/membership statements. Row and column totals give you HMO/PPO and D-SNP/C-SNP overall; each cell is the specific cross-section.</p>
-                  <table className="pt-table">
-                    <thead>
-                      <tr>
-                        <th></th>
-                        {SNP_TYPES.map((s) => <th key={s} className="num">{s}</th>)}
-                        <th className="num">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {BASE_TYPES.map((b) => {
-                        const rowTotal = SNP_TYPES.reduce((sum, s) => sum + (planCrossTab[b]?.[s] || 0), 0);
-                        return (
-                          <tr key={b}>
-                            <td>{b}</td>
-                            {SNP_TYPES.map((s) => <td key={s} className="num">{planCrossTab[b]?.[s] || 0}</td>)}
-                            <td className="num" style={{ fontWeight: 600 }}>{rowTotal}</td>
-                          </tr>
-                        );
-                      })}
-                      <tr>
-                        <td style={{ fontWeight: 600 }}>Total</td>
-                        {SNP_TYPES.map((s) => {
-                          const colTotal = BASE_TYPES.reduce((sum, b) => sum + (planCrossTab[b]?.[s] || 0), 0);
-                          return <td key={s} className="num" style={{ fontWeight: 600 }}>{colTotal}</td>;
-                        })}
-                        <td className="num" style={{ fontWeight: 700 }}>{BASE_TYPES.reduce((sum, b) => sum + SNP_TYPES.reduce((s2, s) => s2 + (planCrossTab[b]?.[s] || 0), 0), 0)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="pt-tabs">
-                  <button className={"pt-tab" + (planDirTab === "directory" ? " active" : "")} onClick={() => setPlanDirTab("directory")}>PBP code directory ({planCodeDirectory.length})</button>
-                  <button className={"pt-tab" + (planDirTab === "unclassified" ? " active" : "")} onClick={() => setPlanDirTab("unclassified")}>Unclassified codes ({unclassifiedPlanCodes.length})</button>
-                </div>
-
-                {planDirTab === "directory" && (
-                  <div className="pt-card">
-                    <div className="pt-inline-form">
-                      <input list="carrier-options-plan" placeholder="Carrier (e.g. Humana)" value={newPlanCarrier} onChange={(e) => setNewPlanCarrier(e.target.value)} style={{ maxWidth: 150 }} />
-                      <datalist id="carrier-options-plan">{carriersList.map((c) => <option key={c} value={c} />)}</datalist>
-                      <input placeholder="PBP code" value={newPlanPbp} onChange={(e) => setNewPlanPbp(e.target.value)} style={{ maxWidth: 100 }} />
-                      <select value={newPlanBase} onChange={(e) => setNewPlanBase(e.target.value)}>
-                        {BASE_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                      <select value={newPlanSnp} onChange={(e) => setNewPlanSnp(e.target.value)}>
-                        {SNP_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                      <button className="pt-btn primary small" disabled={!newPlanCarrier.trim() || !newPlanPbp.trim()} onClick={() => { addPlanCode(newPlanCarrier, newPlanPbp, newPlanBase, newPlanSnp); setNewPlanCarrier(""); setNewPlanPbp(""); }}>Add</button>
-                    </div>
-                    <table className="pt-table" style={{ marginTop: 14 }}>
-                      <thead><tr><th>Carrier</th><th>PBP</th><th>Base type</th><th>SNP type</th><th></th></tr></thead>
-                      <tbody>
-                        {planCodeDirectory.map((p) => (
-                          <tr key={p.id}>
-                            <td>{p.carrier}</td>
-                            <td className="mono">{p.pbp}</td>
-                            <td>{p.baseType || "Unspecified"}</td>
-                            <td>{p.snpType || "None"}</td>
-                            <td className="num"><button className="pt-btn ghost small" onClick={() => deletePlanCode(p.id)}><X size={12} /></button></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {planDirTab === "directory" && (
-                  <div className="pt-card">
-                    <h3>Bulk import PBP codes</h3>
-                    <p className="pt-hint" style={{ marginBottom: 10 }}>Have a spreadsheet with a list of codes? Upload it and map the columns once \u2014 much faster than adding them one at a time.</p>
-                    {!pbpFileName ? (
-                      <label className="pt-btn ghost">
-                        Choose file
-                        <input type="file" accept=".xlsx,.xls,.csv" onChange={handlePbpFile} style={{ display: "none" }} />
-                      </label>
-                    ) : (
-                      <>
-                        <div className="pt-file-chip"><FileSpreadsheet size={14} /> {pbpFileName} \u00b7 {pbpRows.length} rows</div>
-                        <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
-                          <div className="pt-field">
-                            <label>Carrier column *</label>
-                            <select value={pbpCarrierCol} onChange={(e) => setPbpCarrierCol(e.target.value)}>
-                              <option value="">\u2014 choose \u2014</option>
-                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                            </select>
-                          </div>
-                          <div className="pt-field">
-                            <label>PBP column *</label>
-                            <select value={pbpPbpCol} onChange={(e) => setPbpPbpCol(e.target.value)}>
-                              <option value="">\u2014 choose \u2014</option>
-                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                            </select>
-                          </div>
-                          <div className="pt-field">
-                            <label>Base type column (HMO/PPO)</label>
-                            <select value={pbpBaseCol} onChange={(e) => setPbpBaseCol(e.target.value)}>
-                              <option value="">\u2014 not in file \u2014</option>
-                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                            </select>
-                          </div>
-                          <div className="pt-field">
-                            <label>SNP type column (D-SNP/C-SNP)</label>
-                            <select value={pbpSnpCol} onChange={(e) => setPbpSnpCol(e.target.value)}>
-                              <option value="">\u2014 not in file \u2014</option>
-                              {pbpHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
-                            </select>
-                          </div>
-                        </div>
-                        <p className="pt-hint" style={{ marginTop: 8 }}>Base/SNP columns can hold free text like "HMO," "D-SNP," "Dual," etc. \u2014 they're read automatically. Leave either blank if your list doesn't separate them, and teach those from the Unclassified tab instead.</p>
-                        <div className="pt-btn-row" style={{ marginTop: 10 }}>
-                          <button className="pt-btn primary" disabled={!pbpCarrierCol || !pbpPbpCol} onClick={commitPbpImport}>Import {pbpRows.length} codes</button>
-                          <button className="pt-btn ghost" onClick={() => { setPbpFileName(""); setPbpHeaders([]); setPbpRows([]); }}>Cancel</button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {planDirTab === "unclassified" && (
-                  <div className="pt-card">
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>These PBP codes showed up in your imports but plan name alone wasn't specific enough to classify. Teach each one once, picking a base type and SNP type separately.</p>
-                    {unclassifiedPlanCodes.length === 0 ? (
-                      <p className="pt-hint">Nothing unclassified right now.</p>
-                    ) : (
-                      <table className="pt-table">
-                        <thead><tr><th>Carrier</th><th>PBP</th><th>Plan name on file</th><th className="num">Records</th><th>Base type</th><th>SNP type</th><th></th></tr></thead>
-                        <tbody>
-                          {unclassifiedPlanCodes.map((u) => {
-                            const ukey = u.carrier + "::" + u.pbp;
-                            const choice = planChoice[ukey] || { base: "HMO", snp: "None" };
-                            return (
-                              <tr key={ukey}>
-                                <td>{u.carrier}</td>
-                                <td className="mono">{u.pbp}</td>
-                                <td>{u.planName || "\u2014"}</td>
-                                <td className="num">{u.count}</td>
-                                <td>
-                                  <select value={choice.base} onChange={(e) => setPlanChoice({ ...planChoice, [ukey]: { ...choice, base: e.target.value } })} style={{ minWidth: 110 }}>
-                                    {BASE_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                                </td>
-                                <td>
-                                  <select value={choice.snp} onChange={(e) => setPlanChoice({ ...planChoice, [ukey]: { ...choice, snp: e.target.value } })} style={{ minWidth: 100 }}>
-                                    {SNP_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                                </td>
-                                <td className="num">
-                                  <button className="pt-btn ghost small" onClick={() => addPlanCode(u.carrier, u.pbp, choice.base, choice.snp)}>Teach</button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
               </>
             )}
           </div>
