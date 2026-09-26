@@ -62,16 +62,14 @@ function getCarrierLogo(carrierName) {
   if (s.includes("wellcare") || s.includes("well care")) return CARRIER_LOGOS.WELLCARE;
   return null;
 }
-// Renders a carrier's logo (when we have one) inline next to its name, sized
-// in em so it always stays proportional to whatever font-size surrounds it.
+// Renders a carrier's logo when we have one \u2014 logo only, no repeated text
+// next to it. Falls back to the plain name for any carrier without a logo,
+// so nothing goes blank. Sized in em so it stays proportional to whatever
+// font-size surrounds it, and keeps the name as a hover tooltip either way.
 function CarrierName({ carrier, style }) {
   const logo = getCarrierLogo(carrier);
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", ...style }}>
-      {logo && <img src={logo} alt="" style={{ height: "1.3em", width: "auto", verticalAlign: "middle", flexShrink: 0 }} />}
-      <span>{carrier}</span>
-    </span>
-  );
+  if (!logo) return <span style={style}>{carrier}</span>;
+  return <img src={logo} alt={carrier} title={carrier} style={{ height: "1.3em", width: "auto", verticalAlign: "middle", ...style }} />;
 }
 const CHART_COLORS = ["#CE3334", "#243C80", "#2E7D8C", "#1F7A4D", "#6B4C7A", "#8A95A5", "#B8863B"];
 
