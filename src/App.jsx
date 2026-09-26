@@ -2031,10 +2031,9 @@ export default function App() {
     // Retroactively adjust every existing matching record (payments AND
     // chargebacks) at this exact effective date \u2014 if this client already has
     // records under a different (newer) effective date, those are a separate
-    // enrollment and must not be touched. This only corrects the dollar amount;
-    // the agent field (AOR) is left alone on purpose \u2014 that's a separate,
-    // deliberate action via Client Lookup \u2192 Reassign, not something a payable
-    // rule should silently change.
+    // enrollment and must not be touched. This corrects both the dollar
+    // amount AND the agent field \u2014 establishing the true agent here is what
+    // reassigns every one of this client's records under this rule.
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
     // Always undo every existing rule-based deduction on these records first,
@@ -2067,12 +2066,12 @@ export default function App() {
       await sbFetch(cfg, `agent_payable_ledger?id=${encodeURIComponent(pgInList(ledgerIdsToRemove))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
     }
     await Promise.all(matches.map((rec) =>
-      sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmountByPolicy[rec.id] }) })
+      sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmountByPolicy[rec.id], agent: agentName }) })
     ));
     if (ledgerToInsert.length) {
       await sbFetch(cfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
     }
-    setRecords((prev) => prev.map((r) => (newAmountByPolicy[r.id] !== undefined ? { ...r, commissionAmount: newAmountByPolicy[r.id] } : r)));
+    setRecords((prev) => prev.map((r) => (newAmountByPolicy[r.id] !== undefined ? { ...r, commissionAmount: newAmountByPolicy[r.id], agent: agentName } : r)));
     return matches.length;
   }
 
