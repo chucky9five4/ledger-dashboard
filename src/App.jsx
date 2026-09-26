@@ -2028,20 +2028,33 @@ export default function App() {
     // rule should silently change.
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
+    // A client-specific rule always wins over a permanent agent-comp rule, so
+    // if any of these records already had an agent-comp deduction baked into
+    // their stored amount, undo that first \u2014 otherwise this would stack on
+    // top of it instead of replacing it, silently double-deducting.
+    const priorAgentCompByPolicy = {};
+    payableLedger.forEach((l) => { if (l.sourceType === "agent_comp" && matches.some((m) => m.id === l.policyId)) priorAgentCompByPolicy[l.policyId] = l; });
+    const ledgerIdsToRemove = Object.values(priorAgentCompByPolicy).map((l) => l.id);
+    const newAmountByPolicy = {};
     const ledgerToInsert = [];
-    await Promise.all(matches.map((rec) => {
-      const direction = rec.commissionAmount >= 0 ? 1 : -1;
+    matches.forEach((rec) => {
+      const priorAmt = priorAgentCompByPolicy[rec.id] ? priorAgentCompByPolicy[rec.id].amount : 0;
+      const trueRawAmount = rec.commissionAmount + priorAmt;
+      const direction = trueRawAmount >= 0 ? 1 : -1;
       const agentPortion = direction * amt;
-      const newAmount = rec.commissionAmount - agentPortion;
+      newAmountByPolicy[rec.id] = trueRawAmount - agentPortion;
       ledgerToInsert.push({ rule_id: rule.id, batch_id: batchId || null, carrier: rec.carrier, client_name: rec.clientName, agent_name: agentName, amount: agentPortion, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
-      return sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
-    }));
+    });
+    if (ledgerIdsToRemove.length) {
+      await sbFetch(cfg, `agent_payable_ledger?id=${encodeURIComponent(pgInList(ledgerIdsToRemove))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+    }
+    await Promise.all(matches.map((rec) =>
+      sbFetch(cfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmountByPolicy[rec.id] }) })
+    ));
     if (ledgerToInsert.length) {
       await sbFetch(cfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
     }
-    const matchAdjustments = {};
-    matches.forEach((rec) => { const direction = rec.commissionAmount >= 0 ? 1 : -1; matchAdjustments[rec.id] = direction * amt; });
-    setRecords((prev) => prev.map((r) => (matchAdjustments[r.id] !== undefined ? { ...r, commissionAmount: r.commissionAmount - matchAdjustments[r.id] } : r)));
+    setRecords((prev) => prev.map((r) => (newAmountByPolicy[r.id] !== undefined ? { ...r, commissionAmount: newAmountByPolicy[r.id] } : r)));
     return matches.length;
   }
 
