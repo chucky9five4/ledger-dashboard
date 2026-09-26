@@ -1372,17 +1372,6 @@ export default function App() {
       })
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipRecords, agentLookupMaps]);
-  const agentsNeedingAgencyReview = useMemo(() => agentDirectory.filter((a) => !a.agencyReviewed), [agentDirectory]);
-  async function confirmAgentIsDirect(agentId) {
-    // Explicitly marks "no downline agency, and that's correct" \u2014 different
-    // from just leaving it blank, so nothing sits unreviewed by accident.
-    if (!cloudCfg) return;
-    try {
-      await sbFetch(cloudCfg, `agent_directory?id=eq.${agentId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agency_reviewed: true }) });
-      setAgentDirectory((prev) => prev.map((a) => (a.id === agentId ? { ...a, agencyReviewed: true } : a)));
-      showToast("Confirmed \u2014 direct under All In One Benefits Group.");
-    } catch (e) { showToast("Could not update: " + e.message, "error"); }
-  }
 
   // Roster import (bulk-create agents from a CRM export)
   const [rosterFileName, setRosterFileName] = useState("");
@@ -2609,7 +2598,7 @@ export default function App() {
             <button key={n.key} className={"pt-nav-item" + (view === n.key ? " active" : "")} onClick={() => setView(n.key)}>
               <n.icon size={17} strokeWidth={1.75} />
               <span>{n.label}</span>
-              {n.key === "directory" && (unmatchedAgentNames.length + agentsNeedingAgencyReview.length) > 0 && <span className="pt-nav-badge">{unmatchedAgentNames.length + agentsNeedingAgencyReview.length}</span>}
+              {n.key === "directory" && unmatchedAgentNames.length > 0 && <span className="pt-nav-badge">{unmatchedAgentNames.length}</span>}
             </button>
           ))}
         </nav>
@@ -3502,7 +3491,6 @@ export default function App() {
                 <div className="pt-tabs">
                   <button className={"pt-tab" + (directoryTab === "directory" ? " active" : "")} onClick={() => setDirectoryTab("directory")}>Directory ({agentDirectory.length})</button>
                   <button className={"pt-tab" + (directoryTab === "unmatched" ? " active" : "")} onClick={() => setDirectoryTab("unmatched")}>Unmatched names ({unmatchedAgentNames.length})</button>
-                  <button className={"pt-tab" + (directoryTab === "needsagency" ? " active" : "")} onClick={() => setDirectoryTab("needsagency")}>Needs agency review ({agentsNeedingAgencyReview.length})</button>
                 </div>
 
                 {directoryTab === "directory" && (
@@ -3599,29 +3587,6 @@ export default function App() {
                                     <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name)}><UserPlus size={12} /> New</button>
                                   </div>
                                 )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
-
-                {directoryTab === "needsagency" && (
-                  <div className="pt-card">
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>Every agent needs an explicit answer here so nothing sits unreviewed by accident \u2014 useful again once you're running commissions to a downline agency in the future.</p>
-                    {agentsNeedingAgencyReview.length === 0 ? (
-                      <p className="pt-hint">Nothing to review \u2014 every agent has been checked. \ud83c\udf89</p>
-                    ) : (
-                      <table className="pt-table">
-                        <thead><tr><th>Agent</th><th></th></tr></thead>
-                        <tbody>
-                          {agentsNeedingAgencyReview.map((a) => (
-                            <tr key={a.id}>
-                              <td>{a.canonicalName}</td>
-                              <td className="num">
-                                <button className="pt-btn ghost small" onClick={() => confirmAgentIsDirect(a.id)}>Confirm: No agency, direct</button>
                               </td>
                             </tr>
                           ))}
