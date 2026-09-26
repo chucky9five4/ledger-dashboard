@@ -2252,6 +2252,7 @@ export default function App() {
 
   // ---------- BULK PAYABLE RULE IMPORT ----------
   const [payFileName, setPayFileName] = useState("");
+  const [payRawFileObject, setPayRawFileObject] = useState(null);
   const [payHeaders, setPayHeaders] = useState([]);
   const [payRows, setPayRows] = useState([]);
   const [payCarrierMode, setPayCarrierMode] = useState("fixed");
@@ -2282,12 +2283,13 @@ export default function App() {
         setPayHeaders(Object.keys(json[0]));
         setPayRows(json);
         setPayFileName(file.name);
+        setPayRawFileObject(file);
       } catch (err) { showToast("Couldn't read that file.", "error"); }
     };
     reader.readAsArrayBuffer(file);
   }
   function resetPayableImport() {
-    setPayFileName(""); setPayHeaders([]); setPayRows([]);
+    setPayFileName(""); setPayHeaders([]); setPayRows([]); setPayRawFileObject(null);
     setPayCarrierMode("fixed"); setPayCarrierFixed(""); setPayCarrierCol("");
     setPayClientCol(""); setPayClientFirstCol(""); setPayClientLastCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol(""); setPayTotalAmountCol("");
   }
@@ -2386,8 +2388,12 @@ export default function App() {
     const carrierLabel = payCarrierMode === "fixed" ? payCarrierFixed.trim() : "Multiple";
     let successCount = 0, skipCount = 0, alreadyCorrectCount = 0, totalMatches = 0;
     try {
-      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ id: batchId, carrier: carrierLabel, file_name: payFileName, uploaded_at: new Date().toISOString(), row_count: payRows.length, batch_type: "payable_rule" }]) });
-      setBatches((prev) => [...prev, { id: batchId, carrier: carrierLabel, fileName: payFileName, uploadedAt: new Date().toISOString(), rowCount: payRows.length, batchType: "payable_rule" }]);
+      const batchEntry = { id: batchId, carrier: carrierLabel, fileName: payFileName, uploadedAt: new Date().toISOString(), rowCount: payRows.length, batchType: "payable_rule" };
+      if (payRawFileObject) {
+        try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + payFileName, payRawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+      }
+      await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ id: batchId, carrier: carrierLabel, file_name: payFileName, uploaded_at: batchEntry.uploadedAt, row_count: payRows.length, batch_type: "payable_rule", storage_path: batchEntry.storagePath || null }]) });
+      setBatches((prev) => [...prev, batchEntry]);
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
         const carrier = payCarrierMode === "fixed" ? payCarrierFixed.trim() : String(r[payCarrierCol] ?? "").trim();
