@@ -3092,7 +3092,7 @@ export default function App() {
                     <div className="pt-mini-grid">
                       <div>
                         <div className="pt-mini-label">By carrier</div>
-                        {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><span>{c.key}</span><span className="mono">{<Money v={c.revenue} />}</span></div>)}
+                        {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span></div>)}
                       </div>
                       <div>
                         <div className="pt-mini-label">By plan type</div>
@@ -3758,7 +3758,7 @@ export default function App() {
                                 ) : (
                                   <>
                                     <div className="pt-mini-label">Landed under these carriers</div>
-                                    {commissionBreakdown.length === 0 ? <p className="pt-hint">No rows found for this import (they may have been deleted individually).</p> : commissionBreakdown.map((c) => <div key={c.key} className="pt-mini-row"><span>{c.key}</span><span>{c.count} rows \u00b7 <Money v={c.revenue} /></span></div>)}
+                                    {commissionBreakdown.length === 0 ? <p className="pt-hint">No rows found for this import (they may have been deleted individually).</p> : commissionBreakdown.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span>{c.count} rows \u00b7 <Money v={c.revenue} /></span></div>)}
                                   </>
                                 )}
                               </td>
