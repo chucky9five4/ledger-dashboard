@@ -2012,11 +2012,20 @@ export default function App() {
   const [payableCarrier, setPayableCarrier] = useState("");
   const [payableAgentName, setPayableAgentName] = useState("");
   const [payableAmount, setPayableAmount] = useState("");
+  const [payableTotalAmount, setPayableTotalAmount] = useState("");
   const [payableEffectiveDate, setPayableEffectiveDate] = useState("");
   const [addingPayableRule, setAddingPayableRule] = useState(false);
 
-  async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate, batchId) {
+  async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate, batchId, totalAmount) {
     const agentName = resolveAgentName(agentNameRaw, "", "", "");
+    // If a rule already exists for this exact carrier + client + effective
+    // date, replace it outright rather than leaving two rules around \u2014
+    // otherwise a future import could pick up whichever one happens to be
+    // found first, which is confusing and unpredictable.
+    const priorRule = findPayableRule(carrier, clientName, effectiveDate);
+    if (priorRule) {
+      await sbFetch(cfg, `agent_payable_rules?id=eq.${priorRule.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+    }
     const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate, bulk_batch_id: batchId || null }]) });
     const rule = inserted[0];
     // Retroactively adjust every existing matching record (payments AND
@@ -2028,18 +2037,27 @@ export default function App() {
     // rule should silently change.
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
-    // A client-specific rule always wins over a permanent agent-comp rule, so
-    // if any of these records already had an agent-comp deduction baked into
-    // their stored amount, undo that first \u2014 otherwise this would stack on
-    // top of it instead of replacing it, silently double-deducting.
-    const priorAgentCompByPolicy = {};
-    payableLedger.forEach((l) => { if (l.sourceType === "agent_comp" && matches.some((m) => m.id === l.policyId)) priorAgentCompByPolicy[l.policyId] = l; });
-    const ledgerIdsToRemove = Object.values(priorAgentCompByPolicy).map((l) => l.id);
+    // Always undo every existing rule-based deduction on these records first,
+    // no matter what kind of rule created it (a permanent agent-comp rule, or
+    // an earlier client-specific rule from a prior import) \u2014 so re-running
+    // this always starts from the true original carrier-paid amount instead
+    // of stacking a new deduction on top of an old one.
+    const priorEntriesByPolicy = {};
+    payableLedger.forEach((l) => {
+      if (l.policyId && matches.some((m) => m.id === l.policyId)) {
+        (priorEntriesByPolicy[l.policyId] = priorEntriesByPolicy[l.policyId] || []).push(l);
+      }
+    });
+    const ledgerIdsToRemove = Object.values(priorEntriesByPolicy).flat().map((l) => l.id);
     const newAmountByPolicy = {};
     const ledgerToInsert = [];
     matches.forEach((rec) => {
-      const priorAmt = priorAgentCompByPolicy[rec.id] ? priorAgentCompByPolicy[rec.id].amount : 0;
-      const trueRawAmount = rec.commissionAmount + priorAmt;
+      const priorTotal = (priorEntriesByPolicy[rec.id] || []).reduce((s, l) => s + l.amount, 0);
+      const reconstructedRaw = rec.commissionAmount + priorTotal;
+      // If you told us the true total that came in for this transaction,
+      // trust that over the reconstructed value \u2014 it's the carrier's own
+      // number, and catches any drift from a previously misapplied rule.
+      const trueRawAmount = (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") ? (reconstructedRaw >= 0 ? Math.abs(Number(totalAmount)) : -Math.abs(Number(totalAmount))) : reconstructedRaw;
       const direction = trueRawAmount >= 0 ? 1 : -1;
       const agentPortion = direction * amt;
       newAmountByPolicy[rec.id] = trueRawAmount - agentPortion;
@@ -2223,10 +2241,11 @@ export default function App() {
     setAddingPayableRule(true);
     try {
       const amt = Number(payableAmount);
-      const matchCount = await createPayableRuleAndApply(cloudCfg, payableCarrier.trim(), payableClientName.trim(), payableAgentName.trim(), amt, payableEffectiveDate);
+      const totalAmt = payableTotalAmount ? Number(payableTotalAmount) : undefined;
+      const matchCount = await createPayableRuleAndApply(cloudCfg, payableCarrier.trim(), payableClientName.trim(), payableAgentName.trim(), amt, payableEffectiveDate, undefined, totalAmt);
       await loadFromCloud(cloudCfg);
       showToast(`Rule added for effective date ${payableEffectiveDate} \u2014 corrected ${matchCount} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
-      setPayableClientName(""); setPayableCarrier(""); setPayableAgentName(""); setPayableAmount(""); setPayableEffectiveDate("");
+      setPayableClientName(""); setPayableCarrier(""); setPayableAgentName(""); setPayableAmount(""); setPayableTotalAmount(""); setPayableEffectiveDate("");
     } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
     setAddingPayableRule(false);
   }
@@ -2245,6 +2264,7 @@ export default function App() {
   const [payWrongAgentCol, setPayWrongAgentCol] = useState("");
   const [payAgentCol, setPayAgentCol] = useState("");
   const [payAmountCol, setPayAmountCol] = useState("");
+  const [payTotalAmountCol, setPayTotalAmountCol] = useState("");
   const [payImporting, setPayImporting] = useState(false);
   const [payImportProgress, setPayImportProgress] = useState("");
 
@@ -2269,7 +2289,7 @@ export default function App() {
   function resetPayableImport() {
     setPayFileName(""); setPayHeaders([]); setPayRows([]);
     setPayCarrierMode("fixed"); setPayCarrierFixed(""); setPayCarrierCol("");
-    setPayClientCol(""); setPayClientFirstCol(""); setPayClientLastCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol("");
+    setPayClientCol(""); setPayClientFirstCol(""); setPayClientLastCol(""); setPayEffDateCol(""); setPayWrongAgentCol(""); setPayAgentCol(""); setPayAmountCol(""); setPayTotalAmountCol("");
   }
   const payableImportValid = (payCarrierMode === "fixed" ? payCarrierFixed.trim() : payCarrierCol) && (payClientCol || payClientFirstCol || payClientLastCol) && payEffDateCol && payAgentCol && payAmountCol;
   const payableSkipCount = useMemo(() => {
@@ -2376,6 +2396,7 @@ export default function App() {
         const effDate = parseDateValue(r[payEffDateCol]);
         const agentName = String(r[payAgentCol] ?? "").trim();
         const amt = parseMoney(r[payAmountCol]);
+        const totalAmt = payTotalAmountCol ? parseMoney(r[payTotalAmountCol]) : undefined;
         // If a "wrong agent" column is mapped, skip any row where it already
         // matches the true agent \u2014 that row doesn't need a correction at all.
         if (payWrongAgentCol) {
@@ -2385,7 +2406,7 @@ export default function App() {
         if (!carrier || !clientName || !effDate || !agentName || !(amt > 0)) { skipCount++; continue; }
         setPayImportProgress(`Applying rule ${i + 1} of ${payRows.length} \u2014 ${clientName}\u2026`);
         try {
-          const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate, batchId);
+          const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate, batchId, totalAmt);
           totalMatches += matchCount;
           successCount++;
         } catch (e) { skipCount++; }
@@ -3933,7 +3954,12 @@ export default function App() {
                       <label>Amount owed per payment ($)</label>
                       <input type="number" step="0.01" value={payableAmount} onChange={(e) => setPayableAmount(e.target.value)} placeholder="28.92" />
                     </div>
+                    <div className="pt-field">
+                      <label>Total carrier paid per payment ($, optional)</label>
+                      <input type="number" step="0.01" value={payableTotalAmount} onChange={(e) => setPayableTotalAmount(e.target.value)} placeholder="33.51" />
+                    </div>
                   </div>
+                  <p className="pt-hint" style={{ marginTop: 6 }}>Leave the total blank to use whatever's currently on record. Fill it in when you know the carrier's true total \u2014 it's used as the source of truth instead, so a previous rule applied by mistake can't leave a stale amount behind.</p>
                   <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingPayableRule || !payableCarrier.trim() || !payableClientName.trim() || !payableAgentName.trim() || !payableAmount || !payableEffectiveDate} onClick={addPayableRule}>
                     {addingPayableRule ? "Applying\u2026" : "Add rule"}
                   </button>
@@ -4028,7 +4054,17 @@ export default function App() {
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
+                        <div className="pt-field">
+                          <label>Total carrier paid column (optional)</label>
+                          <select value={payTotalAmountCol} onChange={(e) => setPayTotalAmountCol(e.target.value)}>
+                            <option value="">\u2014 not in file \u2014</option>
+                            {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
                       </div>
+                      {payTotalAmountCol && (
+                        <p className="pt-hint" style={{ marginTop: 8 }}>Using this column as the true total for each row, instead of whatever's currently on record \u2014 safer if any of these were touched by a rule before.</p>
+                      )}
                       {payWrongAgentCol && payAgentCol && (
                         <p className="pt-hint" style={{ marginTop: 8 }}>{payableSkipCount} row(s) already show the correct agent and will be skipped automatically \u2014 only genuine mismatches get a rule.</p>
                       )}
