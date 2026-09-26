@@ -2699,6 +2699,11 @@ export default function App() {
                   )}
                 </div>
                 <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Note: Paid From/To drives commission numbers by payment date, but the same range drives Membership Growth below by <b>effective date</b> instead \u2014 production statements don't have a payment date.</p>
+                {filterCarrier !== "All" && getCarrierLogo(filterCarrier) && (
+                  <div style={{ textAlign: "center", margin: "4px 0 20px" }}>
+                    <img src={getCarrierLogo(filterCarrier)} alt={filterCarrier} title={filterCarrier} style={{ height: 64, width: "auto" }} />
+                  </div>
+                )}
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Cash flow</div>
