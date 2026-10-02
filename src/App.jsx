@@ -1753,6 +1753,10 @@ export default function App() {
   }, [records, clientProfileKey]);
   const clientProfileTotal = useMemo(() => clientProfileRecords.reduce((s, r) => s + r.commissionAmount, 0), [clientProfileRecords]);
   const clientProfileAgents = useMemo(() => [...new Set(clientProfileRecords.map((r) => resolveAgentName(r.agent, "", "", "")))].sort(), [clientProfileRecords, agentLookupMaps]);
+  const clientProfileTotalYTD = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return clientProfileRecords.filter((r) => r.paymentDate && new Date(r.paymentDate).getFullYear() === currentYear).reduce((s, r) => s + r.commissionAmount, 0);
+  }, [clientProfileRecords]);
   const clientProfileDisplayName = clientProfileRecords[0]?.clientName || "";
   // One row per actual policy, not per transaction \u2014 same carrier + same
   // effective date is one enrollment, even if it shows up as several monthly
@@ -3270,13 +3274,12 @@ export default function App() {
                 <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>\u2190 Back to Client lookup</button>
                 <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
                 <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
-                <div className="pt-cards pt-cards-3" style={{ marginBottom: 16 }}>
+                <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
                   <StatCard label="Total revenue, all time" value={fmtMoneyShort(clientProfileTotal)} money={clientProfileTotal} />
+                  <StatCard label="Total revenue, YTD" value={fmtMoneyShort(clientProfileTotalYTD)} money={clientProfileTotalYTD} />
                   <StatCard label="Policies" value={String(clientProfilePolicies.length)} />
-                  <StatCard label="Agent(s) on record" value={String(clientProfileAgents.length)} />
+                  <StatCard label={clientProfileAgents.length === 1 ? "Agent on record" : "Agents on record"} value={clientProfileAgents.length > 3 ? `${clientProfileAgents.slice(0, 2).join(", ")} +${clientProfileAgents.length - 2} more` : (clientProfileAgents.join(", ") || "\u2014")} />
                 </div>
-                <div className="pt-mini-label">Agent(s) on record</div>
-                {clientProfileAgents.map((a) => <div key={a} className="pt-mini-row"><span>{a}</span></div>)}
                 <div className="pt-mini-label" style={{ marginTop: 16 }}>All policies ({clientProfilePolicies.length})</div>
                 <table className="pt-table">
                   <thead><tr><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Last paid</th><th>Status</th><th>Payments</th><th className="num">Total revenue</th></tr></thead>
