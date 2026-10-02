@@ -1821,6 +1821,7 @@ export default function App() {
     const q = clientSearch.toLowerCase();
     return membershipRecords.filter((r) => r.clientName && r.clientName.toLowerCase().includes(q));
   }, [membershipRecords, clientSearch]);
+  const [membershipMatchesShowAll, setMembershipMatchesShowAll] = useState(false);
   const [reassignMemberCarrier, setReassignMemberCarrier] = useState("");
   const [reassignMemberNewAgent, setReassignMemberNewAgent] = useState("");
   const [confirmReassignMember, setConfirmReassignMember] = useState(false);
@@ -1853,6 +1854,7 @@ export default function App() {
   // date always belongs to this agent." Tied to effective date so a genuine
   // new enrollment for the same client isn't wrongly grabbed by an old rule.
   const [membershipOverrides, setMembershipOverrides] = useState([]);
+  const [overridesShowAll, setOverridesShowAll] = useState(false);
   const [overrideFilterCarrier, setOverrideFilterCarrier] = useState("All");
   const [overrideFilterAgent, setOverrideFilterAgent] = useState("All");
   const [selectedOverrideIds, setSelectedOverrideIds] = useState(new Set());
@@ -2638,6 +2640,7 @@ export default function App() {
   }
   const MARKETING_AGREEMENT_AGENT = "Contreras Ibanez, Viancilena"; // this specific tool only covers her agreement
   const [marketingAgent] = useState(MARKETING_AGREEMENT_AGENT);
+  const [marketingShowAllClients, setMarketingShowAllClients] = useState(false);
   const [marketingAmount, setMarketingAmount] = useState("50");
   const currentMarketingQuarter = useMemo(() => marketingQuarterFor(new Date()), []);
   const firstSeenByClient = useMemo(() => {
@@ -3352,16 +3355,22 @@ export default function App() {
 
             {clientSearch.trim().length >= 2 && membershipMatches.length > 0 && (
               <div className="pt-card">
-                <h3>Production / membership records</h3>
+                {membershipMatchesShowAll && (
+                  <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setMembershipMatchesShowAll(false)}>\u2190 Back</button>
+                )}
+                <h3>Production / membership records {membershipMatchesShowAll ? `(all ${membershipMatches.length})` : ""}</h3>
                 <p className="pt-hint" style={{ marginBottom: 8 }}>Completely separate from the commission records above \u2014 no dollar amount involved here, just membership status. Fixing the agent here has no effect on financials, and vice versa.</p>
                 <table className="pt-table">
                   <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Plan</th><th>Effective date</th><th>Term date</th><th>Status</th></tr></thead>
                   <tbody>
-                    {membershipMatches.map((r, i) => (
+                    {(membershipMatchesShowAll ? membershipMatches : membershipMatches.slice(0, 5)).map((r, i) => (
                       <tr key={i}><td>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.planName}</td><td>{fmtDate(r.effectiveDate)}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td><StatusBadge status={r.status} /></td></tr>
                     ))}
                   </tbody>
                 </table>
+                {!membershipMatchesShowAll && membershipMatches.length > 5 && (
+                  <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMembershipMatchesShowAll(true)}>View all {membershipMatches.length} \u2192</button>
+                )}
                 <div className="pt-plantype-block">
                   <label>Wrong agent on record? Reassign these production records to the true agent.</label>
                   <p className="pt-hint" style={{ marginBottom: 8 }}>Applies to every production record matching this search. Narrow to one carrier if needed.</p>
@@ -3518,63 +3527,89 @@ export default function App() {
 
                 {membershipOverrides.length > 0 && (
                   <div className="pt-card">
-                    <div className="pt-row-between">
-                      <h3>Active overrides ({filteredMembershipOverrides.length} of {membershipOverrides.length})</h3>
-                      <div className="pt-btn-row">
-                        <button className="pt-btn ghost small" onClick={() => setSelectedOverrideIds(new Set(filteredMembershipOverrides.map((o) => o.id)))}>Select all</button>
-                        {selectedOverrideIds.size > 0 && (
-                          confirmDeleteSelectedOverrides ? (
-                            <span className="pt-confirm-inline">
-                              Delete {selectedOverrideIds.size} override(s)?
-                              <button className="pt-btn danger small" disabled={deletingSelectedOverrides} onClick={deleteSelectedOverrides}>{deletingSelectedOverrides ? "Working\u2026" : "Yes, delete"}</button>
-                              <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedOverrides(false)}>Cancel</button>
-                            </span>
-                          ) : (
-                            <button className="pt-btn danger small" onClick={() => setConfirmDeleteSelectedOverrides(true)}><Trash2 size={12} /> Delete {selectedOverrideIds.size} selected</button>
-                          )
+                    {!overridesShowAll ? (
+                      <>
+                        <h3>Active overrides ({membershipOverrides.length})</h3>
+                        <table className="pt-table">
+                          <thead><tr><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th></tr></thead>
+                          <tbody>
+                            {membershipOverrides.slice(0, 5).map((o) => (
+                              <tr key={o.id}>
+                                <td><span className={"pt-status-chip " + (o.active ? "pt-status-green" : "pt-status-gray")}>{o.active ? "Active" : "Paused"}</span></td>
+                                <td>{o.clientName}</td>
+                                <td><CarrierName carrier={o.carrier} /></td>
+                                <td>{fmtDate(o.effectiveDate)}</td>
+                                <td>{o.agentName}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {membershipOverrides.length > 5 && (
+                          <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setOverridesShowAll(true)}>View all {membershipOverrides.length} \u2192</button>
                         )}
-                      </div>
-                    </div>
-                    <div className="pt-filters" style={{ marginTop: 10, marginBottom: 10 }}>
-                      <div className="pt-filter">
-                        <label>Carrier</label>
-                        <select value={overrideFilterCarrier} onChange={(e) => setOverrideFilterCarrier(e.target.value)}>
-                          <option value="All">All</option>
-                          {overrideCarrierFilterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </div>
-                      <div className="pt-filter">
-                        <label>Agent</label>
-                        <select value={overrideFilterAgent} onChange={(e) => setOverrideFilterAgent(e.target.value)}>
-                          <option value="All">All</option>
-                          {overrideAgentFilterOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-                        </select>
-                      </div>
-                      {(overrideFilterCarrier !== "All" || overrideFilterAgent !== "All") && (
-                        <button className="pt-btn text" onClick={() => { setOverrideFilterCarrier("All"); setOverrideFilterAgent("All"); }}>Clear filters</button>
-                      )}
-                    </div>
-                    <table className="pt-table">
-                      <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th><th></th></tr></thead>
-                      <tbody>
-                        {filteredMembershipOverrides.map((o) => (
-                          <tr key={o.id}>
-                            <td><input type="checkbox" checked={selectedOverrideIds.has(o.id)} onChange={() => toggleOverrideSelected(o.id)} /></td>
-                            <td><span className={"pt-status-chip " + (o.active ? "pt-status-green" : "pt-status-gray")}>{o.active ? "Active" : "Paused"}</span></td>
-                            <td>{o.clientName}</td>
-                            <td><CarrierName carrier={o.carrier} /></td>
-                            <td>{fmtDate(o.effectiveDate)}</td>
-                            <td>{o.agentName}</td>
-                            <td className="num">
-                              <div className="pt-btn-row">
-                                <button className="pt-btn ghost small" onClick={() => toggleMembershipOverrideActive(o.id, o.active)}>{o.active ? "Pause" : "Resume"}</button>
-                                <button className="pt-btn ghost small" onClick={() => deleteMembershipOverride(o.id)}><X size={12} /></button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                      </>
+                    ) : (
+                      <>
+                        <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setOverridesShowAll(false)}>\u2190 Back</button>
+                        <div className="pt-row-between">
+                          <h3>Active overrides ({filteredMembershipOverrides.length} of {membershipOverrides.length})</h3>
+                          <div className="pt-btn-row">
+                            <button className="pt-btn ghost small" onClick={() => setSelectedOverrideIds(new Set(filteredMembershipOverrides.map((o) => o.id)))}>Select all</button>
+                            {selectedOverrideIds.size > 0 && (
+                              confirmDeleteSelectedOverrides ? (
+                                <span className="pt-confirm-inline">
+                                  Delete {selectedOverrideIds.size} override(s)?
+                                  <button className="pt-btn danger small" disabled={deletingSelectedOverrides} onClick={deleteSelectedOverrides}>{deletingSelectedOverrides ? "Working\u2026" : "Yes, delete"}</button>
+                                  <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedOverrides(false)}>Cancel</button>
+                                </span>
+                              ) : (
+                                <button className="pt-btn danger small" onClick={() => setConfirmDeleteSelectedOverrides(true)}><Trash2 size={12} /> Delete {selectedOverrideIds.size} selected</button>
+                              )
+                            )}
+                          </div>
+                        </div>
+                        <div className="pt-filters" style={{ marginTop: 10, marginBottom: 10 }}>
+                          <div className="pt-filter">
+                            <label>Carrier</label>
+                            <select value={overrideFilterCarrier} onChange={(e) => setOverrideFilterCarrier(e.target.value)}>
+                              <option value="All">All</option>
+                              {overrideCarrierFilterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                          <div className="pt-filter">
+                            <label>Agent</label>
+                            <select value={overrideFilterAgent} onChange={(e) => setOverrideFilterAgent(e.target.value)}>
+                              <option value="All">All</option>
+                              {overrideAgentFilterOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+                            </select>
+                          </div>
+                          {(overrideFilterCarrier !== "All" || overrideFilterAgent !== "All") && (
+                            <button className="pt-btn text" onClick={() => { setOverrideFilterCarrier("All"); setOverrideFilterAgent("All"); }}>Clear filters</button>
+                          )}
+                        </div>
+                        <table className="pt-table">
+                          <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>True agent</th><th></th></tr></thead>
+                          <tbody>
+                            {filteredMembershipOverrides.map((o) => (
+                              <tr key={o.id}>
+                                <td><input type="checkbox" checked={selectedOverrideIds.has(o.id)} onChange={() => toggleOverrideSelected(o.id)} /></td>
+                                <td><span className={"pt-status-chip " + (o.active ? "pt-status-green" : "pt-status-gray")}>{o.active ? "Active" : "Paused"}</span></td>
+                                <td>{o.clientName}</td>
+                                <td><CarrierName carrier={o.carrier} /></td>
+                                <td>{fmtDate(o.effectiveDate)}</td>
+                                <td>{o.agentName}</td>
+                                <td className="num">
+                                  <div className="pt-btn-row">
+                                    <button className="pt-btn ghost small" onClick={() => toggleMembershipOverrideActive(o.id, o.active)}>{o.active ? "Pause" : "Resume"}</button>
+                                    <button className="pt-btn ghost small" onClick={() => deleteMembershipOverride(o.id)}><X size={12} /></button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
+                    )}
                   </div>
                 )}
               </>
@@ -4379,24 +4414,32 @@ export default function App() {
                 <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Current quarter: clients effective {currentMarketingQuarter.label}. {marketingDuplicateCount > 0 && `${marketingDuplicateCount} client(s) below were excluded \u2014 they already existed in the book before this quarter's sale, so no new marketing fund is owed for them.`}</p>
 
                 <div className="pt-card">
-                  <h3>This quarter's clients</h3>
+                  {marketingShowAllClients && (
+                    <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setMarketingShowAllClients(false)}>\u2190 Back</button>
+                  )}
+                  <h3>This quarter's clients {marketingShowAllClients ? `(all ${marketingQuarterClients.length})` : ""}</h3>
                   {marketingQuarterClients.length === 0 ? (
                     <p className="pt-hint">No clients found for this agent with an effective date in {currentMarketingQuarter.label}.</p>
                   ) : (
-                    <table className="pt-table">
-                      <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th>First seen anywhere</th></tr></thead>
-                      <tbody>
-                        {marketingQuarterClients.map((c) => (
-                          <tr key={c.clientName}>
-                            <td><span className={"pt-status-chip " + (c.isNew ? "pt-status-green" : "pt-status-gray")}>{c.isNew ? "New" : "Duplicate"}</span></td>
-                            <td>{c.clientName}</td>
-                            <td><CarrierName carrier={c.carrier} /></td>
-                            <td>{fmtDate(c.effectiveDate)}</td>
-                            <td>{fmtDate(c.firstSeen)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <>
+                      <table className="pt-table">
+                        <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th>First seen anywhere</th></tr></thead>
+                        <tbody>
+                          {(marketingShowAllClients ? marketingQuarterClients : marketingQuarterClients.slice(0, 5)).map((c) => (
+                            <tr key={c.clientName}>
+                              <td><span className={"pt-status-chip " + (c.isNew ? "pt-status-green" : "pt-status-gray")}>{c.isNew ? "New" : "Duplicate"}</span></td>
+                              <td>{c.clientName}</td>
+                              <td><CarrierName carrier={c.carrier} /></td>
+                              <td>{fmtDate(c.effectiveDate)}</td>
+                              <td>{fmtDate(c.firstSeen)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {!marketingShowAllClients && marketingQuarterClients.length > 5 && (
+                        <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMarketingShowAllClients(true)}>View all {marketingQuarterClients.length} \u2192</button>
+                      )}
+                    </>
                   )}
                 </div>
               </>
