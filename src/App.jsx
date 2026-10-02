@@ -1754,6 +1754,27 @@ export default function App() {
   const clientProfileTotal = useMemo(() => clientProfileRecords.reduce((s, r) => s + r.commissionAmount, 0), [clientProfileRecords]);
   const clientProfileAgents = useMemo(() => [...new Set(clientProfileRecords.map((r) => resolveAgentName(r.agent, "", "", "")))].sort(), [clientProfileRecords, agentLookupMaps]);
   const clientProfileDisplayName = clientProfileRecords[0]?.clientName || "";
+  // One row per actual policy, not per transaction \u2014 same carrier + same
+  // effective date is one enrollment, even if it shows up as several monthly
+  // commission payments. Revenue is the sum across all of them; status and
+  // paid date come from whichever payment is most recent.
+  const clientProfilePolicies = useMemo(() => {
+    const groups = {};
+    clientProfileRecords.forEach((r) => {
+      const key = r.carrier + "::" + (r.effectiveDate || "");
+      if (!groups[key]) groups[key] = { key, agent: r.agent, carrier: r.carrier, effectiveDate: r.effectiveDate, termDate: r.termDate || "", status: r.status, latestPaidDate: "", total: 0, count: 0 };
+      const g = groups[key];
+      g.total += r.commissionAmount;
+      g.count += 1;
+      if (r.termDate && !g.termDate) g.termDate = r.termDate;
+      if (!g.latestPaidDate || (r.paymentDate && r.paymentDate > g.latestPaidDate)) {
+        g.latestPaidDate = r.paymentDate || g.latestPaidDate;
+        g.status = r.status;
+        g.agent = r.agent;
+      }
+    });
+    return Object.values(groups).sort((a, b) => (b.effectiveDate || "").localeCompare(a.effectiveDate || ""));
+  }, [clientProfileRecords]);
   // ---------- END CLIENT 360 PROFILE ----------
 
   const [reassignCarrier, setReassignCarrier] = useState("");
@@ -3248,20 +3269,20 @@ export default function App() {
               <div className="pt-card">
                 <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>\u2190 Back to Client lookup</button>
                 <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
-                <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfileRecords.length} polic{clientProfileRecords.length === 1 ? "y" : "ies"} matched on name \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
+                <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
                 <div className="pt-cards pt-cards-3" style={{ marginBottom: 16 }}>
                   <StatCard label="Total revenue, all time" value={fmtMoneyShort(clientProfileTotal)} money={clientProfileTotal} />
-                  <StatCard label="Policies" value={String(clientProfileRecords.length)} />
+                  <StatCard label="Policies" value={String(clientProfilePolicies.length)} />
                   <StatCard label="Agent(s) on record" value={String(clientProfileAgents.length)} />
                 </div>
                 <div className="pt-mini-label">Agent(s) on record</div>
                 {clientProfileAgents.map((a) => <div key={a} className="pt-mini-row"><span>{a}</span></div>)}
-                <div className="pt-mini-label" style={{ marginTop: 16 }}>All policies ({clientProfileRecords.length})</div>
+                <div className="pt-mini-label" style={{ marginTop: 16 }}>All policies ({clientProfilePolicies.length})</div>
                 <table className="pt-table">
-                  <thead><tr><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Paid date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                  <thead><tr><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Last paid</th><th>Status</th><th>Payments</th><th className="num">Total revenue</th></tr></thead>
                   <tbody>
-                    {clientProfileRecords.map((r) => (
-                      <tr key={r.id}><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                    {clientProfilePolicies.map((p) => (
+                      <tr key={p.key}><td>{p.agent}</td><td><CarrierName carrier={p.carrier} /></td><td>{p.effectiveDate ? fmtDate(p.effectiveDate) : "\u2014"}</td><td>{p.termDate ? fmtDate(p.termDate) : "\u2014"}</td><td>{p.latestPaidDate ? fmtDate(p.latestPaidDate) : "\u2014"}</td><td><StatusBadge status={p.status} /></td><td>{p.count}</td><td className="num mono">{<Money v={p.total} />}</td></tr>
                     ))}
                   </tbody>
                 </table>
