@@ -1733,6 +1733,29 @@ export default function App() {
     return records.filter((r) => r.clientName && r.clientName.toLowerCase().includes(q));
   }, [records, clientSearch]);
 
+  // ---------- CLIENT 360 PROFILE (additive \u2014 safe to remove entirely if this
+  // doesn't work out; nothing above or below this depends on it) ----------
+  const [clientProfileKey, setClientProfileKey] = useState(null);
+  const clientSuggestions = useMemo(() => {
+    if (clientProfileKey || clientSearch.trim().length < 2) return [];
+    const q = clientSearch.toLowerCase();
+    const seen = new Map(); // normalizeClientKey -> a representative display name
+    records.forEach((r) => {
+      if (!r.clientName || !r.clientName.toLowerCase().includes(q)) return;
+      const key = normalizeClientKey(r.clientName);
+      if (!seen.has(key)) seen.set(key, r.clientName);
+    });
+    return [...seen.entries()].slice(0, 8);
+  }, [records, clientSearch, clientProfileKey]);
+  const clientProfileRecords = useMemo(() => {
+    if (!clientProfileKey) return [];
+    return records.filter((r) => r.clientName && normalizeClientKey(r.clientName) === clientProfileKey);
+  }, [records, clientProfileKey]);
+  const clientProfileTotal = useMemo(() => clientProfileRecords.reduce((s, r) => s + r.commissionAmount, 0), [clientProfileRecords]);
+  const clientProfileAgents = useMemo(() => [...new Set(clientProfileRecords.map((r) => resolveAgentName(r.agent, "", "", "")))].sort(), [clientProfileRecords, agentLookupMaps]);
+  const clientProfileDisplayName = clientProfileRecords[0]?.clientName || "";
+  // ---------- END CLIENT 360 PROFILE ----------
+
   const [reassignCarrier, setReassignCarrier] = useState("");
   const [reassignNewAgent, setReassignNewAgent] = useState("");
   const [confirmReassign, setConfirmReassign] = useState(false);
@@ -3220,8 +3243,41 @@ export default function App() {
         {view === "clients" && (
           <div>
             <div className="pt-page-head"><div><h1>Client lookup</h1><p>Search across every policy you've imported.</p></div></div>
+
+            {clientProfileKey ? (
+              <div className="pt-card">
+                <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>\u2190 Back to Client lookup</button>
+                <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
+                <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfileRecords.length} polic{clientProfileRecords.length === 1 ? "y" : "ies"} matched on name \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
+                <div className="pt-cards pt-cards-3" style={{ marginBottom: 16 }}>
+                  <StatCard label="Total revenue, all time" value={fmtMoneyShort(clientProfileTotal)} money={clientProfileTotal} />
+                  <StatCard label="Policies" value={String(clientProfileRecords.length)} />
+                  <StatCard label="Agent(s) on record" value={String(clientProfileAgents.length)} />
+                </div>
+                <div className="pt-mini-label">Agent(s) on record</div>
+                {clientProfileAgents.map((a) => <div key={a} className="pt-mini-row"><span>{a}</span></div>)}
+                <div className="pt-mini-label" style={{ marginTop: 16 }}>All policies ({clientProfileRecords.length})</div>
+                <table className="pt-table">
+                  <thead><tr><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Paid date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                  <tbody>
+                    {clientProfileRecords.map((r) => (
+                      <tr key={r.id}><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
             <div className="pt-card">
-              <input className="pt-search" placeholder="Search by client name\u2026 (min 2 characters)" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+              <div style={{ position: "relative" }}>
+                <input className="pt-search" placeholder="Search by client name\u2026 (min 2 characters)" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+                {clientSuggestions.length > 0 && (
+                  <div className="pt-card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 5, marginTop: 4, padding: 6 }}>
+                    {clientSuggestions.map(([key, name]) => (
+                      <div key={key} className="pt-clickable" style={{ padding: "6px 8px", borderRadius: 4 }} onClick={() => setClientProfileKey(key)}>{name}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
               {clientSearch.trim().length >= 2 && (
                 clientMatches.length === 0 ? (
                   <p className="pt-hint" style={{ marginTop: 12 }}>No matches. Note: client name only shows if you mapped that column during import.</p>
@@ -3231,7 +3287,7 @@ export default function App() {
                       <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Paid date</th><th className="num">Amount</th></tr></thead>
                       <tbody>
                         {clientMatches.map((r) => (
-                          <tr key={r.id}><td>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                          <tr key={r.id}><td className="pt-clickable" onClick={() => setClientProfileKey(normalizeClientKey(r.clientName))}>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                         ))}
                       </tbody>
                     </table>
@@ -3259,6 +3315,7 @@ export default function App() {
                 )
               )}
             </div>
+            )}
 
             {clientSearch.trim().length >= 2 && membershipMatches.length > 0 && (
               <div className="pt-card">
