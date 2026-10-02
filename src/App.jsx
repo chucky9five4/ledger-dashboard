@@ -1626,6 +1626,8 @@ export default function App() {
   // ---------- AGENTS / CARRIERS ----------
   const [agentSearch, setAgentSearch] = useState("");
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [agentListExpanded, setAgentListExpanded] = useState(false);
+  const [agentListPage, setAgentListPage] = useState(0);
   const agentSummary = useMemo(() => {
     return groupBy(records, (r) => resolveAgentName(r.agent, "", "", ""))
       .map((a) => {
@@ -3086,115 +3088,140 @@ export default function App() {
         {view === "agents" && (
           <div>
             <div className="pt-page-head"><div><h1>Agents</h1><p>Production by agent, across every carrier.</p></div></div>
-            {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
-              <div className="pt-grid-list">
-                <div className="pt-card">
-                  <input className="pt-search" placeholder="Search agents\u2026" value={agentSearch} onChange={(e) => setAgentSearch(e.target.value)} />
+            {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : !selectedAgent ? (
+              <div className="pt-card">
+                <input className="pt-search" placeholder="Search agents\u2026" value={agentSearch} onChange={(e) => { setAgentSearch(e.target.value); setAgentListExpanded(false); setAgentListPage(0); }} />
+                <table className="pt-table">
+                  <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
+                  <tbody>
+                    {(agentSearch.trim() ? agentSummary : agentSummary.slice(0, 5)).map((a) => (
+                      <tr key={a.key} className="pt-clickable" onClick={() => setSelectedAgent(a.key)}>
+                        <td>{a.key}</td>
+                        <td className="num">{a.count}</td>
+                        <td className="num mono">{<Money v={a.revenue} />}</td>
+                        <td className="num">{a.activeMembers}</td>
+                        <td className="num">{a.inactiveMembers}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!agentSearch.trim() && agentSummary.length > 5 && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="pt-btn ghost small" onClick={() => setAgentListExpanded(!agentListExpanded)}>{agentListExpanded ? "\u25be" : "\u25b8"} More agents ({agentSummary.length - 5})</button>
+                    {agentListExpanded && (
+                      <div className="pt-card" style={{ marginTop: 8, marginBottom: 0 }}>
+                        <table className="pt-table">
+                          <tbody>
+                            {agentSummary.slice(5 + agentListPage * 5, 5 + agentListPage * 5 + 5).map((a) => (
+                              <tr key={a.key} className="pt-clickable" onClick={() => setSelectedAgent(a.key)}>
+                                <td>{a.key}</td>
+                                <td className="num">{a.count}</td>
+                                <td className="num mono">{<Money v={a.revenue} />}</td>
+                                <td className="num">{a.activeMembers}</td>
+                                <td className="num">{a.inactiveMembers}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="pt-row-between" style={{ marginTop: 10 }}>
+                          <button className="pt-btn ghost small" disabled={agentListPage === 0} onClick={() => setAgentListPage((p) => Math.max(0, p - 1))}>\u2190 Previous 5</button>
+                          <span className="pt-hint">{5 + agentListPage * 5 + 1}\u2013{Math.min(agentSummary.length, 5 + agentListPage * 5 + 5)} of {agentSummary.length}</span>
+                          <button className="pt-btn ghost small" disabled={5 + agentListPage * 5 + 5 >= agentSummary.length} onClick={() => setAgentListPage((p) => p + 1)}>Next 5 \u2192</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import \u2014 it's optional, so some may show 0 even for agents with real membership.</p>
+              </div>
+            ) : (
+              <div className="pt-card">
+                <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setSelectedAgent(null)}>\u2190 Back to Agents</button>
+                <div className="pt-row-between">
+                  <h3>{selectedAgent}</h3>
+                  <button className="pt-btn ghost" onClick={() => exportCSV(selectedAgentRecords, selectedAgent.replace(/\s+/g, "_") + ".csv")}><Download size={14} /> Export</button>
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  {confirmMergeAgent ? (
+                    <span className="pt-confirm-inline">
+                      Merge "{selectedAgent}" into "{mergeTargetAgent}"? This moves all its data (including payable rules) and can't be undone.
+                      <button className="pt-btn danger small" onClick={() => mergeAgent(selectedAgent, mergeTargetAgent)}>Yes, merge</button>
+                      <button className="pt-btn ghost small" onClick={() => setConfirmMergeAgent(false)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <div className="pt-inline-form">
+                      <select value={mergeTargetAgent} onChange={(e) => setMergeTargetAgent(e.target.value)} style={{ minWidth: 200 }}>
+                        <option value="">Merge into\u2026</option>
+                        {agentSummary.map((a) => a.key).filter((k) => k !== selectedAgent).map((k) => <option key={k} value={k}>{k}</option>)}
+                      </select>
+                      <button className="pt-btn ghost small" disabled={!mergeTargetAgent} onClick={() => setConfirmMergeAgent(true)}>Merge duplicate spelling</button>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div className="pt-mini-label">By carrier</div>
+                  {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span></div>)}
+                </div>
+                <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 4 }}>
+                  <div className="pt-mini-label" style={{ marginTop: 0 }}>All sales ({selectedAgentRecordsView.length} of {selectedAgentRecords.length})</div>
+                  {agentSalesFiltersActive && <button className="pt-btn ghost small" onClick={clearAgentSalesFilters}>Clear filters</button>}
+                </div>
+                <div className="pt-mapping-grid" style={{ marginBottom: 10 }}>
+                  <div className="pt-field">
+                    <label>Member name</label>
+                    <input value={agentSalesFilters.name} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, name: e.target.value }))} placeholder="Search\u2026" />
+                  </div>
+                  <div className="pt-field">
+                    <label>Carrier</label>
+                    <select value={agentSalesFilters.carrier} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, carrier: e.target.value }))}>
+                      <option value="">All</option>
+                      {agentSalesCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="pt-field">
+                    <label>Status</label>
+                    <select value={agentSalesFilters.status} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, status: e.target.value }))}>
+                      <option value="">All</option>
+                      {agentSalesStatusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div className="pt-field">
+                    <label>Effective date from</label>
+                    <input type="date" value={agentSalesFilters.dateFrom} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateFrom: e.target.value }))} />
+                  </div>
+                  <div className="pt-field">
+                    <label>Effective date to</label>
+                    <input type="date" value={agentSalesFilters.dateTo} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateTo: e.target.value }))} />
+                  </div>
+                  <div className="pt-field">
+                    <label>Amount min</label>
+                    <input type="number" step="0.01" value={agentSalesFilters.amountMin} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMin: e.target.value }))} placeholder="0" />
+                  </div>
+                  <div className="pt-field">
+                    <label>Amount max</label>
+                    <input type="number" step="0.01" value={agentSalesFilters.amountMax} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMax: e.target.value }))} placeholder="1000" />
+                  </div>
+                </div>
+                <div className="pt-preview-scroll">
                   <table className="pt-table">
-                    <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
+                    <thead>
+                      <tr>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSort.col === "clientName" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSort.col === "carrier" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSort.col === "effectiveDate" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSort.col === "status" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                        <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSort.col === "amount" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      {agentSummary.map((a) => (
-                        <tr key={a.key} className={"pt-clickable" + (selectedAgent === a.key ? " selected" : "")} onClick={() => setSelectedAgent(a.key)}>
-                          <td>{a.key}</td>
-                          <td className="num">{a.count}</td>
-                          <td className="num mono">{<Money v={a.revenue} />}</td>
-                          <td className="num">{a.activeMembers}</td>
-                          <td className="num">{a.inactiveMembers}</td>
-                        </tr>
+                      {selectedAgentRecordsView.length === 0 ? (
+                        <tr><td colSpan={5} className="pt-hint">No rows match these filters.</td></tr>
+                      ) : selectedAgentRecordsView.map((r) => (
+                        <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                       ))}
                     </tbody>
                   </table>
-                  <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import \u2014 it's optional, so some may show 0 even for agents with real membership.</p>
                 </div>
-                {selectedAgent && (
-                  <div className="pt-card">
-                    <div className="pt-row-between">
-                      <h3>{selectedAgent}</h3>
-                      <button className="pt-btn ghost" onClick={() => exportCSV(selectedAgentRecords, selectedAgent.replace(/\s+/g, "_") + ".csv")}><Download size={14} /> Export</button>
-                    </div>
-                    <div style={{ marginBottom: 14 }}>
-                      {confirmMergeAgent ? (
-                        <span className="pt-confirm-inline">
-                          Merge "{selectedAgent}" into "{mergeTargetAgent}"? This moves all its data (including payable rules) and can't be undone.
-                          <button className="pt-btn danger small" onClick={() => mergeAgent(selectedAgent, mergeTargetAgent)}>Yes, merge</button>
-                          <button className="pt-btn ghost small" onClick={() => setConfirmMergeAgent(false)}>Cancel</button>
-                        </span>
-                      ) : (
-                        <div className="pt-inline-form">
-                          <select value={mergeTargetAgent} onChange={(e) => setMergeTargetAgent(e.target.value)} style={{ minWidth: 200 }}>
-                            <option value="">Merge into\u2026</option>
-                            {agentSummary.map((a) => a.key).filter((k) => k !== selectedAgent).map((k) => <option key={k} value={k}>{k}</option>)}
-                          </select>
-                          <button className="pt-btn ghost small" disabled={!mergeTargetAgent} onClick={() => setConfirmMergeAgent(true)}>Merge duplicate spelling</button>
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <div className="pt-mini-label">By carrier</div>
-                      {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span></div>)}
-                    </div>
-                    <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 4 }}>
-                      <div className="pt-mini-label" style={{ marginTop: 0 }}>All sales ({selectedAgentRecordsView.length} of {selectedAgentRecords.length})</div>
-                      {agentSalesFiltersActive && <button className="pt-btn ghost small" onClick={clearAgentSalesFilters}>Clear filters</button>}
-                    </div>
-                    <div className="pt-mapping-grid" style={{ marginBottom: 10 }}>
-                      <div className="pt-field">
-                        <label>Member name</label>
-                        <input value={agentSalesFilters.name} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, name: e.target.value }))} placeholder="Search\u2026" />
-                      </div>
-                      <div className="pt-field">
-                        <label>Carrier</label>
-                        <select value={agentSalesFilters.carrier} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, carrier: e.target.value }))}>
-                          <option value="">All</option>
-                          {agentSalesCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </div>
-                      <div className="pt-field">
-                        <label>Status</label>
-                        <select value={agentSalesFilters.status} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, status: e.target.value }))}>
-                          <option value="">All</option>
-                          {agentSalesStatusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </div>
-                      <div className="pt-field">
-                        <label>Effective date from</label>
-                        <input type="date" value={agentSalesFilters.dateFrom} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateFrom: e.target.value }))} />
-                      </div>
-                      <div className="pt-field">
-                        <label>Effective date to</label>
-                        <input type="date" value={agentSalesFilters.dateTo} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, dateTo: e.target.value }))} />
-                      </div>
-                      <div className="pt-field">
-                        <label>Amount min</label>
-                        <input type="number" step="0.01" value={agentSalesFilters.amountMin} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMin: e.target.value }))} placeholder="0" />
-                      </div>
-                      <div className="pt-field">
-                        <label>Amount max</label>
-                        <input type="number" step="0.01" value={agentSalesFilters.amountMax} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, amountMax: e.target.value }))} placeholder="1000" />
-                      </div>
-                    </div>
-                    <div className="pt-preview-scroll">
-                      <table className="pt-table">
-                        <thead>
-                          <tr>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSort.col === "clientName" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSort.col === "carrier" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSort.col === "effectiveDate" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSort.col === "status" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                            <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSort.col === "amount" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {selectedAgentRecordsView.length === 0 ? (
-                            <tr><td colSpan={5} className="pt-hint">No rows match these filters.</td></tr>
-                          ) : selectedAgentRecordsView.map((r) => (
-                            <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>
