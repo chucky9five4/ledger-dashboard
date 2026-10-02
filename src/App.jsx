@@ -2711,7 +2711,7 @@ export default function App() {
             {cloudCfg ? "Cloud connected" : "Local only"}
           </div>
           <div className="pt-footer-label">All-time production</div>
-          <div className="pt-footer-value"><MoneyShort v={totalAllRevenue} /></div>
+          <div className="pt-footer-value"><Money v={totalAllRevenue} /></div>
           <div className="pt-footer-sub">{records.length.toLocaleString()} commission rows</div>
         </div>
       </aside>
@@ -2769,26 +2769,26 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Cash flow</div>
                   <div className="pt-cards pt-cards-3">
-                    <StatCard label="Gross revenue" value={fmtMoneyShort(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
-                    <StatCard label="Chargebacks" value={fmtMoneyShort(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
-                    <StatCard label="Net revenue" value={fmtMoneyShort(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="Gross revenue" value={fmtMoney(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
+                    <StatCard label="Chargebacks" value={fmtMoney(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
+                    <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Revenue breakdown</div>
                   <div className="pt-cards pt-cards-2">
-                    <StatCard label="First year revenue" value={fmtMoneyShort(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" period={commissionPeriodLabel} />
-                    <StatCard label="Renewal revenue" value={fmtMoneyShort(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="First year revenue" value={fmtMoney(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="Renewal revenue" value={fmtMoney(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">\u2014 across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
                   <div className="pt-cards pt-cards-3">
-                    <StatCard label="Avg net" value={fmtMoneyShort(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
-                    <StatCard label="Avg first year" value={fmtMoneyShort(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
-                    <StatCard label="Avg renewal" value={fmtMoneyShort(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg net" value={fmtMoney(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg first year" value={fmtMoney(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg renewal" value={fmtMoney(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
@@ -3275,8 +3275,8 @@ export default function App() {
                 <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
                 <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
                 <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
-                  <StatCard label="Total revenue, all time" value={fmtMoneyShort(clientProfileTotal)} money={clientProfileTotal} />
-                  <StatCard label="Total revenue, YTD" value={fmtMoneyShort(clientProfileTotalYTD)} money={clientProfileTotalYTD} />
+                  <StatCard label="Total revenue, all time" value={fmtMoney(clientProfileTotal)} money={clientProfileTotal} />
+                  <StatCard label="Total revenue, YTD" value={fmtMoney(clientProfileTotalYTD)} money={clientProfileTotalYTD} />
                   <StatCard label="Policies" value={String(clientProfilePolicies.length)} />
                   <StatCard label={clientProfileAgents.length === 1 ? "Agent on record" : "Agents on record"} value={clientProfileAgents.length > 3 ? `${clientProfileAgents.slice(0, 2).join(", ")} +${clientProfileAgents.length - 2} more` : (clientProfileAgents.join(", ") || "\u2014")} />
                 </div>
@@ -4364,7 +4364,7 @@ export default function App() {
               <>
                 <div className="pt-cards pt-cards-3">
                   <StatCard label="New clients this quarter" value={marketingNewCount} tone="ink" />
-                  <StatCard label="Budget accrued" value={fmtMoneyShort(marketingBudgetTotal)} money={marketingBudgetTotal} />
+                  <StatCard label="Budget accrued" value={fmtMoney(marketingBudgetTotal)} money={marketingBudgetTotal} />
                   <StatCard label="Use by" value={fmtDate(currentMarketingQuarter.deadline)} tone="ink" />
                 </div>
                 <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Current quarter: clients effective {currentMarketingQuarter.label}. {marketingDuplicateCount > 0 && `${marketingDuplicateCount} client(s) below were excluded \u2014 they already existed in the book before this quarter's sale, so no new marketing fund is owed for them.`}</p>
@@ -4457,10 +4457,6 @@ function moneyClass(n) {
 function Money({ v }) {
   const n = Number(v) || 0;
   return <span className={moneyClass(n)}>{fmtMoney(n)}</span>;
-}
-function MoneyShort({ v }) {
-  const n = Number(v) || 0;
-  return <span className={moneyClass(n)}>{fmtMoneyShort(n)}</span>;
 }
 function StatCard({ label, value, tone, money, caption, period, onClick }) {
   return (
