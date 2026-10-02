@@ -7,7 +7,7 @@ import {
 import {
   LayoutDashboard, UploadCloud, Users, Building2, Search, Database,
   Trash2, Download, AlertTriangle, CheckCircle2, FileSpreadsheet, X,
-  Settings, Cloud, CloudOff, Contact, Link2, UserPlus, Layers
+  Settings, Cloud, CloudOff, Contact, Link2, UserPlus, Layers, Sun, Moon
 } from "lucide-react";
 
 // Local browser storage (used only as a fallback before Supabase is connected).
@@ -677,6 +677,12 @@ function exportCSV(rows, filename) {
 
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem("pt-theme") === "dark"; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("pt-theme", darkMode ? "dark" : "light"); } catch (e) { /* ignore */ }
+  }, [darkMode]);
   const [view, setView] = useState("dashboard");
   const [records, setRecords] = useState([]);
   const [batches, setBatches] = useState([]);
@@ -2687,7 +2693,7 @@ export default function App() {
   ];
 
   return (
-    <div className="pt-app">
+    <div className={"pt-app" + (darkMode ? " pt-dark" : "")}>
       <style>{CSS}</style>
       <aside className="pt-sidebar">
         <div className="pt-brand">
@@ -2706,6 +2712,9 @@ export default function App() {
           ))}
         </nav>
         <div className="pt-sidebar-footer">
+          <button className="pt-btn ghost small" style={{ width: "100%", justifyContent: "center", marginBottom: 12, background: "transparent", color: "#B7C0D4", borderColor: "rgba(255,255,255,0.15)" }} onClick={() => setDarkMode(!darkMode)}>
+            {darkMode ? <Sun size={13} /> : <Moon size={13} />} {darkMode ? "Light mode" : "Dark mode"}
+          </button>
           <div className={"pt-conn-dot " + (cloudCfg ? "on" : "off")}>
             {cloudCfg ? <Cloud size={12} /> : <CloudOff size={12} />}
             {cloudCfg ? "Cloud connected" : "Local only"}
@@ -4525,7 +4534,7 @@ const CSS = `
 .pt-sidebar {
   width: 220px;
   flex-shrink: 0;
-  background: var(--ink);
+  background: #243C80;
   color: #E7EAF2;
   display: flex;
   flex-direction: column;
@@ -4551,7 +4560,7 @@ const CSS = `
 .pt-status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 20px; }
 .pt-status-badge.on { background: #EAF5EE; color: var(--green); }
 .pt-status-badge.off { background: #F1F2F4; color: var(--muted); }
-.pt-sql { background: var(--ink); color: #E7EAF2; padding: 14px; border-radius: 6px; font-size: 11.5px; overflow: auto; line-height: 1.6; font-family: "SF Mono", Menlo, monospace; white-space: pre; }
+.pt-sql { background: #243C80; color: #E7EAF2; padding: 14px; border-radius: 6px; font-size: 11.5px; overflow: auto; line-height: 1.6; font-family: "SF Mono", Menlo, monospace; white-space: pre; }
 .pt-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
 .pt-tab { background: none; border: none; padding: 8px 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .pt-tab.active { color: var(--ink); border-bottom-color: var(--gold); font-weight: 600; }
@@ -4638,7 +4647,7 @@ const CSS = `
 .pt-preview-scroll { max-height: 320px; overflow: auto; margin-top: 4px; }
 
 .pt-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; }
-.pt-btn.primary { background: var(--gold); color: var(--ink); border-color: var(--gold); }
+.pt-btn.primary { background: var(--gold); color: #243C80; border-color: var(--gold); }
 .pt-btn.primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .pt-btn.ghost { background: #fff; color: var(--ink-2); border-color: var(--border); }
 .pt-btn.text { background: transparent; color: var(--muted); border: none; padding: 6px 4px; }
@@ -4671,4 +4680,46 @@ const CSS = `
   .pt-cards, .pt-cards-2, .pt-cards-3, .pt-cards-4 { grid-template-columns: repeat(2, 1fr); }
   .pt-grid-2, .pt-grid-list, .pt-mapping-grid, .pt-mini-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- DARK MODE ----------
+   Most of the app already reads its colors from the variables on .pt-app,
+   so overriding them here covers the majority of the UI automatically.
+   What follows after is only for the handful of rules that use a literal
+   hex color instead of a variable (inputs, hover states, status chips). */
+.pt-app.pt-dark {
+  --ink: #C9D3F0;
+  --ink-2: #D7DCE6;
+  --paper: #14171F;
+  --card: #1D212B;
+  --border: #333A48;
+  --muted: #8B93A7;
+  --gold-soft: #3A2228;
+  --green: #3FB876;
+  --rose: #E0665F;
+}
+.pt-app.pt-dark .pt-brand-logo-wrap { background: #FFFFFF; }
+.pt-app.pt-dark .pt-stat-period { background: #262B36; }
+.pt-app.pt-dark .pt-row-clickable:hover { background: #262B36; }
+.pt-app.pt-dark .pt-search-dropdown-item:hover { background: #262B36; }
+.pt-app.pt-dark .pt-clickable:hover { background: #262B36; }
+.pt-app.pt-dark .pt-filter select, .pt-app.pt-dark .pt-filter input { background: #1D212B; color: var(--ink-2); border-color: var(--border); }
+.pt-app.pt-dark .pt-field input, .pt-app.pt-dark .pt-field select { background: #1D212B; color: var(--ink-2); border-color: var(--border); }
+.pt-app.pt-dark .pt-inline-form input, .pt-app.pt-dark .pt-inline-form select { background: #1D212B; color: var(--ink-2); border-color: var(--border); }
+.pt-app.pt-dark .pt-plantype-block select, .pt-app.pt-dark .pt-plantype-block input { background: #1D212B; color: var(--ink-2); border-color: var(--border); }
+.pt-app.pt-dark .pt-search { background: #1D212B; color: var(--ink-2); }
+.pt-app.pt-dark .pt-btn.ghost { background: #1D212B; color: var(--ink-2); }
+.pt-app.pt-dark .pt-btn.danger { background: #1D212B; }
+.pt-app.pt-dark .pt-status-badge.on { background: #1C3327; }
+.pt-app.pt-dark .pt-status-badge.off { background: #262B36; }
+.pt-app.pt-dark .pt-status-green { background: #1C3327; color: #4FD88C; }
+.pt-app.pt-dark .pt-status-amber { background: #3A2E18; color: #E0AD5C; }
+.pt-app.pt-dark .pt-status-red { background: #3A2020; color: #E0776E; }
+.pt-app.pt-dark .pt-status-gray { background: #262B36; color: var(--muted); }
+.pt-app.pt-dark .pt-toast.success { background: #1C3327; border-color: #2C5240; }
+.pt-app.pt-dark .pt-toast.error { background: #3A2020; border-color: #5C3330; }
+.pt-app.pt-dark .pt-money-pos { color: #4FD88C; }
+.pt-app.pt-dark .pt-money-neg { color: #E0776E; }
+.pt-app.pt-dark .pt-stat-value.pt-money-pos { color: #4FD88C; border-bottom-color: #1C3327; }
+.pt-app.pt-dark .pt-stat-value.pt-money-neg { color: #E0776E; border-bottom-color: #3A2020; }
+.pt-app.pt-dark .pt-conn-dot { color: #8A96AE; }
 `;
