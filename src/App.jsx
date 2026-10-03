@@ -1468,6 +1468,8 @@ export default function App() {
   const avgRenewalPerMonth = distinctPaidMonths ? renewalRevenue / distinctPaidMonths : 0;
   const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
+  const byCarrierTop8 = useMemo(() => byCarrier.slice(0, 8), [byCarrier]);
+  const [showAllCarriersChart, setShowAllCarriersChart] = useState(false);
   const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
   const [showAllTopAgents, setShowAllTopAgents] = useState(false);
   const [membershipDrillDown, setMembershipDrillDown] = useState(null); // null | { type: "total"|"new"|"lost"|"agent", agentName?: string }
@@ -2833,10 +2835,15 @@ export default function App() {
                 )}
 
                 <div className="pt-card">
-                  <h3>Revenue by carrier</h3>
+                  <div className="pt-row-between">
+                    <h3>Revenue by carrier {byCarrier.length > 8 ? "(top 8)" : ""}</h3>
+                    {byCarrier.length > 8 && (
+                      <button className="pt-btn primary small" onClick={() => setShowAllCarriersChart(true)}>See all {byCarrier.length} carriers</button>
+                    )}
+                  </div>
                   <p className="pt-hint" style={{ marginBottom: 8 }}>Click any bar to see that carrier's full detail.</p>
                   <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={byCarrier} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <BarChart data={byCarrierTop8} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
                       <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
@@ -2939,6 +2946,27 @@ export default function App() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        )}
+
+        {showAllCarriersChart && (
+          <div className="pt-modal-backdrop" onClick={() => setShowAllCarriersChart(false)}>
+            <div className="pt-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="pt-row-between" style={{ marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>Revenue by carrier \u2014 all {byCarrier.length}</h3>
+                <button className="pt-btn ghost small" onClick={() => setShowAllCarriersChart(false)}><X size={14} /></button>
+              </div>
+              <p className="pt-hint" style={{ marginBottom: 12 }}>Click any bar to see that carrier's full detail.</p>
+              <ResponsiveContainer width="100%" height={340}>
+                <BarChart data={byCarrier} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
+                  <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+                  <Tooltip content={<CarrierRevenueTooltip />} />
+                  <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} cursor="pointer" onClick={(data) => { setSelectedCarrier(data.key); setShowAllCarriersChart(false); setView("carriers"); }} />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
           </div>
         )}
