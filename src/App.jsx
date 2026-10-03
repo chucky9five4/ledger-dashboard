@@ -2845,7 +2845,7 @@ export default function App() {
                   <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={byCarrierTop8} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
-                      <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+                      <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} interval={0} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
                       <Tooltip content={<CarrierRevenueTooltip />} />
                       <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} cursor="pointer" onClick={(data) => { setSelectedCarrier(data.key); setView("carriers"); }} />
@@ -2961,7 +2961,7 @@ export default function App() {
               <ResponsiveContainer width="100%" height={340}>
                 <BarChart data={byCarrier} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
-                  <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+                  <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} interval={0} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
                   <Tooltip content={<CarrierRevenueTooltip />} />
                   <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} cursor="pointer" onClick={(data) => { setSelectedCarrier(data.key); setShowAllCarriersChart(false); setView("carriers"); }} />
