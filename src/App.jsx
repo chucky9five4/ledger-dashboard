@@ -2977,6 +2977,28 @@ export default function App() {
           </div>
         )}
 
+        {carrierDetailAgent && (
+          <div className="pt-modal-backdrop" onClick={() => setCarrierDetailAgent(null)}>
+            <div className="pt-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="pt-row-between" style={{ marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>{carrierDetailAgent} — sales for {selectedCarrier}</h3>
+                <button className="pt-btn ghost small" onClick={() => setCarrierDetailAgent(null)}><X size={14} /></button>
+              </div>
+              <p className="pt-hint" style={{ marginBottom: 12 }}>{carrierDetailAgentRecords.length} transaction(s).</p>
+              <div className="pt-preview-scroll">
+                <table className="pt-table">
+                  <thead><tr><th>Product</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                  <tbody>
+                    {carrierDetailAgentRecords.map((r) => (
+                      <tr key={r.id}><td>{r.product}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
         {view === "import" && (
           <div>
             <div className="pt-page-head">
@@ -3325,31 +3347,16 @@ export default function App() {
                       <div className="pt-mini-label">By agent {carrierAgentsShowAll ? `(all ${selectedCarrierByAgent.length})` : selectedCarrierByAgent.length > 5 ? "(top 5)" : ""}</div>
                       <p className="pt-hint" style={{ marginBottom: 6 }}>Click an agent to see their sales for this carrier.</p>
                       {(carrierAgentsShowAll ? selectedCarrierByAgent : selectedCarrierByAgent.slice(0, 5)).map((a) => (
-                        <div key={a.key} className={"pt-mini-row pt-clickable" + (carrierDetailAgent === a.key ? " selected" : "")} onClick={() => setCarrierDetailAgent(carrierDetailAgent === a.key ? null : a.key)}>
+                        <div key={a.key} className="pt-mini-row pt-clickable" onClick={() => setCarrierDetailAgent(a.key)}>
                           <span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span>
                         </div>
                       ))}
                       {selectedCarrierByAgent.length > 5 && (
-                        <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={() => setCarrierAgentsShowAll(!carrierAgentsShowAll)}>
-                          {carrierAgentsShowAll ? "Show top 5 only" : `View all ${selectedCarrierByAgent.length} agents \u2192`}
+                        <button className="pt-btn primary small" style={{ marginTop: 8 }} onClick={() => setCarrierAgentsShowAll(!carrierAgentsShowAll)}>
+                          {carrierAgentsShowAll ? "Show top 5 only" : `View all ${selectedCarrierByAgent.length} agents →`}
                         </button>
                       )}
                     </div>
-                    {carrierDetailAgent && (
-                      <>
-                        <div className="pt-mini-label" style={{ marginTop: 16 }}>{carrierDetailAgent} \u2014 sales for {selectedCarrier} ({carrierDetailAgentRecords.length})</div>
-                        <div className="pt-preview-scroll">
-                          <table className="pt-table">
-                            <thead><tr><th>Product</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
-                            <tbody>
-                              {carrierDetailAgentRecords.map((r) => (
-                                <tr key={r.id}><td>{r.product}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
-                    )}
                   </div>
                 )}
               </div>
@@ -3449,7 +3456,7 @@ export default function App() {
                   </tbody>
                 </table>
                 {!membershipMatchesShowAll && membershipMatches.length > 5 && (
-                  <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMembershipMatchesShowAll(true)}>View all {membershipMatches.length} →</button>
+                  <button className="pt-btn primary small" style={{ marginTop: 12 }} onClick={() => setMembershipMatchesShowAll(true)}>View all {membershipMatches.length} →</button>
                 )}
                 <div className="pt-plantype-block">
                   <label>Wrong agent on record? Reassign these production records to the true agent.</label>
@@ -3625,7 +3632,7 @@ export default function App() {
                           </tbody>
                         </table>
                         {membershipOverrides.length > 5 && (
-                          <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setOverridesShowAll(true)}>View all {membershipOverrides.length} →</button>
+                          <button className="pt-btn primary small" style={{ marginTop: 12 }} onClick={() => setOverridesShowAll(true)}>View all {membershipOverrides.length} →</button>
                         )}
                       </>
                     ) : (
@@ -4517,7 +4524,7 @@ export default function App() {
                         </tbody>
                       </table>
                       {!marketingShowAllClients && marketingQuarterClients.length > 5 && (
-                        <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMarketingShowAllClients(true)}>View all {marketingQuarterClients.length} →</button>
+                        <button className="pt-btn primary small" style={{ marginTop: 12 }} onClick={() => setMarketingShowAllClients(true)}>View all {marketingQuarterClients.length} →</button>
                       )}
                     </>
                   )}
