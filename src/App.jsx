@@ -2809,8 +2809,8 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Book of business</div>
                   <div className="pt-cards pt-cards-2">
-                    <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} />
-                    <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} />
+                    <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedCarrier(null); setView("carriers"); }} />
+                    <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedAgent(null); setView("agents"); }} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: 6 }}>Active membership counts now live in Active Members below \u2014 always reflecting your most recent production upload for each carrier.</p>
                 </div>
