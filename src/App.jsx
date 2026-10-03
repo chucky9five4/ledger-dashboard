@@ -2834,13 +2834,14 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Revenue by carrier</h3>
+                  <p className="pt-hint" style={{ marginBottom: 8 }}>Click any bar to see that carrier's full detail.</p>
                   <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={byCarrier} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
-                      <XAxis dataKey="key" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+                      <XAxis dataKey="key" tick={<CarrierAxisTick />} height={32} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
                       <Tooltip content={<CarrierRevenueTooltip />} />
-                      <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} cursor="pointer" onClick={(data) => { setSelectedCarrier(data.key); setView("carriers"); }} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -4567,6 +4568,13 @@ function CarrierRevenueTooltip({ active, payload, label }) {
       <div className={moneyClass(value)}>revenue : {fmtMoney(value)}</div>
     </div>
   );
+}
+function CarrierAxisTick({ x, y, payload }) {
+  const logo = getCarrierLogo(payload.value);
+  if (!logo) {
+    return <text x={x} y={y + 12} textAnchor="middle" fontSize={10} fill="#64748B">{String(payload.value || "").slice(0, 14)}</text>;
+  }
+  return <image href={logo} x={x - 22} y={y + 4} width={44} height={22} preserveAspectRatio="xMidYMid meet" />;
 }
 function FilterSelect({ label, value, onChange, options }) {
   return (
