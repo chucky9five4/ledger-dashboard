@@ -3124,9 +3124,9 @@ export default function App() {
                           </tbody>
                         </table>
                         <div className="pt-row-between" style={{ marginTop: 10 }}>
-                          <button className="pt-btn ghost small" disabled={agentListPage === 0} onClick={() => setAgentListPage((p) => Math.max(0, p - 1))}>\u2190 Previous 5</button>
+                          <button className="pt-btn ghost small" disabled={agentListPage === 0} onClick={() => setAgentListPage((p) => Math.max(0, p - 1))}>Previous 5</button>
                           <span className="pt-hint">{5 + agentListPage * 5 + 1}\u2013{Math.min(agentSummary.length, 5 + agentListPage * 5 + 5)} of {agentSummary.length}</span>
-                          <button className="pt-btn ghost small" disabled={5 + agentListPage * 5 + 5 >= agentSummary.length} onClick={() => setAgentListPage((p) => p + 1)}>Next 5 \u2192</button>
+                          <button className="pt-btn ghost small" disabled={5 + agentListPage * 5 + 5 >= agentSummary.length} onClick={() => setAgentListPage((p) => p + 1)}>Next 5</button>
                         </div>
                       </div>
                     )}
@@ -3136,7 +3136,7 @@ export default function App() {
               </div>
             ) : (
               <div className="pt-card">
-                <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setSelectedAgent(null)}>\u2190 Back to Agents</button>
+                <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setSelectedAgent(null)}>Back to Agents</button>
                 <div className="pt-row-between">
                   <h3>{selectedAgent}</h3>
                   <button className="pt-btn ghost" onClick={() => exportCSV(selectedAgentRecords, selectedAgent.replace(/\s+/g, "_") + ".csv")}><Download size={14} /> Export</button>
@@ -3314,7 +3314,7 @@ export default function App() {
 
             {clientProfileKey ? (
               <div className="pt-card">
-                <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>\u2190 Back to Client lookup</button>
+                <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>Back to Client lookup</button>
                 <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
                 <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
                 <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
@@ -3387,7 +3387,7 @@ export default function App() {
             {clientSearch.trim().length >= 2 && membershipMatches.length > 0 && (
               <div className="pt-card">
                 {membershipMatchesShowAll && (
-                  <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setMembershipMatchesShowAll(false)}>\u2190 Back</button>
+                  <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setMembershipMatchesShowAll(false)}>Back</button>
                 )}
                 <h3>Production / membership records {membershipMatchesShowAll ? `(all ${membershipMatches.length})` : ""}</h3>
                 <p className="pt-hint" style={{ marginBottom: 8 }}>Completely separate from the commission records above \u2014 no dollar amount involved here, just membership status. Fixing the agent here has no effect on financials, and vice versa.</p>
@@ -3581,7 +3581,7 @@ export default function App() {
                       </>
                     ) : (
                       <>
-                        <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setOverridesShowAll(false)}>\u2190 Back</button>
+                        <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setOverridesShowAll(false)}>Back</button>
                         <div className="pt-row-between">
                           <h3>Active overrides ({filteredMembershipOverrides.length} of {membershipOverrides.length})</h3>
                           <div className="pt-btn-row">
@@ -4446,7 +4446,7 @@ export default function App() {
 
                 <div className="pt-card">
                   {marketingShowAllClients && (
-                    <button className="pt-btn ghost small" style={{ marginBottom: 12 }} onClick={() => setMarketingShowAllClients(false)}>\u2190 Back</button>
+                    <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setMarketingShowAllClients(false)}>Back</button>
                   )}
                   <h3>This quarter's clients {marketingShowAllClients ? `(all ${marketingQuarterClients.length})` : ""}</h3>
                   {marketingQuarterClients.length === 0 ? (
