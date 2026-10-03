@@ -1694,6 +1694,7 @@ export default function App() {
   }, [records, membershipLatestByPolicy, carriersList, carrierSearch]);
   const selectedCarrierRecords = useMemo(() => records.filter((r) => r.carrier === selectedCarrier), [records, selectedCarrier]);
   const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords, agentLookupMaps]);
+  const [carrierAgentsShowAll, setCarrierAgentsShowAll] = useState(false);
 
   const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
   const [confirmMergeCarrier, setConfirmMergeCarrier] = useState(false);
@@ -3316,8 +3317,13 @@ export default function App() {
                     </div>
 
                     <div>
-                      <div className="pt-mini-label">By agent</div>
-                      {selectedCarrierByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span></div>)}
+                      <div className="pt-mini-label">By agent {carrierAgentsShowAll ? `(all ${selectedCarrierByAgent.length})` : selectedCarrierByAgent.length > 5 ? "(top 5)" : ""}</div>
+                      {(carrierAgentsShowAll ? selectedCarrierByAgent : selectedCarrierByAgent.slice(0, 5)).map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span></div>)}
+                      {selectedCarrierByAgent.length > 5 && (
+                        <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={() => setCarrierAgentsShowAll(!carrierAgentsShowAll)}>
+                          {carrierAgentsShowAll ? "Show top 5 only" : `View all ${selectedCarrierByAgent.length} agents →`}
+                        </button>
+                      )}
                     </div>
                     <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedCarrierRecords.length})</div>
                     <div className="pt-preview-scroll">
