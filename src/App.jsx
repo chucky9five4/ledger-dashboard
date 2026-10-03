@@ -3159,9 +3159,9 @@ export default function App() {
                   )}
                 </div>
                 <div>
-                  <div className="pt-mini-label">By carrier</div>
+                  <div className="pt-mini-label">By carrier {agentSalesFilters.carrier && "(always shows all carriers \u2014 click to filter All sales below)"}</div>
                   {selectedAgentByCarrier.map((c) => (
-                    <div key={c.key} className={"pt-mini-row pt-clickable" + (agentSalesFilters.carrier === c.key ? " selected" : "")} onClick={() => setAgentSalesFilters((f) => ({ ...f, carrier: f.carrier === c.key ? "" : c.key }))}>
+                    <div key={c.key} className={"pt-mini-row pt-clickable" + (agentSalesFilters.carrier === c.key ? " selected" : "")} style={agentSalesFilters.carrier && agentSalesFilters.carrier !== c.key ? { opacity: 0.4 } : undefined} onClick={() => setAgentSalesFilters((f) => ({ ...f, carrier: f.carrier === c.key ? "" : c.key }))}>
                       <CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span>
                     </div>
                   ))}
