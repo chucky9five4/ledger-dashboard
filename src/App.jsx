@@ -3221,7 +3221,7 @@ export default function App() {
                       {selectedAgentRecordsView.length === 0 ? (
                         <tr><td colSpan={5} className="pt-hint">No rows match these filters.</td></tr>
                       ) : selectedAgentRecordsView.map((r) => (
-                        <tr key={r.id}><td>{r.clientName || "\u2014"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                        <tr key={r.id + "::" + r.carrier + "::" + (r.effectiveDate || "") + "::" + (r.paymentDate || "")}><td>{r.clientName || "\u2014"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                       ))}
                     </tbody>
                   </table>
