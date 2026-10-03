@@ -1696,10 +1696,14 @@ export default function App() {
   const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords, agentLookupMaps]);
   const [carrierAgentsShowAll, setCarrierAgentsShowAll] = useState(false);
   const [carrierDetailAgent, setCarrierDetailAgent] = useState(null);
+  const [carrierDetailAgentSearch, setCarrierDetailAgentSearch] = useState("");
   const carrierDetailAgentRecords = useMemo(() => {
     if (!carrierDetailAgent) return [];
-    return selectedCarrierRecords.filter((r) => resolveAgentName(r.agent, "", "", "") === carrierDetailAgent);
-  }, [selectedCarrierRecords, carrierDetailAgent, agentLookupMaps]);
+    const matches = selectedCarrierRecords.filter((r) => resolveAgentName(r.agent, "", "", "") === carrierDetailAgent);
+    const q = carrierDetailAgentSearch.trim().toLowerCase();
+    if (!q) return matches;
+    return matches.filter((r) => (r.clientName || "").toLowerCase().includes(q));
+  }, [selectedCarrierRecords, carrierDetailAgent, agentLookupMaps, carrierDetailAgentSearch]);
 
   const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
   const [confirmMergeCarrier, setConfirmMergeCarrier] = useState(false);
@@ -2985,12 +2989,15 @@ export default function App() {
                 <button className="pt-btn ghost small" onClick={() => setCarrierDetailAgent(null)}><X size={14} /></button>
               </div>
               <p className="pt-hint" style={{ marginBottom: 12 }}>{carrierDetailAgentRecords.length} transaction(s).</p>
+              <input className="pt-search" style={{ marginBottom: 12 }} placeholder="Search by client name…" value={carrierDetailAgentSearch} onChange={(e) => setCarrierDetailAgentSearch(e.target.value)} />
               <div className="pt-preview-scroll">
                 <table className="pt-table">
-                  <thead><tr><th>Product</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                  <thead><tr><th>Client</th><th>Effective date</th><th>Status</th><th className="num">Amount</th></tr></thead>
                   <tbody>
-                    {carrierDetailAgentRecords.map((r) => (
-                      <tr key={r.id}><td>{r.product}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                    {carrierDetailAgentRecords.length === 0 ? (
+                      <tr><td colSpan={4} className="pt-hint">No matching transactions.</td></tr>
+                    ) : carrierDetailAgentRecords.map((r) => (
+                      <tr key={r.id}><td>{r.clientName || "—"}</td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -3347,7 +3354,7 @@ export default function App() {
                       <div className="pt-mini-label">By agent {carrierAgentsShowAll ? `(all ${selectedCarrierByAgent.length})` : selectedCarrierByAgent.length > 5 ? "(top 5)" : ""}</div>
                       <p className="pt-hint" style={{ marginBottom: 6 }}>Click an agent to see their sales for this carrier.</p>
                       {(carrierAgentsShowAll ? selectedCarrierByAgent : selectedCarrierByAgent.slice(0, 5)).map((a) => (
-                        <div key={a.key} className="pt-mini-row pt-clickable" onClick={() => setCarrierDetailAgent(a.key)}>
+                        <div key={a.key} className="pt-mini-row pt-clickable" onClick={() => { setCarrierDetailAgent(a.key); setCarrierDetailAgentSearch(""); }}>
                           <span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span>
                         </div>
                       ))}
