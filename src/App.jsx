@@ -4721,7 +4721,7 @@ const CSS = `
 .pt-preview-scroll { max-height: 320px; overflow: auto; margin-top: 4px; }
 
 .pt-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; }
-.pt-btn.primary { background: var(--gold); color: #243C80; border-color: var(--gold); }
+.pt-btn.primary { background: var(--gold); color: #FFFFFF; border-color: var(--gold); }
 .pt-btn.primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .pt-btn.ghost { background: #fff; color: var(--ink-2); border-color: var(--border); }
 .pt-btn.text { background: transparent; color: var(--muted); border: none; padding: 6px 4px; }
