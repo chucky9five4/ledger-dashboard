@@ -1695,6 +1695,11 @@ export default function App() {
   const selectedCarrierRecords = useMemo(() => records.filter((r) => r.carrier === selectedCarrier), [records, selectedCarrier]);
   const selectedCarrierByAgent = useMemo(() => groupBy(selectedCarrierRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [selectedCarrierRecords, agentLookupMaps]);
   const [carrierAgentsShowAll, setCarrierAgentsShowAll] = useState(false);
+  const [carrierDetailAgent, setCarrierDetailAgent] = useState(null);
+  const carrierDetailAgentRecords = useMemo(() => {
+    if (!carrierDetailAgent) return [];
+    return selectedCarrierRecords.filter((r) => resolveAgentName(r.agent, "", "", "") === carrierDetailAgent);
+  }, [selectedCarrierRecords, carrierDetailAgent, agentLookupMaps]);
 
   const [mergeTargetCarrier, setMergeTargetCarrier] = useState("");
   const [confirmMergeCarrier, setConfirmMergeCarrier] = useState(false);
@@ -3272,7 +3277,7 @@ export default function App() {
                     <thead><tr><th>Carrier</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                     <tbody>
                       {carrierSummary.map((c) => (
-                        <tr key={c.key} className={"pt-clickable" + (selectedCarrier === c.key ? " selected" : "")} onClick={() => setSelectedCarrier(c.key)}>
+                        <tr key={c.key} className={"pt-clickable" + (selectedCarrier === c.key ? " selected" : "")} onClick={() => { setSelectedCarrier(c.key); setCarrierDetailAgent(null); }}>
                           <td><CarrierName carrier={c.key} /></td>
                           <td className="num">{c.count}</td>
                           <td className="num mono">{<Money v={c.revenue} />}</td>
@@ -3318,24 +3323,33 @@ export default function App() {
 
                     <div>
                       <div className="pt-mini-label">By agent {carrierAgentsShowAll ? `(all ${selectedCarrierByAgent.length})` : selectedCarrierByAgent.length > 5 ? "(top 5)" : ""}</div>
-                      {(carrierAgentsShowAll ? selectedCarrierByAgent : selectedCarrierByAgent.slice(0, 5)).map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span></div>)}
+                      <p className="pt-hint" style={{ marginBottom: 6 }}>Click an agent to see their sales for this carrier.</p>
+                      {(carrierAgentsShowAll ? selectedCarrierByAgent : selectedCarrierByAgent.slice(0, 5)).map((a) => (
+                        <div key={a.key} className={"pt-mini-row pt-clickable" + (carrierDetailAgent === a.key ? " selected" : "")} onClick={() => setCarrierDetailAgent(carrierDetailAgent === a.key ? null : a.key)}>
+                          <span>{a.key}</span><span className="mono">{<Money v={a.revenue} />}</span>
+                        </div>
+                      ))}
                       {selectedCarrierByAgent.length > 5 && (
                         <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={() => setCarrierAgentsShowAll(!carrierAgentsShowAll)}>
-                          {carrierAgentsShowAll ? "Show top 5 only" : `View all ${selectedCarrierByAgent.length} agents →`}
+                          {carrierAgentsShowAll ? "Show top 5 only" : `View all ${selectedCarrierByAgent.length} agents \u2192`}
                         </button>
                       )}
                     </div>
-                    <div className="pt-mini-label" style={{ marginTop: 16 }}>All sales ({selectedCarrierRecords.length})</div>
-                    <div className="pt-preview-scroll">
-                      <table className="pt-table">
-                        <thead><tr><th>Agent</th><th>Product</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
-                        <tbody>
-                          {selectedCarrierRecords.map((r) => (
-                            <tr key={r.id}><td>{r.agent}</td><td>{r.product}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    {carrierDetailAgent && (
+                      <>
+                        <div className="pt-mini-label" style={{ marginTop: 16 }}>{carrierDetailAgent} \u2014 sales for {selectedCarrier} ({carrierDetailAgentRecords.length})</div>
+                        <div className="pt-preview-scroll">
+                          <table className="pt-table">
+                            <thead><tr><th>Product</th><th>Sale date</th><th>Status</th><th className="num">Amount</th></tr></thead>
+                            <tbody>
+                              {carrierDetailAgentRecords.map((r) => (
+                                <tr key={r.id}><td>{r.product}</td><td>{fmtDate(r.saleDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
