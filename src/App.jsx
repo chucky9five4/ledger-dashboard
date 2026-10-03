@@ -3160,7 +3160,11 @@ export default function App() {
                 </div>
                 <div>
                   <div className="pt-mini-label">By carrier</div>
-                  {selectedAgentByCarrier.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span></div>)}
+                  {selectedAgentByCarrier.map((c) => (
+                    <div key={c.key} className={"pt-mini-row pt-clickable" + (agentSalesFilters.carrier === c.key ? " selected" : "")} onClick={() => setAgentSalesFilters((f) => ({ ...f, carrier: f.carrier === c.key ? "" : c.key }))}>
+                      <CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span>
+                    </div>
+                  ))}
                 </div>
                 <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 4 }}>
                   <div className="pt-mini-label" style={{ marginTop: 0 }}>All sales ({selectedAgentRecordsView.length} of {selectedAgentRecords.length})</div>
