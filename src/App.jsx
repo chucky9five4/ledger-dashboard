@@ -63,7 +63,7 @@ function getCarrierLogo(carrierName) {
   if (s.includes("wellcare") || s.includes("well care")) return CARRIER_LOGOS.WELLCARE;
   return null;
 }
-// Renders a carrier's logo when we have one \u2014 logo only, no repeated text
+// Renders a carrier's logo when we have one — logo only, no repeated text
 // next to it. Falls back to the plain name for any carrier without a logo,
 // so nothing goes blank. Sized in em so it stays proportional to whatever
 // font-size surrounds it, and keeps the name as a hover tooltip either way.
@@ -101,7 +101,7 @@ function normalizeNameKey(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
 function flipNameOrder(name) {
-  // "Nicholas Basto" <-> "Basto, Nicholas" \u2014 carriers are inconsistent about
+  // "Nicholas Basto" <-> "Basto, Nicholas" — carriers are inconsistent about
   // which order they use, so when a direct match fails, try the other order
   // before giving up.
   const trimmed = String(name || "").trim();
@@ -120,18 +120,18 @@ function flipNameOrder(name) {
 function normalizeClientKey(s) {
   const cleaned = String(s || "").toUpperCase().replace(/[,.]/g, " ").trim();
   // Drop single-letter tokens (middle initials) so "Suarez, Maria I" matches
-  // "Maria Suarez" and "Suarez, Maria" \u2014 a real first/last name is essentially
+  // "Maria Suarez" and "Suarez, Maria" — a real first/last name is essentially
   // never just one letter, so this is safe.
   const tokens = cleaned.split(/\s+/).filter(Boolean).filter((t) => t.length > 1).sort();
   return tokens.join(" ");
 }
 const MEMBER_MAPPING_FIELDS = [
-  { key: "clientName", label: "Client name (combined \u2014 skip if using First/Last below)", required: false },
+  { key: "clientName", label: "Client name (combined — skip if using First/Last below)", required: false },
   { key: "clientFirstName", label: "Client first name (if separate columns)", required: false },
   { key: "clientLastName", label: "Client last name (if separate columns)", required: false },
   { key: "status", label: "Status (Active/Inactive/Termed)", required: true },
   { key: "agent", label: "Agent name", required: false },
-  { key: "agentNpn", label: "Agent NPN (recommended \u2014 matches regardless of name format)", required: false },
+  { key: "agentNpn", label: "Agent NPN (recommended — matches regardless of name format)", required: false },
   { key: "agentCarrierId", label: "Agent's carrier-specific ID (alternative to NPN)", required: false },
   { key: "planName", label: "Plan name", required: false },
   { key: "pbp", label: "PBP code (for carriers with unclear plan names)", required: false },
@@ -177,7 +177,7 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
   if (raw === "F") return "First Year";
   if (raw === "R") return "Renewal";
   const lower = raw.toLowerCase().replace(/-/g, " ");
-  // Check Renewal first \u2014 protects "Renewal"/"Renewal Chargeback" from ever being
+  // Check Renewal first — protects "Renewal"/"Renewal Chargeback" from ever being
   // mistaken for First Year, even though "reNEWal" contains "new" as a substring.
   // ACA/PMPM is a real override: these carriers pay residual-style even in year
   // one, so this must win regardless of what the date comparison would say.
@@ -200,7 +200,7 @@ function classifyCommissionCategory(commissionType, effectiveDate, paymentDate) 
     const payYear = paymentDate.slice(0, 4);
     if (effYear && payYear) {
       // Paid at or before the effective year covers same-year AND AEP-style early
-      // payments (e.g. paid Nov 2025 for a Jan 2026 effective date) \u2014 both are
+      // payments (e.g. paid Nov 2025 for a Jan 2026 effective date) — both are
       // still First Year. Only a payment in a later year than effective is a Renewal.
       if (payYear <= effYear) return "First Year";
       return "Renewal";
@@ -638,13 +638,13 @@ function fmtMoneyShort(n) {
   return sign + "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 function fmtDate(iso) {
-  if (!iso) return "\u2014";
+  if (!iso) return "—";
   const d = new Date(iso + "T00:00:00");
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 function fmtMonthLabel(ym) {
-  if (!ym) return "\u2014";
+  if (!ym) return "—";
   const d = new Date(ym + "-01T00:00:00");
   if (isNaN(d.getTime())) return ym;
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
@@ -899,7 +899,7 @@ export default function App() {
     const carrier = carrierInput.trim();
     // If a carrier splits one First Year lump-sum payment across several
     // transactions in the same month, only the first one we see for a given
-    // policy gets the lump sum \u2014 the rest are treated as already accounted
+    // policy gets the lump sum — the rest are treated as already accounted
     // for, so the total credited never exceeds one correct lump sum.
     const firstYearLumpSumSeen = new Set();
     const newRecords = rawRows.map((r, i) => {
@@ -980,7 +980,7 @@ export default function App() {
     if (cloudCfg) {
       try {
         if (rawFileObject) {
-          try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+          try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet — import still proceeds */ }
         }
         const inserted = await sbFetch(cloudCfg, "policies", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(newRecords.map(toSnakeRow)) });
         setRecords((prev) => [...prev, ...(inserted || []).map(toCamelRow)]);
@@ -1016,7 +1016,7 @@ export default function App() {
     const payableAppliedCount = newRecords.filter((r) => r.payableRuleId).length;
     const payableNote = payableAppliedCount > 0 ? ` ${payableAppliedCount} row(s) had agent payable rules applied.` : "";
     if (cloudCfg && newAgentsInBatch.length > 0) {
-      showToast(`Imported ${newRecords.length} rows from ${carrier} \u2014 ${newAgentsInBatch.length} agent name(s) need review.${payableNote}`, "success");
+      showToast(`Imported ${newRecords.length} rows from ${carrier} — ${newAgentsInBatch.length} agent name(s) need review.${payableNote}`, "success");
       setView("directory");
       setDirectoryTab("unmatched");
     } else {
@@ -1040,7 +1040,7 @@ export default function App() {
   }
 
   // For carriers that don't provide term dates (e.g. Humana residuals after a
-  // hierarchy change) \u2014 compares this new statement-month against the most
+  // hierarchy change) — compares this new statement-month against the most
   // recent prior one for the same carrier, and marks anyone who was there
   // before but is missing now as termed on the last day of that prior month.
   async function commitMembershipImport() {
@@ -1059,7 +1059,7 @@ export default function App() {
         carrier: rowCarrier,
         clientName: rowClientName,
         // No status column just means this is a clean, already-active-only
-        // roster \u2014 default to Active rather than blocking the upload.
+        // roster — default to Active rather than blocking the upload.
         status: memberMapping.status ? normalizeStatus(r[memberMapping.status]) : "Active",
         agent: override ? override.agentName : resolvedAgent,
         planName: memberMapping.planName ? String(r[memberMapping.planName] ?? "").trim() : "",
@@ -1070,7 +1070,7 @@ export default function App() {
     }).filter((r) => r.clientName);
 
     // A file can list the same person more than once (different products,
-    // split payments) \u2014 collapse to one row per client, since this is a
+    // split payments) — collapse to one row per client, since this is a
     // roster of who's currently active, not per-policy detail.
     const seen = new Set();
     const before = memberRows.length;
@@ -1082,7 +1082,7 @@ export default function App() {
     });
     const dedupedCount = before - memberRows.length;
 
-    if (!cloudCfg) { showToast("Connect your database first \u2014 membership imports need somewhere to store the status history.", "error"); return; }
+    if (!cloudCfg) { showToast("Connect your database first — membership imports need somewhere to store the status history.", "error"); return; }
     setImporting(true);
     try {
       await saveMembershipBatch(carrier, memberRows, dedupedCount, sourceLabel.trim());
@@ -1101,7 +1101,7 @@ export default function App() {
     const batchEntry = { id: batchId, carrier, fileName, uploadedAt: new Date().toISOString(), rowCount: memberRows.length, batchType: "membership", sourceLabel: sourceLabelArg || "" };
 
     if (rawFileObject) {
-      try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+      try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + fileName, rawFileObject); } catch (e) { /* storage not set up yet — import still proceeds */ }
     }
     // Insert the raw rows in chunks (safer than one giant request for large files).
     const toInsertSnake = memberRows.map((r) => ({
@@ -1111,7 +1111,7 @@ export default function App() {
     }));
     const insertChunks = chunkArray(toInsertSnake, 500);
     for (let i = 0; i < insertChunks.length; i++) {
-      setImportProgress(`Saving records \u2014 ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}\u2026`);
+      setImportProgress(`Saving records — ${Math.min((i + 1) * 500, toInsertSnake.length)} of ${toInsertSnake.length}…`);
       await sbFetch(cloudCfg, "membership_updates", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(insertChunks[i]) });
     }
     const newRecords = memberRows.map((r) => ({ carrier: r.carrier, clientName: r.clientName, status: r.status, agent: r.agent, planName: r.planName, pbp: r.pbp, effectiveDate: r.effectiveDate, termDate: r.termDate, uploadBatchId: batchId, sourceLabel: sourceLabelArg || "", importedAt: new Date().toISOString() }));
@@ -1125,7 +1125,7 @@ export default function App() {
 
     {
       // Group matching clients by carrier + status, then update each group in
-      // one request (chunked) instead of one request per client \u2014 this is
+      // one request (chunked) instead of one request per client — this is
       // the part that used to take thousands of round-trips for a big file.
       const groups = {};
       let updatedCount = 0;
@@ -1145,7 +1145,7 @@ export default function App() {
           const names = Array.from(groups[grpCarrier][grpStatus]);
           const nameChunks = chunkArray(names, 100);
           for (let ci = 0; ci < nameChunks.length; ci++) {
-            setImportProgress(`Updating policy statuses \u2014 ${grpCarrier} (${grpStatus})\u2026`);
+            setImportProgress(`Updating policy statuses — ${grpCarrier} (${grpStatus})…`);
             const filterValue = pgInList(nameChunks[ci]);
             const url = `policies?carrier=eq.${encodeURIComponent(grpCarrier)}&client_name=${encodeURIComponent(filterValue)}`;
             await sbFetch(cloudCfg, url, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: grpStatus }) });
@@ -1160,7 +1160,7 @@ export default function App() {
           return statusByKey[key] ? { ...rec, status: statusByKey[key] } : rec;
         }));
       }
-      showToast(`Imported ${memberRows.length} membership records from ${carrier} \u2014 ${updatedCount} policy row(s) updated.`);
+      showToast(`Imported ${memberRows.length} membership records from ${carrier} — ${updatedCount} policy row(s) updated.`);
     }
   }
 
@@ -1210,7 +1210,7 @@ export default function App() {
         await sbFetch(cloudCfg, `upload_batches?id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
         setBatches((prev) => prev.filter((b) => b.id !== batchId));
         if (isPayableRule || isPayableCorrection) {
-          showToast("Upload removed \u2014 every affected record restored to its original amount.");
+          showToast("Upload removed — every affected record restored to its original amount.");
           await loadFromCloud(cloudCfg);
         } else {
           showToast(isMembership ? "Membership import removed. Note: status changes it already applied to policies aren't automatically reverted." : "Import removed.");
@@ -1248,7 +1248,7 @@ export default function App() {
   const [confirmClearProduction, setConfirmClearProduction] = useState(false);
   const [clearingProduction, setClearingProduction] = useState(false);
   async function clearAllProductionData() {
-    // Scoped strictly to production/membership tables \u2014 never touches
+    // Scoped strictly to production/membership tables — never touches
     // commission data, agent payables, marketing budget, or anything else.
     if (!cloudCfg) { showToast("Connect your database first.", "error"); return; }
     setClearingProduction(true);
@@ -1261,7 +1261,7 @@ export default function App() {
       setMembershipRecords([]);
       setBatches((prev) => prev.filter((b) => b.batchType !== "membership"));
       setMembershipOverrides([]);
-      showToast("All production/membership data cleared \u2014 commission data, agent payables, and everything else is untouched.");
+      showToast("All production/membership data cleared — commission data, agent payables, and everything else is untouched.");
     } catch (e) { showToast("Could not clear production data: " + e.message, "error"); }
     setClearingProduction(false);
     setConfirmClearProduction(false);
@@ -1350,7 +1350,7 @@ export default function App() {
       setRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
       setMembershipRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
       await loadDirectory(cloudCfg);
-      showToast(isBlank ? `Fixed \u2014 blank agents assigned to ${canonicalName}.` : `Linked "${rawName}" to ${canonicalName}.`);
+      showToast(isBlank ? `Fixed — blank agents assigned to ${canonicalName}.` : `Linked "${rawName}" to ${canonicalName}.`);
     } catch (e) { showToast("Could not link: " + e.message, "error"); }
   }
   async function createAgentFromRawName(rawName) {
@@ -1362,7 +1362,7 @@ export default function App() {
 
       // Catch up any sibling spellings already sitting in the data (e.g. an
       // ALL-CAPS variant of the same name) so they get relabeled too, not
-      // just silently marked "known" without their records being fixed \u2014
+      // just silently marked "known" without their records being fixed —
       // checked across both commission and production data.
       const targetKey = normalizeNameKey(rawName);
       const siblingCommNames = [...new Set(records.map((r) => r.agent))].filter((n) => n !== rawName && normalizeNameKey(n) === targetKey);
@@ -1395,7 +1395,7 @@ export default function App() {
       .map((n) => {
         const commRecs = records.filter((r) => (r.agent ?? "") === n);
         const prodRecs = membershipRecords.filter((r) => (r.agent ?? "") === n);
-        return { name: n === "" ? "(blank \u2014 matching failed with no fallback name)" : n, rawName: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
+        return { name: n === "" ? "(blank — matching failed with no fallback name)" : n, rawName: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
       })
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipRecords, agentLookupMaps]);
@@ -1494,7 +1494,7 @@ export default function App() {
   }, [filteredRecords, membershipRecords, filterCarrier, filterAgent]);
   const activeAgentCount = new Set(filteredRecords.map((r) => resolveAgentName(r.agent, "", "", ""))).size;
 
-  // The latest imported row per policy \u2014 same client + same carrier + same
+  // The latest imported row per policy — same client + same carrier + same
   // effective date collapses to one, no matter how many times it's shown up
   // across imports. A different effective date under the same carrier is a
   // real, separate policy (e.g. they switched plans).
@@ -1516,7 +1516,7 @@ export default function App() {
   const activePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "active").length, [filteredMembershipLatest]);
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   // Simple model: for each carrier, only the most recently uploaded production
-  // batch counts as "current." No date math, no term dates \u2014 you clean the
+  // batch counts as "current." No date math, no term dates — you clean the
   // data to only include active clients before uploading, and the system just
   // shows whatever's in that latest file.
   const batchById = useMemo(() => {
@@ -1524,12 +1524,12 @@ export default function App() {
     batches.forEach((b) => { map[b.id] = b; });
     return map;
   }, [batches]);
-  // "Latest" is tracked per (carrier + source) pair, not just per carrier \u2014
+  // "Latest" is tracked per (carrier + source) pair, not just per carrier —
   // a carrier can have multiple independent feeds (e.g. Humana direct from
   // Carepoint, plus Humana via a commission-as-production upload from an old
   // upline) that should add together, not overwrite each other. Only a NEW
   // upload from the SAME source replaces the previous one from that source.
-  // Always "as of right now" \u2014 not tied to the Paid From/To filter, since
+  // Always "as of right now" — not tied to the Paid From/To filter, since
   // that filter is based on payment dates in commission data, and production
   // data has no comparable date to filter by. Always shows the latest.
   const latestBatchIdByCarrierSource = useMemo(() => {
@@ -1551,7 +1551,7 @@ export default function App() {
         (filterCarrier === "All" || r.carrier === filterCarrier) &&
         (filterAgent === "All" || (r.agent && normalizeClientKey(r.agent) === normalizeClientKey(filterAgent))) &&
         // Effective date filtering, only when the range is set AND this row
-        // actually has an effective date to check \u2014 rows without one (an
+        // actually has an effective date to check — rows without one (an
         // optional field) stay unaffected rather than getting dropped.
         (!(dateFrom && dateTo) || !r.effectiveDate || (r.effectiveDate >= dateFrom && r.effectiveDate <= dateTo));
     });
@@ -1581,17 +1581,17 @@ export default function App() {
     return `${m}/${d}`;
   }
   const commissionPeriodLabel = useMemo(() => {
-    if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}`;
+    if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}–${fmtMonthDay(dateTo)}`;
     return "Total";
   }, [dateFrom, dateTo]);
-  const asOfTodayLabel = (dateFrom && dateTo) ? `Eff. ${fmtMonthDay(dateFrom)}\u2013${fmtMonthDay(dateTo)}` : "As of today";
+  const asOfTodayLabel = (dateFrom && dateTo) ? `Eff. ${fmtMonthDay(dateFrom)}–${fmtMonthDay(dateTo)}` : "As of today";
   const allTimeLabel = "All time";
   const membershipDrillDownData = useMemo(() => {
     if (!membershipDrillDown) return null;
-    if (membershipDrillDown.type === "total") return { title: `Active members \u2014 ${asOfTodayLabel}`, rows: activeMembersList };
+    if (membershipDrillDown.type === "total") return { title: `Active members — ${asOfTodayLabel}`, rows: activeMembersList };
     if (membershipDrillDown.type === "agent") {
       const rows = activeMembersList.filter((r) => resolveAgentName(r.agent, "", "", "") === membershipDrillDown.agentName);
-      return { title: `${membershipDrillDown.agentName} \u2014 active members`, rows };
+      return { title: `${membershipDrillDown.agentName} — active members`, rows };
     }
     return null;
   }, [membershipDrillDown, activeMembersList, asOfTodayLabel]);
@@ -1743,7 +1743,7 @@ export default function App() {
     return records.filter((r) => r.clientName && r.clientName.toLowerCase().includes(q));
   }, [records, clientSearch]);
 
-  // ---------- CLIENT 360 PROFILE (additive \u2014 safe to remove entirely if this
+  // ---------- CLIENT 360 PROFILE (additive — safe to remove entirely if this
   // doesn't work out; nothing above or below this depends on it) ----------
   const [clientProfileKey, setClientProfileKey] = useState(null);
   const clientSuggestions = useMemo(() => {
@@ -1768,7 +1768,7 @@ export default function App() {
     return clientProfileRecords.filter((r) => r.paymentDate && new Date(r.paymentDate).getFullYear() === currentYear).reduce((s, r) => s + r.commissionAmount, 0);
   }, [clientProfileRecords]);
   const clientProfileDisplayName = clientProfileRecords[0]?.clientName || "";
-  // One row per actual policy, not per transaction \u2014 same carrier + same
+  // One row per actual policy, not per transaction — same carrier + same
   // effective date is one enrollment, even if it shows up as several monthly
   // commission payments. Revenue is the sum across all of them; status and
   // paid date come from whichever payment is most recent.
@@ -1818,7 +1818,7 @@ export default function App() {
   }
 
   // Production/membership data has no dollar amount at all, so fixing a wrong
-  // agent here is simpler than commissions \u2014 just the agent field itself,
+  // agent here is simpler than commissions — just the agent field itself,
   // no rules, no tracking, completely separate from the commission side above.
   const membershipMatches = useMemo(() => {
     if (clientSearch.trim().length < 2) return [];
@@ -1876,7 +1876,7 @@ export default function App() {
     const matches = membershipRecords.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.effectiveDate === effectiveDate);
     if (matches.length) {
       // Update using however the name is ACTUALLY spelled in the database
-      // (which may include a middle initial, different word order, etc.) \u2014
+      // (which may include a middle initial, different word order, etc.) —
       // not the raw typed name, since an exact-match filter on the typed
       // name can silently update zero rows if the real spelling differs.
       const actualNames = [...new Set(matches.map((r) => r.clientName))];
@@ -1898,7 +1898,7 @@ export default function App() {
     try {
       const count = await createMembershipOverrideAndApply(cloudCfg, overrideCarrier.trim(), overrideClientName.trim(), overrideAgentName.trim(), overrideEffectiveDate);
       await loadFromCloud(cloudCfg);
-      showToast(`Override added \u2014 corrected ${count} existing production record(s). Future imports for this client + date will be corrected automatically too.`);
+      showToast(`Override added — corrected ${count} existing production record(s). Future imports for this client + date will be corrected automatically too.`);
       setOverrideCarrier(""); setOverrideClientName(""); setOverrideAgentName(""); setOverrideEffectiveDate("");
     } catch (e) { showToast("Could not add override: " + e.message, "error"); }
     setAddingOverride(false);
@@ -1913,12 +1913,12 @@ export default function App() {
   }
   async function deleteMembershipOverride(id) {
     // Unlike commission rules, there's no dollar amount to revert here, and no
-    // record of the original wrong agent \u2014 deleting just stops the rule from
+    // record of the original wrong agent — deleting just stops the rule from
     // applying to anything imported from now on.
     if (!cloudCfg) return;
     try {
       await sbFetch(cloudCfg, `membership_agent_overrides?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      showToast("Override removed. Records already corrected are not reverted \u2014 there's no dollar amount here, and no stored record of the original agent to go back to.");
+      showToast("Override removed. Records already corrected are not reverted — there's no dollar amount here, and no stored record of the original agent to go back to.");
       await loadFromCloud(cloudCfg);
     } catch (e) { showToast("Could not remove: " + e.message, "error"); }
   }
@@ -2009,7 +2009,7 @@ export default function App() {
           if (wrongAgent && wrongAgent === agentName) { alreadyCorrectCount++; continue; }
         }
         if (!carrier || !clientName || !effDate || !agentName) { skipCount++; continue; }
-        setOvProgress(`Applying override ${i + 1} of ${ovRows.length} \u2014 ${clientName}\u2026`);
+        setOvProgress(`Applying override ${i + 1} of ${ovRows.length} — ${clientName}…`);
         try {
           const matchCount = await createMembershipOverrideAndApply(cloudCfg, carrier, clientName, agentName, effDate, batchId);
           totalMatches += matchCount;
@@ -2017,7 +2017,7 @@ export default function App() {
         } catch (e) { skipCount++; }
       }
       await loadFromCloud(cloudCfg);
-      showToast(`Added ${successCount} override(s), correcting ${totalMatches} production record(s) total.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Added ${successCount} override(s), correcting ${totalMatches} production record(s) total.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent — skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetOverrideImport();
     } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
     setOvImporting(false);
@@ -2040,7 +2040,7 @@ export default function App() {
   // every sale where a given agent is on record for a given carrier, not tied to
   // one client or one effective date. Renewal is a flat amount per transaction,
   // same as before. First Year is a lump sum: months remaining in the calendar
-  // year (from the effective date) times a per-month rate \u2014 and when a Term
+  // year (from the effective date) times a per-month rate — and when a Term
   // Date shows up, that's read as a disenrollment and reversed the same way the
   // agency's own chargeback is prorated (or fully reversed if within 3 months).
   const [agentCompRules, setAgentCompRules] = useState([]);
@@ -2062,10 +2062,10 @@ export default function App() {
         const unusedMonths = used <= 3 ? totalMonths : Math.max(0, totalMonths - used);
         return -(unusedMonths * compRule.firstYearAmountPerMonth);
       }
-      if (rawAmount < 0) return 0; // a negative First Year row with no Term Date can't be safely calculated \u2014 skip rather than guess
+      if (rawAmount < 0) return 0; // a negative First Year row with no Term Date can't be safely calculated — skip rather than guess
       return totalMonths * compRule.firstYearAmountPerMonth;
     }
-    return 0; // Unclassified \u2014 don't guess
+    return 0; // Unclassified — don't guess
   }
 
   const [payableClientName, setPayableClientName] = useState("");
@@ -2079,7 +2079,7 @@ export default function App() {
   async function createPayableRuleAndApply(cfg, carrier, clientName, agentNameRaw, amt, effectiveDate, batchId, totalAmount) {
     const agentName = resolveAgentName(agentNameRaw, "", "", "");
     // If a rule already exists for this exact carrier + client + effective
-    // date, replace it outright rather than leaving two rules around \u2014
+    // date, replace it outright rather than leaving two rules around —
     // otherwise a future import could pick up whichever one happens to be
     // found first, which is confusing and unpredictable.
     const priorRule = findPayableRule(carrier, clientName, effectiveDate);
@@ -2089,16 +2089,16 @@ export default function App() {
     const inserted = await sbFetch(cfg, "agent_payable_rules", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ carrier, client_name: clientName, agent_name: agentName, amount_per_transaction: amt, effective_date: effectiveDate, bulk_batch_id: batchId || null }]) });
     const rule = inserted[0];
     // Retroactively adjust every existing matching record (payments AND
-    // chargebacks) at this exact effective date \u2014 if this client already has
+    // chargebacks) at this exact effective date — if this client already has
     // records under a different (newer) effective date, those are a separate
     // enrollment and must not be touched. This corrects both the dollar
-    // amount AND the agent field \u2014 establishing the true agent here is what
+    // amount AND the agent field — establishing the true agent here is what
     // reassigns every one of this client's records under this rule.
     const key = normalizeClientKey(clientName);
     const matches = records.filter((r) => r.carrier === carrier && normalizeClientKey(r.clientName) === key && r.commissionAmount !== 0 && r.effectiveDate === effectiveDate);
     // Always undo every existing rule-based deduction on these records first,
     // no matter what kind of rule created it (a permanent agent-comp rule, or
-    // an earlier client-specific rule from a prior import) \u2014 so re-running
+    // an earlier client-specific rule from a prior import) — so re-running
     // this always starts from the true original carrier-paid amount instead
     // of stacking a new deduction on top of an old one.
     const priorEntriesByPolicy = {};
@@ -2114,7 +2114,7 @@ export default function App() {
       const priorTotal = (priorEntriesByPolicy[rec.id] || []).reduce((s, l) => s + l.amount, 0);
       const reconstructedRaw = rec.commissionAmount + priorTotal;
       // If you told us the true total that came in for this transaction,
-      // trust that over the reconstructed value \u2014 it's the carrier's own
+      // trust that over the reconstructed value — it's the carrier's own
       // number, and catches any drift from a previously misapplied rule.
       const trueRawAmount = (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") ? (reconstructedRaw >= 0 ? Math.abs(Number(totalAmount)) : -Math.abs(Number(totalAmount))) : reconstructedRaw;
       const direction = trueRawAmount >= 0 ? 1 : -1;
@@ -2141,7 +2141,7 @@ export default function App() {
     const rule = inserted[0];
     const compRule = { renewalAmount, firstYearAmountPerMonth };
     const agentKey = normalizeNameKey(agentName);
-    // Skip anything already covered by a specific client rule \u2014 that one always
+    // Skip anything already covered by a specific client rule — that one always
     // wins, so this permanent rule only fills in the rest.
     const matches = records.filter((r) => {
       if (r.carrier !== carrier || normalizeNameKey(r.agent) !== agentKey || r.commissionAmount === 0) return false;
@@ -2204,7 +2204,7 @@ export default function App() {
       const firstYearAmt = Number(compFirstYearAmount);
       const count = await createAgentCompRuleAndApply(cloudCfg, compCarrier.trim(), compAgentName.trim(), renewalAmt, firstYearAmt);
       await loadFromCloud(cloudCfg);
-      showToast(`Compensation rule added for ${compAgentName.trim()} on ${compCarrier.trim()} \u2014 corrected ${count} existing record(s).`);
+      showToast(`Compensation rule added for ${compAgentName.trim()} on ${compCarrier.trim()} — corrected ${count} existing record(s).`);
       setCompCarrier(""); setCompAgentName(""); setCompRenewalAmount(""); setCompFirstYearAmount("");
     } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
     setAddingCompRule(false);
@@ -2238,14 +2238,14 @@ export default function App() {
   const [clearAllProgress, setClearAllProgress] = useState("");
   async function clearAllLedgerDirectly() {
     // Works directly off every row in agent_payable_ledger, regardless of
-    // whether its rule still exists \u2014 catches orphaned tracking entries left
+    // whether its rule still exists — catches orphaned tracking entries left
     // behind from a rule that was already deleted, which the rule-based
     // buttons can't reach since they look up entries by rule_id.
     if (!cloudCfg) return;
     setClearingAllLedger(true);
     try {
       const entries = payableLedger;
-      await revertLedgerEntries(cloudCfg, entries, (done, total) => setClearAllProgress(`Restoring ${done} of ${total}\u2026`));
+      await revertLedgerEntries(cloudCfg, entries, (done, total) => setClearAllProgress(`Restoring ${done} of ${total}…`));
       await sbFetch(cloudCfg, "agent_payable_ledger?id=neq.00000000-0000-0000-0000-000000000000", { method: "DELETE", headers: { Prefer: "return=minimal" } });
       showToast(`Restored ${entries.length} record(s) to their original amount and cleared all tracking. Agent Payables should now be empty.`);
       setConfirmClearAllLedger(false);
@@ -2257,7 +2257,7 @@ export default function App() {
 
 
   async function clearCompRuleHistory(ruleId, isAgentComp) {
-    // Deletes only the "owed" tracking entries \u2014 the dollar corrections on
+    // Deletes only the "owed" tracking entries — the dollar corrections on
     // the actual commission records are left completely untouched, and the
     // rule itself stays active, so future imports keep matching and tracking
     // normally. Use this when the historical amount owed has already been
@@ -2279,8 +2279,8 @@ export default function App() {
   async function undoDoubleDeduction(ruleId) {
     // For when data was manually pre-corrected before upload, but the rule
     // was active and deducted again on top of it. Puts the dollar amount back
-    // to exactly what was uploaded, clears the tracking, but \u2014 unlike
-    // deleting the rule \u2014 keeps it alive and active so it correctly applies
+    // to exactly what was uploaded, clears the tracking, but — unlike
+    // deleting the rule — keeps it alive and active so it correctly applies
     // to future, un-adjusted imports.
     if (!cloudCfg) return;
     setUndoingDoubleDeductionId(ruleId);
@@ -2303,7 +2303,7 @@ export default function App() {
       const totalAmt = payableTotalAmount ? Number(payableTotalAmount) : undefined;
       const matchCount = await createPayableRuleAndApply(cloudCfg, payableCarrier.trim(), payableClientName.trim(), payableAgentName.trim(), amt, payableEffectiveDate, undefined, totalAmt);
       await loadFromCloud(cloudCfg);
-      showToast(`Rule added for effective date ${payableEffectiveDate} \u2014 corrected ${matchCount} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
+      showToast(`Rule added for effective date ${payableEffectiveDate} — corrected ${matchCount} existing record(s), $${amt} each now tracked as owed to ${payableAgentName.trim()}.`);
       setPayableClientName(""); setPayableCarrier(""); setPayableAgentName(""); setPayableAmount(""); setPayableTotalAmount(""); setPayableEffectiveDate("");
     } catch (e) { showToast("Could not add rule: " + e.message, "error"); }
     setAddingPayableRule(false);
@@ -2413,7 +2413,7 @@ export default function App() {
         const effDate = parseDateValue(r[correctEffDateCol]);
         const amt = parseMoney(r[correctAmountCol]);
         if (!carrier || !clientName || !effDate || !(amt > 0)) { skipCount++; continue; }
-        setCorrectProgress(`Correcting ${i + 1} of ${correctRows.length} \u2014 ${clientName}\u2026`);
+        setCorrectProgress(`Correcting ${i + 1} of ${correctRows.length} — ${clientName}…`);
         const key = normalizeClientKey(clientName);
         const matches = records.filter((rec) => rec.carrier === carrier && normalizeClientKey(rec.clientName) === key && rec.commissionAmount !== 0 && rec.effectiveDate === effDate);
         await Promise.all(matches.map((rec) => {
@@ -2422,7 +2422,7 @@ export default function App() {
           const newAmount = rec.commissionAmount - changeAmount;
           // Logged so it can be found and reverted via Manage Data, but tagged
           // one_time_correction so it never shows up in any "owed to agent"
-          // report \u2014 exactly what was asked for: fix the number, track nothing.
+          // report — exactly what was asked for: fix the number, track nothing.
           ledgerToInsert.push({ rule_id: null, batch_id: batchId, source_type: "one_time_correction", carrier: rec.carrier, client_name: rec.clientName, agent_name: "", amount: changeAmount, policy_id: rec.id, transaction_date: rec.paymentDate || rec.effectiveDate || null, paid: false });
           recordsFixed++;
           return sbFetch(cloudCfg, `policies?id=eq.${rec.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ commission_amount: newAmount }) });
@@ -2433,7 +2433,7 @@ export default function App() {
         await sbFetch(cloudCfg, "agent_payable_ledger", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(ledgerToInsert) });
       }
       await loadFromCloud(cloudCfg);
-      showToast(`Corrected ${recordsFixed} record(s) across ${rowsProcessed} client(s). Nothing shows as owed anywhere \u2014 find this upload in Manage Data if you ever need to delete/revert it.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Corrected ${recordsFixed} record(s) across ${rowsProcessed} client(s). Nothing shows as owed anywhere — find this upload in Manage Data if you ever need to delete/revert it.${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetCorrectImport();
     } catch (e) { showToast("Correction failed: " + e.message, "error"); }
     setCorrecting(false);
@@ -2449,7 +2449,7 @@ export default function App() {
     try {
       const batchEntry = { id: batchId, carrier: carrierLabel, fileName: payFileName, uploadedAt: new Date().toISOString(), rowCount: payRows.length, batchType: "payable_rule" };
       if (payRawFileObject) {
-        try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + payFileName, payRawFileObject); } catch (e) { /* storage not set up yet \u2014 import still proceeds */ }
+        try { batchEntry.storagePath = await sbUploadFile(cloudCfg, batchId + "/" + payFileName, payRawFileObject); } catch (e) { /* storage not set up yet — import still proceeds */ }
       }
       await sbFetch(cloudCfg, "upload_batches", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ id: batchId, carrier: carrierLabel, file_name: payFileName, uploaded_at: batchEntry.uploadedAt, row_count: payRows.length, batch_type: "payable_rule", storage_path: batchEntry.storagePath || null }]) });
       setBatches((prev) => [...prev, batchEntry]);
@@ -2463,13 +2463,13 @@ export default function App() {
         const amt = parseMoney(r[payAmountCol]);
         const totalAmt = payTotalAmountCol ? parseMoney(r[payTotalAmountCol]) : undefined;
         // If a "wrong agent" column is mapped, skip any row where it already
-        // matches the true agent \u2014 that row doesn't need a correction at all.
+        // matches the true agent — that row doesn't need a correction at all.
         if (payWrongAgentCol) {
           const wrongAgent = String(r[payWrongAgentCol] ?? "").trim();
           if (wrongAgent && wrongAgent === agentName) { alreadyCorrectCount++; continue; }
         }
         if (!carrier || !clientName || !effDate || !agentName || !(amt > 0)) { skipCount++; continue; }
-        setPayImportProgress(`Applying rule ${i + 1} of ${payRows.length} \u2014 ${clientName}\u2026`);
+        setPayImportProgress(`Applying rule ${i + 1} of ${payRows.length} — ${clientName}…`);
         try {
           const matchCount = await createPayableRuleAndApply(cloudCfg, carrier, clientName, agentName, amt, effDate, batchId, totalAmt);
           totalMatches += matchCount;
@@ -2477,7 +2477,7 @@ export default function App() {
         } catch (e) { skipCount++; }
       }
       await loadFromCloud(cloudCfg);
-      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total. Find this upload in Manage Data if you need to delete it.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent \u2014 skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
+      showToast(`Added ${successCount} rule(s), correcting ${totalMatches} record(s) total. Find this upload in Manage Data if you need to delete it.${alreadyCorrectCount ? ` ${alreadyCorrectCount} row(s) already had the correct agent — skipped.` : ""}${skipCount ? ` ${skipCount} row(s) skipped (missing data).` : ""}`);
       resetPayableImport();
     } catch (e) { showToast("Bulk import failed: " + e.message, "error"); }
     setPayImporting(false);
@@ -2486,7 +2486,7 @@ export default function App() {
 
   async function revertLedgerEntries(cfg, ledgerEntries, onProgress) {
     // Undo each correction by adding the ledger amount back onto the current
-    // stored commission amount \u2014 this is the exact inverse of what
+    // stored commission amount — this is the exact inverse of what
     // createPayableRuleAndApply did (which subtracted it). Runs in parallel
     // batches instead of one request at a time, since sequential requests for
     // a few hundred records could otherwise take minutes.
@@ -2577,7 +2577,7 @@ export default function App() {
     try {
       await sbFetch(cloudCfg, `agent_payable_rules?id=eq.${ruleId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: !currentlyActive }) });
       setPayableRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, active: !currentlyActive } : r)));
-      showToast(currentlyActive ? "Rule paused \u2014 future imports for this client won't be adjusted anymore." : "Rule reactivated.");
+      showToast(currentlyActive ? "Rule paused — future imports for this client won't be adjusted anymore." : "Rule reactivated.");
     } catch (e) { showToast("Could not update: " + e.message, "error"); }
   }
 
@@ -2596,16 +2596,16 @@ export default function App() {
   const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
   const owedByAgentThisMonth = useMemo(() => {
     const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
-    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " \u2014 " + l.carrier);
+    const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " — " + l.carrier);
     return grouped.map((g) => {
-      const [agentName, carrier] = g.key.split(" \u2014 ");
+      const [agentName, carrier] = g.key.split(" — ");
       return { ...g, agentName, carrier };
     }).sort((a, b) => b.revenue - a.revenue);
   }, [payableLedger, payablesMonth, agentLookupMaps]);
   // Always the true grand total per agent for the selected month, regardless of
-  // the carrier filter above \u2014 so you can see "everything owed to me" even
+  // the carrier filter above — so you can see "everything owed to me" even
   // while the breakdown table is narrowed to one company. Downline agency
-  // payouts never show up here \u2014 those are a completely separate concept,
+  // payouts never show up here — those are a completely separate concept,
   // tracked exclusively under Downline Agencies, not owed to any individual.
   const totalOwedByAgentThisMonth = useMemo(() => {
     const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
@@ -2683,7 +2683,7 @@ export default function App() {
 
 
   if (loading) {
-    return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data\u2026</div>;
+    return <div className="pt-app pt-loading"><style>{CSS}</style>Loading your data…</div>;
   }
 
   const NAV = [
@@ -2775,7 +2775,7 @@ export default function App() {
                     </button>
                   )}
                 </div>
-                <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Note: Paid From/To drives commission numbers by payment date, but the same range drives Membership Growth below by <b>effective date</b> instead \u2014 production statements don't have a payment date.</p>
+                <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Note: Paid From/To drives commission numbers by payment date, but the same range drives Membership Growth below by <b>effective date</b> instead — production statements don't have a payment date.</p>
                 {filterCarrier !== "All" && getCarrierLogo(filterCarrier) && (
                   <div style={{ textAlign: "center", margin: "4px 0 20px" }}>
                     <img src={getCarrierLogo(filterCarrier)} alt={filterCarrier} title={filterCarrier} style={{ height: 64, width: "auto" }} />
@@ -2787,7 +2787,7 @@ export default function App() {
                   <div className="pt-cards pt-cards-3">
                     <StatCard label="Gross revenue" value={fmtMoney(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
                     <StatCard label="Chargebacks" value={fmtMoney(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
-                    <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross \u2212 Chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross − Chargebacks" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
@@ -2800,7 +2800,7 @@ export default function App() {
                 </div>
 
                 <div className="pt-stat-section">
-                  <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">\u2014 across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
+                  <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">— across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
                   <div className="pt-cards pt-cards-3">
                     <StatCard label="Avg net" value={fmtMoney(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
                     <StatCard label="Avg first year" value={fmtMoney(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
@@ -2814,7 +2814,7 @@ export default function App() {
                     <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedCarrier(null); setView("carriers"); }} />
                     <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedAgent(null); setView("agents"); }} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: 6 }}>Active membership counts now live in Active Members below \u2014 always reflecting your most recent production upload for each carrier.</p>
+                  <p className="pt-hint" style={{ marginTop: 6 }}>Active membership counts now live in Active Members below — always reflecting your most recent production upload for each carrier.</p>
                 </div>
 
                 <div className="pt-stat-section">
@@ -2822,16 +2822,16 @@ export default function App() {
                   <div className="pt-cards pt-cards-1">
                     <StatCard label="Total active members" value={totalActiveMembers.toLocaleString()} tone="ink" period={asOfTodayLabel} onClick={() => openMembershipDrillDown({ type: "total" })} />
                   </div>
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Always uses whoever's in the most recent upload for each carrier and source. If you map an Effective Date column on import, setting a Paid From/To range narrows this to clients within your current active list whose effective date falls in that range \u2014 anyone without an effective date stays included regardless of the filter.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>From your production statements, completely separate from commission data. Always uses whoever's in the most recent upload for each carrier and source. If you map an Effective Date column on import, setting a Paid From/To range narrows this to clients within your current active list whose effective date falls in that range — anyone without an effective date stays included regardless of the filter.</p>
                 </div>
                 {unclassifiedCommissionCount > 0 && (
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal \u2014 usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{unclassifiedCommissionCount} row(s) couldn't be classified as First Year or Renewal — usually means Commission Type and Effective Date weren't both mapped on that import. Their revenue still counts in Net Revenue, just not in the First Year/Renewal split.</p>
                 )}
                 {membershipRecords.length === 0 && (
                   <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Active/Inactive policy counts will populate once you import a production/membership statement.</p>
                 )}
                 {membershipRecords.length > 0 && pendingPolicyCount > 0 && (
-                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{pendingPolicyCount} polic{pendingPolicyCount === 1 ? "y" : "ies"} in "Application Submitted" or "Cancelled" status \u2014 not counted as Active or Inactive since neither is a confirmed outcome yet.</p>
+                  <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>{pendingPolicyCount} polic{pendingPolicyCount === 1 ? "y" : "ies"} in "Application Submitted" or "Cancelled" status — not counted as Active or Inactive since neither is a confirmed outcome yet.</p>
                 )}
 
                 <div className="pt-card">
@@ -2868,7 +2868,7 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Top agents in this view</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Click a row to see that agent's active clients \u2014 from production statements only, separate from the commission data behind Revenue.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Click a row to see that agent's active clients — from production statements only, separate from the commission data behind Revenue.</p>
                   <table className="pt-table">
                     <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
                     <tbody>
@@ -2883,7 +2883,7 @@ export default function App() {
                   </table>
                   {byAgent.length > 10 && (
                     <button className="pt-btn text" style={{ marginTop: 10 }} onClick={() => setShowAllTopAgents((v) => !v)}>
-                      {showAllTopAgents ? <>\u2191 Show top 10 only</> : <>\u2193 Show all {byAgent.length} agents</>}
+                      {showAllTopAgents ? <>↑ Show top 10 only</> : <>↓ Show all {byAgent.length} agents</>}
                     </button>
                   )}
                 </div>
@@ -2899,7 +2899,7 @@ export default function App() {
                 <h3 style={{ margin: 0 }}>{membershipDrillDownData.title}</h3>
                 <button className="pt-btn ghost small" onClick={() => setMembershipDrillDown(null)}><X size={14} /></button>
               </div>
-              <p className="pt-hint" style={{ marginBottom: 12 }}>{membershipDrillDownData.rows.length} client(s) \u2014 from production statements only, respecting your current Carrier/Agent filters.</p>
+              <p className="pt-hint" style={{ marginBottom: 12 }}>{membershipDrillDownData.rows.length} client(s) — from production statements only, respecting your current Carrier/Agent filters.</p>
               <div className="pt-filters" style={{ marginBottom: 14 }}>
                 <div className="pt-filter">
                   <label>Carrier</label>
@@ -2910,7 +2910,7 @@ export default function App() {
                 </div>
                 <div className="pt-filter">
                   <label>Member name</label>
-                  <input value={drillFilterName} onChange={(e) => setDrillFilterName(e.target.value)} placeholder="Search\u2026" />
+                  <input value={drillFilterName} onChange={(e) => setDrillFilterName(e.target.value)} placeholder="Search…" />
                 </div>
                 <div className="pt-filter">
                   <label>Effective date</label>
@@ -2939,7 +2939,7 @@ export default function App() {
                         <td><CarrierName carrier={r.carrier} /></td>
                         <td>{r.planName}</td>
                         <td>{fmtDate(r.effectiveDate)}</td>
-                        <td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td>
+                        <td>{r.termDate ? fmtDate(r.termDate) : "—"}</td>
                         <td><StatusBadge status={r.status} /></td>
                       </tr>
                     ))}
@@ -2954,7 +2954,7 @@ export default function App() {
           <div className="pt-modal-backdrop" onClick={() => setShowAllCarriersChart(false)}>
             <div className="pt-modal" onClick={(e) => e.stopPropagation()}>
               <div className="pt-row-between" style={{ marginBottom: 4 }}>
-                <h3 style={{ margin: 0 }}>Revenue by carrier \u2014 all {byCarrier.length}</h3>
+                <h3 style={{ margin: 0 }}>Revenue by carrier — all {byCarrier.length}</h3>
                 <button className="pt-btn ghost small" onClick={() => setShowAllCarriersChart(false)}><X size={14} /></button>
               </div>
               <p className="pt-hint" style={{ marginBottom: 12 }}>Click any bar to see that carrier's full detail.</p>
@@ -2990,7 +2990,7 @@ export default function App() {
                 <FileSpreadsheet size={32} strokeWidth={1.3} color="#CE3334" />
                 <p className="pt-upload-title">Choose a .xlsx, .xls, or .csv file</p>
                 <p className="pt-upload-sub">
-                  {importMode === "commission" ? "Any carrier's export format works \u2014 you'll map the columns next." : "This updates active/inactive status directly on your existing policies."}
+                  {importMode === "commission" ? "Any carrier's export format works — you'll map the columns next." : "This updates active/inactive status directly on your existing policies."}
                 </p>
                 <label className="pt-btn primary" style={{ marginTop: 12 }}>
                   Choose file
@@ -3003,14 +3003,14 @@ export default function App() {
                 <div className="pt-card">
                   <div className="pt-row-between">
                     <div>
-                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {fileName} \u00b7 {rawRows.length} rows</div>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {fileName} · {rawRows.length} rows</div>
                     </div>
                     <button className="pt-btn text" onClick={resetImportStaging}><X size={14} /> Start over</button>
                   </div>
 
                   <div className="pt-field" style={{ marginTop: 16 }}>
                     <label>{carrierMode === "column" ? "Label for this import (e.g. Brighton Group)" : "Carrier"}</label>
-                    <input list="carrier-options" value={carrierInput} onChange={(e) => applyCarrierPreset(e.target.value)} placeholder="e.g. Humana, UHC, Aetna\u2026" />
+                    <input list="carrier-options" value={carrierInput} onChange={(e) => applyCarrierPreset(e.target.value)} placeholder="e.g. Humana, UHC, Aetna…" />
                     <datalist id="carrier-options">
                       {carriersList.map((c) => <option key={c} value={c} />)}
                     </datalist>
@@ -3025,7 +3025,7 @@ export default function App() {
                     </div>
                     {carrierMode === "column" && (
                       <select value={carrierColumn} onChange={(e) => setCarrierColumn(e.target.value)}>
-                        <option value="">\u2014 choose the carrier column \u2014</option>
+                        <option value="">— choose the carrier column —</option>
                         {headers.map((h) => <option key={h} value={h}>{h}</option>)}
                       </select>
                     )}
@@ -3041,7 +3041,7 @@ export default function App() {
                         <div className="pt-field" key={f.key}>
                           <label>{f.label}{f.required && " *"}</label>
                           <select value={mapping[f.key]} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}>
-                            <option value="">\u2014 not in file \u2014</option>
+                            <option value="">— not in file —</option>
                             {headers.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -3051,28 +3051,28 @@ export default function App() {
                 ) : (
                   <div className="pt-card">
                     <h3>Map your columns</h3>
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Upload a clean, current-active-only roster \u2014 whatever's in your most recent upload for a carrier is what counts as active. Status is optional; if there's no status column, everyone defaults to Active. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are recognized automatically if you do map one.</p>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Upload a clean, current-active-only roster — whatever's in your most recent upload for a carrier is what counts as active. Status is optional; if there's no status column, everyone defaults to Active. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are recognized automatically if you do map one.</p>
                     <div className="pt-mapping-grid">
                       {MEMBER_MAPPING_FIELDS.map((f) => (
                         <div className="pt-field" key={f.key}>
                           <label>{f.label}{f.required && " *"}</label>
                           <select value={memberMapping[f.key]} onChange={(e) => setMemberMapping({ ...memberMapping, [f.key]: e.target.value })}>
-                            <option value="">\u2014 not in file \u2014</option>
+                            <option value="">— not in file —</option>
                             {headers.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                       ))}
                     </div>
                     <div className="pt-plantype-block">
-                      <label>Source (optional \u2014 only needed if this carrier has more than one independent feed)</label>
-                      <p className="pt-hint" style={{ marginBottom: 8 }}>Leave blank for a normal single-source carrier. If a carrier gets data from two separate places that shouldn't overwrite each other \u2014 like Humana from both a current upline and an old one \u2014 give each one its own consistent label (e.g. "Carepoint" and "Commission"). Each source tracks its own latest upload independently, and all of them get added together for the carrier's total.</p>
+                      <label>Source (optional — only needed if this carrier has more than one independent feed)</label>
+                      <p className="pt-hint" style={{ marginBottom: 8 }}>Leave blank for a normal single-source carrier. If a carrier gets data from two separate places that shouldn't overwrite each other — like Humana from both a current upline and an old one — give each one its own consistent label (e.g. "Carepoint" and "Commission"). Each source tracks its own latest upload independently, and all of them get added together for the carrier's total.</p>
                       <input value={sourceLabel} onChange={(e) => setSourceLabel(e.target.value)} placeholder="e.g. Carepoint" style={{ maxWidth: 260 }} />
                     </div>
                   </div>
                 )}
 
                 <div className="pt-card">
-                  <h3>Preview \u2014 first 5 rows from your file</h3>
+                  <h3>Preview — first 5 rows from your file</h3>
                   <div className="pt-preview-scroll">
                     <table className="pt-table">
                       <thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead>
@@ -3089,7 +3089,7 @@ export default function App() {
                   <div className="pt-row-between">
                     <div>{!mappingValid && (
                       isAetnaImport && !mapping.termDate ? (
-                        <p className="pt-error">Map Term date to continue \u2014 required for Aetna specifically, so Charles Vazquez's commissions calculate correctly. It's what lets the system tell a full chargeback (disenrolled within 3 months) apart from a prorated one, and calculate what's owed to him correctly on First Year sales.</p>
+                        <p className="pt-error">Map Term date to continue — required for Aetna specifically, so Charles Vazquez's commissions calculate correctly. It's what lets the system tell a full chargeback (disenrolled within 3 months) apart from a prorated one, and calculate what's owed to him correctly on First Year sales.</p>
                       ) : (
                         <p className="pt-error">Set the carrier name and map agent and commission amount to continue.</p>
                       )
@@ -3102,10 +3102,10 @@ export default function App() {
                   <div className="pt-row-between">
                     <div>
                       {!memberMappingValid && <p className="pt-error">Set the carrier name, map Status, and map either Client name or both First/Last name.</p>}
-                      {importing && <p className="pt-hint">{importProgress || "Working\u2026"}</p>}
+                      {importing && <p className="pt-hint">{importProgress || "Working…"}</p>}
                     </div>
                     <button className="pt-btn primary" disabled={!memberMappingValid || importing} onClick={commitMembershipImport}>
-                      {importing ? "Importing\u2026" : `Apply ${rawRows.length} status updates`}
+                      {importing ? "Importing…" : `Apply ${rawRows.length} status updates`}
                     </button>
                   </div>
                 )}
@@ -3119,7 +3119,7 @@ export default function App() {
             <div className="pt-page-head"><div><h1>Agents</h1><p>Production by agent, across every carrier.</p></div></div>
             {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : !selectedAgent ? (
               <div className="pt-card">
-                <input className="pt-search" placeholder="Search agents\u2026" value={agentSearch} onChange={(e) => { setAgentSearch(e.target.value); setAgentListExpanded(false); setAgentListPage(0); }} />
+                <input className="pt-search" placeholder="Search agents…" value={agentSearch} onChange={(e) => { setAgentSearch(e.target.value); setAgentListExpanded(false); setAgentListPage(0); }} />
                 <table className="pt-table">
                   <thead><tr><th>Agent</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                   <tbody>
@@ -3136,7 +3136,7 @@ export default function App() {
                 </table>
                 {!agentSearch.trim() && agentSummary.length > 5 && (
                   <div style={{ marginTop: 10 }}>
-                    <button className="pt-btn ghost small" onClick={() => setAgentListExpanded(!agentListExpanded)}>{agentListExpanded ? "\u25be" : "\u25b8"} More agents ({agentSummary.length - 5})</button>
+                    <button className="pt-btn ghost small" onClick={() => setAgentListExpanded(!agentListExpanded)}>{agentListExpanded ? "▾" : "▸"} More agents ({agentSummary.length - 5})</button>
                     {agentListExpanded && (
                       <div className="pt-card" style={{ marginTop: 8, marginBottom: 0 }}>
                         <table className="pt-table">
@@ -3154,14 +3154,14 @@ export default function App() {
                         </table>
                         <div className="pt-row-between" style={{ marginTop: 10 }}>
                           <button className="pt-btn ghost small" disabled={agentListPage === 0} onClick={() => setAgentListPage((p) => Math.max(0, p - 1))}>Previous 5</button>
-                          <span className="pt-hint">{5 + agentListPage * 5 + 1}\u2013{Math.min(agentSummary.length, 5 + agentListPage * 5 + 5)} of {agentSummary.length}</span>
+                          <span className="pt-hint">{5 + agentListPage * 5 + 1}–{Math.min(agentSummary.length, 5 + agentListPage * 5 + 5)} of {agentSummary.length}</span>
                           <button className="pt-btn ghost small" disabled={5 + agentListPage * 5 + 5 >= agentSummary.length} onClick={() => setAgentListPage((p) => p + 1)}>Next 5</button>
                         </div>
                       </div>
                     )}
                   </div>
                 )}
-                <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import \u2014 it's optional, so some may show 0 even for agents with real membership.</p>
+                <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import — it's optional, so some may show 0 even for agents with real membership.</p>
               </div>
             ) : (
               <div className="pt-card">
@@ -3180,7 +3180,7 @@ export default function App() {
                   ) : (
                     <div className="pt-inline-form">
                       <select value={mergeTargetAgent} onChange={(e) => setMergeTargetAgent(e.target.value)} style={{ minWidth: 200 }}>
-                        <option value="">Merge into\u2026</option>
+                        <option value="">Merge into…</option>
                         {agentSummary.map((a) => a.key).filter((k) => k !== selectedAgent).map((k) => <option key={k} value={k}>{k}</option>)}
                       </select>
                       <button className="pt-btn ghost small" disabled={!mergeTargetAgent} onClick={() => setConfirmMergeAgent(true)}>Merge duplicate spelling</button>
@@ -3188,7 +3188,7 @@ export default function App() {
                   )}
                 </div>
                 <div>
-                  <div className="pt-mini-label">By carrier {agentSalesFilters.carrier && "(always shows all carriers \u2014 click to filter All sales below)"}</div>
+                  <div className="pt-mini-label">By carrier {agentSalesFilters.carrier && "(always shows all carriers — click to filter All sales below)"}</div>
                   {selectedAgentByCarrier.map((c) => (
                     <div key={c.key} className={"pt-mini-row pt-clickable" + (agentSalesFilters.carrier === c.key ? " selected" : "")} style={agentSalesFilters.carrier && agentSalesFilters.carrier !== c.key ? { opacity: 0.4 } : undefined} onClick={() => setAgentSalesFilters((f) => ({ ...f, carrier: f.carrier === c.key ? "" : c.key }))}>
                       <CarrierName carrier={c.key} /><span className="mono">{<Money v={c.revenue} />}</span>
@@ -3202,7 +3202,7 @@ export default function App() {
                 <div className="pt-mapping-grid" style={{ marginBottom: 10 }}>
                   <div className="pt-field">
                     <label>Member name</label>
-                    <input value={agentSalesFilters.name} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, name: e.target.value }))} placeholder="Search\u2026" />
+                    <input value={agentSalesFilters.name} onChange={(e) => setAgentSalesFilters((f) => ({ ...f, name: e.target.value }))} placeholder="Search…" />
                   </div>
                   <div className="pt-field">
                     <label>Carrier</label>
@@ -3239,18 +3239,18 @@ export default function App() {
                   <table className="pt-table">
                     <thead>
                       <tr>
-                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSort.col === "clientName" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSort.col === "carrier" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSort.col === "effectiveDate" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSort.col === "status" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
-                        <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSort.col === "amount" ? (agentSalesSort.dir === "asc" ? " \u2191" : " \u2193") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("clientName")}>Member name{agentSalesSort.col === "clientName" ? (agentSalesSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("carrier")}>Carrier{agentSalesSort.col === "carrier" ? (agentSalesSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("effectiveDate")}>Effective date{agentSalesSort.col === "effectiveDate" ? (agentSalesSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
+                        <th className="pt-clickable" onClick={() => toggleAgentSalesSort("status")}>Status{agentSalesSort.col === "status" ? (agentSalesSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
+                        <th className="num pt-clickable" onClick={() => toggleAgentSalesSort("amount")}>Amount{agentSalesSort.col === "amount" ? (agentSalesSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {selectedAgentRecordsView.length === 0 ? (
                         <tr><td colSpan={5} className="pt-hint">No rows match these filters.</td></tr>
                       ) : selectedAgentRecordsView.map((r, idx) => (
-                        <tr key={idx + "::" + r.id + "::" + r.carrier}><td>{r.clientName || "\u2014"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                        <tr key={idx + "::" + r.id + "::" + r.carrier}><td>{r.clientName || "—"}</td><td><CarrierName carrier={r.carrier} /></td><td>{fmtDate(r.effectiveDate)}</td><td><StatusBadge status={r.status} /></td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                       ))}
                     </tbody>
                   </table>
@@ -3266,7 +3266,7 @@ export default function App() {
             {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
               <div className="pt-grid-list">
                 <div className="pt-card">
-                  <input className="pt-search" placeholder="Search carriers\u2026" value={carrierSearch} onChange={(e) => setCarrierSearch(e.target.value)} />
+                  <input className="pt-search" placeholder="Search carriers…" value={carrierSearch} onChange={(e) => setCarrierSearch(e.target.value)} />
                   <table className="pt-table">
                     <thead><tr><th>Carrier</th><th className="num">Commission rows</th><th className="num">Revenue</th><th className="num">Active</th><th className="num">Inactive</th></tr></thead>
                     <tbody>
@@ -3307,7 +3307,7 @@ export default function App() {
                       ) : (
                         <div className="pt-inline-form">
                           <select value={mergeTargetCarrier} onChange={(e) => setMergeTargetCarrier(e.target.value)} style={{ minWidth: 200 }}>
-                            <option value="">Merge into\u2026</option>
+                            <option value="">Merge into…</option>
                             {carriersList.filter((c) => c !== selectedCarrier).map((c) => <option key={c} value={c}>{c}</option>)}
                           </select>
                           <button className="pt-btn ghost small" disabled={!mergeTargetCarrier} onClick={() => setConfirmMergeCarrier(true)}>Merge</button>
@@ -3345,19 +3345,19 @@ export default function App() {
               <div className="pt-card">
                 <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setClientProfileKey(null)}>Back to Client lookup</button>
                 <h3 style={{ marginBottom: 4 }}>{clientProfileDisplayName}</h3>
-                <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) \u2014 middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
+                <p className="pt-hint" style={{ marginBottom: 16 }}>{clientProfilePolicies.length} polic{clientProfilePolicies.length === 1 ? "y" : "ies"} matched on name ({clientProfileRecords.length} total payment{clientProfileRecords.length === 1 ? "" : "s"} across them) — middle initials and punctuation differences are already accounted for, so this should catch the same person across carriers even when spelled slightly differently.</p>
                 <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
                   <StatCard label="Total revenue, all time" value={fmtMoney(clientProfileTotal)} money={clientProfileTotal} />
                   <StatCard label="Total revenue, YTD" value={fmtMoney(clientProfileTotalYTD)} money={clientProfileTotalYTD} />
                   <StatCard label="Policies" value={String(clientProfilePolicies.length)} />
-                  <StatCard label={clientProfileAgents.length === 1 ? "Agent on record" : "Agents on record"} value={clientProfileAgents.length > 3 ? `${clientProfileAgents.slice(0, 2).join(", ")} +${clientProfileAgents.length - 2} more` : (clientProfileAgents.join(", ") || "\u2014")} />
+                  <StatCard label={clientProfileAgents.length === 1 ? "Agent on record" : "Agents on record"} value={clientProfileAgents.length > 3 ? `${clientProfileAgents.slice(0, 2).join(", ")} +${clientProfileAgents.length - 2} more` : (clientProfileAgents.join(", ") || "—")} />
                 </div>
                 <div className="pt-mini-label" style={{ marginTop: 16 }}>All policies ({clientProfilePolicies.length})</div>
                 <table className="pt-table">
                   <thead><tr><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Last paid</th><th>Status</th><th>Payments</th><th className="num">Total revenue</th></tr></thead>
                   <tbody>
                     {clientProfilePolicies.map((p) => (
-                      <tr key={p.key}><td>{p.agent}</td><td><CarrierName carrier={p.carrier} /></td><td>{p.effectiveDate ? fmtDate(p.effectiveDate) : "\u2014"}</td><td>{p.termDate ? fmtDate(p.termDate) : "\u2014"}</td><td>{p.latestPaidDate ? fmtDate(p.latestPaidDate) : "\u2014"}</td><td><StatusBadge status={p.status} /></td><td>{p.count}</td><td className="num mono">{<Money v={p.total} />}</td></tr>
+                      <tr key={p.key}><td>{p.agent}</td><td><CarrierName carrier={p.carrier} /></td><td>{p.effectiveDate ? fmtDate(p.effectiveDate) : "—"}</td><td>{p.termDate ? fmtDate(p.termDate) : "—"}</td><td>{p.latestPaidDate ? fmtDate(p.latestPaidDate) : "—"}</td><td><StatusBadge status={p.status} /></td><td>{p.count}</td><td className="num mono">{<Money v={p.total} />}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -3365,7 +3365,7 @@ export default function App() {
             ) : (
             <div className="pt-card">
               <div style={{ position: "relative" }}>
-                <input className="pt-search" placeholder="Search by client name\u2026 (min 2 characters)" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+                <input className="pt-search" placeholder="Search by client name… (min 2 characters)" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
                 {clientSuggestions.length > 0 && (
                   <div className="pt-card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 5, marginTop: 4, padding: 6 }}>
                     {clientSuggestions.map(([key, name]) => (
@@ -3383,7 +3383,7 @@ export default function App() {
                       <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Effective date</th><th>Term date</th><th>Paid date</th><th className="num">Amount</th></tr></thead>
                       <tbody>
                         {clientMatches.map((r) => (
-                          <tr key={r.id}><td className="pt-clickable" onClick={() => setClientProfileKey(normalizeClientKey(r.clientName))}>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "\u2014"}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "\u2014"}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
+                          <tr key={r.id}><td className="pt-clickable" onClick={() => setClientProfileKey(normalizeClientKey(r.clientName))}>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.effectiveDate ? fmtDate(r.effectiveDate) : "—"}</td><td>{r.termDate ? fmtDate(r.termDate) : "—"}</td><td>{r.paymentDate ? fmtDate(r.paymentDate) : "—"}</td><td className="num mono">{<Money v={r.commissionAmount} />}</td></tr>
                         ))}
                       </tbody>
                     </table>
@@ -3419,17 +3419,17 @@ export default function App() {
                   <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setMembershipMatchesShowAll(false)}>Back</button>
                 )}
                 <h3>Production / membership records {membershipMatchesShowAll ? `(all ${membershipMatches.length})` : ""}</h3>
-                <p className="pt-hint" style={{ marginBottom: 8 }}>Completely separate from the commission records above \u2014 no dollar amount involved here, just membership status. Fixing the agent here has no effect on financials, and vice versa.</p>
+                <p className="pt-hint" style={{ marginBottom: 8 }}>Completely separate from the commission records above — no dollar amount involved here, just membership status. Fixing the agent here has no effect on financials, and vice versa.</p>
                 <table className="pt-table">
                   <thead><tr><th>Client</th><th>Agent</th><th>Carrier</th><th>Plan</th><th>Effective date</th><th>Term date</th><th>Status</th></tr></thead>
                   <tbody>
                     {(membershipMatchesShowAll ? membershipMatches : membershipMatches.slice(0, 5)).map((r, i) => (
-                      <tr key={i}><td>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.planName}</td><td>{fmtDate(r.effectiveDate)}</td><td>{r.termDate ? fmtDate(r.termDate) : "\u2014"}</td><td><StatusBadge status={r.status} /></td></tr>
+                      <tr key={i}><td>{r.clientName}</td><td>{r.agent}</td><td><CarrierName carrier={r.carrier} /></td><td>{r.planName}</td><td>{fmtDate(r.effectiveDate)}</td><td>{r.termDate ? fmtDate(r.termDate) : "—"}</td><td><StatusBadge status={r.status} /></td></tr>
                     ))}
                   </tbody>
                 </table>
                 {!membershipMatchesShowAll && membershipMatches.length > 5 && (
-                  <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMembershipMatchesShowAll(true)}>View all {membershipMatches.length} \u2192</button>
+                  <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMembershipMatchesShowAll(true)}>View all {membershipMatches.length} →</button>
                 )}
                 <div className="pt-plantype-block">
                   <label>Wrong agent on record? Reassign these production records to the true agent.</label>
@@ -3457,13 +3457,13 @@ export default function App() {
             {!cloudCfg ? null : !membershipOverridesAvailable ? (
               <div className="pt-card">
                 <p className="pt-error">Your database doesn't have the membership override table yet.</p>
-                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run the same SQL you used for Agent Payables again \u2014 it now also creates this table.</p>
+                <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run the same SQL you used for Agent Payables again — it now also creates this table.</p>
               </div>
             ) : (
               <>
                 <div className="pt-card">
                   <h3>Client agent overrides (production data)</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>For too many clients to fix one at a time. Tied to this exact effective date \u2014 a new enrollment for the same client won't be touched. No dollar amount involved, just the agent field \u2014 corrects existing records immediately and keeps applying to every future production statement automatically.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>For too many clients to fix one at a time. Tied to this exact effective date — a new enrollment for the same client won't be touched. No dollar amount involved, just the agent field — corrects existing records immediately and keeps applying to every future production statement automatically.</p>
                   <div className="pt-mapping-grid">
                     <div className="pt-field">
                       <label>Carrier</label>
@@ -3484,13 +3484,13 @@ export default function App() {
                     </div>
                   </div>
                   <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingOverride || !overrideCarrier.trim() || !overrideClientName.trim() || !overrideAgentName.trim() || !overrideEffectiveDate} onClick={addMembershipOverride}>
-                    {addingOverride ? "Applying\u2026" : "Add override"}
+                    {addingOverride ? "Applying…" : "Add override"}
                   </button>
                 </div>
 
                 <div className="pt-card">
                   <h3>Bulk import client agent overrides / Production statements</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Whether names come as one full-name column or separate First/Last columns, each row uses whichever one actually has data \u2014 handy if different carriers in the same file use different formats.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is — if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Whether names come as one full-name column or separate First/Last columns, each row uses whichever one actually has data — handy if different carriers in the same file use different formats.</p>
                   {!ovFileName ? (
                     <label className="pt-btn ghost">
                       Choose file
@@ -3498,7 +3498,7 @@ export default function App() {
                     </label>
                   ) : (
                     <>
-                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {ovFileName} \u00b7 {ovRows.length} rows</div>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {ovFileName} · {ovRows.length} rows</div>
                       <div style={{ marginTop: 12, marginBottom: 4 }}>
                         <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
                         <div className="pt-btn-row">
@@ -3521,7 +3521,7 @@ export default function App() {
                           <div className="pt-field">
                             <label>Carrier column *</label>
                             <select value={ovCarrierCol} onChange={(e) => setOvCarrierCol(e.target.value)}>
-                              <option value="">\u2014 choose \u2014</option>
+                              <option value="">— choose —</option>
                               {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                             </select>
                           </div>
@@ -3529,28 +3529,28 @@ export default function App() {
                         <div className="pt-field">
                           <label>Client name column (if one column has the full name)</label>
                           <select value={ovClientCol} onChange={(e) => setOvClientCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>First name column (if name is split)</label>
                           <select value={ovClientFirstCol} onChange={(e) => setOvClientFirstCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Last name column (if name is split)</label>
                           <select value={ovClientLastCol} onChange={(e) => setOvClientLastCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Effective date column *</label>
                           <select value={ovEffDateCol} onChange={(e) => setOvEffDateCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -3564,7 +3564,7 @@ export default function App() {
                         <div className="pt-field">
                           <label>True agent column *</label>
                           <select value={ovAgentCol} onChange={(e) => setOvAgentCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {ovHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -3573,11 +3573,11 @@ export default function App() {
                         <p className="pt-hint" style={{ marginTop: 8 }}>{overrideSkipCount} row(s) already show the correct agent and will be skipped automatically.</p>
                       )}
                       <div className="pt-row-between" style={{ marginTop: 12 }}>
-                        <div>{ovImporting && <p className="pt-hint">{ovProgress || "Working\u2026"}</p>}</div>
+                        <div>{ovImporting && <p className="pt-hint">{ovProgress || "Working…"}</p>}</div>
                         <div className="pt-btn-row">
                           <button className="pt-btn ghost" onClick={resetOverrideImport} disabled={ovImporting}>Cancel</button>
                           <button className="pt-btn primary" disabled={!overrideImportValid || ovImporting} onClick={commitOverrideBulkImport}>
-                            {ovImporting ? "Applying\u2026" : `Process ${ovRows.length} rows`}
+                            {ovImporting ? "Applying…" : `Process ${ovRows.length} rows`}
                           </button>
                         </div>
                       </div>
@@ -3605,7 +3605,7 @@ export default function App() {
                           </tbody>
                         </table>
                         {membershipOverrides.length > 5 && (
-                          <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setOverridesShowAll(true)}>View all {membershipOverrides.length} \u2192</button>
+                          <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setOverridesShowAll(true)}>View all {membershipOverrides.length} →</button>
                         )}
                       </>
                     ) : (
@@ -3619,7 +3619,7 @@ export default function App() {
                               confirmDeleteSelectedOverrides ? (
                                 <span className="pt-confirm-inline">
                                   Delete {selectedOverrideIds.size} override(s)?
-                                  <button className="pt-btn danger small" disabled={deletingSelectedOverrides} onClick={deleteSelectedOverrides}>{deletingSelectedOverrides ? "Working\u2026" : "Yes, delete"}</button>
+                                  <button className="pt-btn danger small" disabled={deletingSelectedOverrides} onClick={deleteSelectedOverrides}>{deletingSelectedOverrides ? "Working…" : "Yes, delete"}</button>
                                   <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedOverrides(false)}>Cancel</button>
                                 </span>
                               ) : (
@@ -3682,7 +3682,7 @@ export default function App() {
             <div className="pt-page-head"><div><h1>Agent directory</h1><p>The master list your imports match against, so one agent always shows up as one name.</p></div></div>
 
             {!cloudCfg ? (
-              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use the Agent Directory \u2014 it needs somewhere to store your agent list.</p></div>
+              <div className="pt-card"><p className="pt-hint">Connect your database (Database connection tab) to use the Agent Directory — it needs somewhere to store your agent list.</p></div>
             ) : !directoryAvailable ? (
               <div className="pt-card">
                 <p className="pt-error">Your database doesn't have the directory tables yet.</p>
@@ -3713,10 +3713,10 @@ export default function App() {
                         if (a) { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }
                       }}>
                         {dirListAgents.map((a) => (
-                          <option key={a.id} value={a.id}>{a.canonicalName}{a.npn ? ` \u00b7 ${a.npn}` : ""}</option>
+                          <option key={a.id} value={a.id}>{a.canonicalName}{a.npn ? ` · ${a.npn}` : ""}</option>
                         ))}
                       </select>
-                      <p className="pt-hint" style={{ marginTop: 6 }}>{dirListAgents.length} agent(s) \u2014 scroll to see more, click one to open it below.</p>
+                      <p className="pt-hint" style={{ marginTop: 6 }}>{dirListAgents.length} agent(s) — scroll to see more, click one to open it below.</p>
                     </div>
 
                     {selectedDirAgent && (
@@ -3760,12 +3760,12 @@ export default function App() {
 
                 {directoryTab === "unmatched" && (
                   <div className="pt-card">
-                    <p className="pt-hint" style={{ marginBottom: 12 }}>These are raw agent names from your imports \u2014 commission or production \u2014 that aren't linked to a directory entry yet. Link each one to the right agent, or add them as new. Linking here fixes both commission and production records that use this exact name.</p>
+                    <p className="pt-hint" style={{ marginBottom: 12 }}>These are raw agent names from your imports — commission or production — that aren't linked to a directory entry yet. Link each one to the right agent, or add them as new. Linking here fixes both commission and production records that use this exact name.</p>
                     {unmatchedAgentNames.length === 0 ? (
-                      <p className="pt-hint">Nothing unmatched \u2014 every name in your data is linked. \ud83c\udf89</p>
+                      <p className="pt-hint">Nothing unmatched — every name in your data is linked. 🎉</p>
                     ) : (
                       <table className="pt-table">
-                        <thead><tr><th>Name as imported</th><th className="num">Commission rows</th><th className="num">Production rows</th><th className="num">Revenue</th><th>Link to\u2026</th><th></th></tr></thead>
+                        <thead><tr><th>Name as imported</th><th className="num">Commission rows</th><th className="num">Production rows</th><th className="num">Revenue</th><th>Link to…</th><th></th></tr></thead>
                         <tbody>
                           {unmatchedAgentNames.map((u) => (
                             <tr key={u.name}>
@@ -3775,10 +3775,10 @@ export default function App() {
                               <td className="num mono">{<Money v={u.revenue} />}</td>
                               <td>
                                 {u.rawName === "" ? (
-                                  <span className="pt-hint">Fix via Client Lookup, scoped to the right carrier \u2014 a blanket fix here could affect unrelated carriers too.</span>
+                                  <span className="pt-hint">Fix via Client Lookup, scoped to the right carrier — a blanket fix here could affect unrelated carriers too.</span>
                                 ) : (
                                   <select value={linkChoice[u.name] || ""} onChange={(e) => setLinkChoice({ ...linkChoice, [u.name]: e.target.value })} style={{ minWidth: 160 }}>
-                                    <option value="">Choose agent\u2026</option>
+                                    <option value="">Choose agent…</option>
                                     {agentDirectory.map((a) => <option key={a.id} value={a.id}>{a.canonicalName}</option>)}
                                   </select>
                                 )}
@@ -3809,19 +3809,19 @@ export default function App() {
                     </label>
                   ) : (
                     <>
-                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {rosterFileName} \u00b7 {rosterRows.length} rows</div>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {rosterFileName} · {rosterRows.length} rows</div>
                       <div className="pt-mapping-grid" style={{ marginTop: 12 }}>
                         <div className="pt-field">
                           <label>Name column *</label>
                           <select value={rosterNameCol} onChange={(e) => setRosterNameCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {rosterHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>NPN column (optional)</label>
                           <select value={rosterNpnCol} onChange={(e) => setRosterNpnCol(e.target.value)}>
-                            <option value="">\u2014 not in file \u2014</option>
+                            <option value="">— not in file —</option>
                             {rosterHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -3847,7 +3847,7 @@ export default function App() {
                       const commissionBreakdown = b.batchType !== "membership" && b.batchType !== "payable_rule" && b.batchType !== "payable_correction" ? groupBy(records.filter((r) => r.uploadBatchId === b.id), (r) => r.carrier).sort((x, y) => y.count - x.count) : [];
                       const payableBatchEntries = (b.batchType === "payable_rule" || b.batchType === "payable_correction") ? payableLedger.filter((l) => l.batchId === b.id) : [];
                       const payableBatchTotal = payableBatchEntries.reduce((s, l) => s + l.amount, 0);
-                      const payableBatchByAgent = groupBy(payableBatchEntries.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") || "\u2014").sort((x, y) => y.revenue - x.revenue);
+                      const payableBatchByAgent = groupBy(payableBatchEntries.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") || "—").sort((x, y) => y.revenue - x.revenue);
                       const memberByCarrier = {};
                       const memberByStatus = {};
                       let unmatchedCount = 0;
@@ -3862,7 +3862,7 @@ export default function App() {
                       return (
                         <React.Fragment key={b.id}>
                           <tr className="pt-clickable" onClick={() => toggleBatchDetail(b)}>
-                            <td style={{ width: 20, color: "var(--muted)" }}>{expandedBatchId === b.id ? "\u25be" : "\u25b8"}</td>
+                            <td style={{ width: 20, color: "var(--muted)" }}>{expandedBatchId === b.id ? "▾" : "▸"}</td>
                             <td><span className="pt-alias-type">{b.batchType === "membership" ? "Membership" : b.batchType === "payable_rule" ? "Payable rule" : b.batchType === "payable_correction" ? "One-time correction" : "Commission"}</span></td>
                             <td><CarrierName carrier={b.carrier} /></td>
                             <td>{b.fileName}</td>
@@ -3889,7 +3889,7 @@ export default function App() {
                             <tr>
                               <td colSpan={7} style={{ background: "var(--paper)", padding: "12px 16px" }}>
                                 {b.batchType === "membership" ? (
-                                  batchDetailLoading ? <p className="pt-hint">Loading\u2026</p> : (
+                                  batchDetailLoading ? <p className="pt-hint">Loading…</p> : (
                                     <>
                                       <div className="pt-mini-grid">
                                         <div>
@@ -3902,7 +3902,7 @@ export default function App() {
                                         </div>
                                       </div>
                                       <p className="pt-hint" style={{ marginTop: 10 }}>
-                                        {unmatchedCount === 0 ? "Every client in this import matched an existing policy \u2014 all status updates applied cleanly." : `${unmatchedCount} client name(s) in this import didn't match any existing policy \u2014 their status couldn't be applied. Usually means that carrier's commission data hasn't been imported yet, or the name is spelled differently.`}
+                                        {unmatchedCount === 0 ? "Every client in this import matched an existing policy — all status updates applied cleanly." : `${unmatchedCount} client name(s) in this import didn't match any existing policy — their status couldn't be applied. Usually means that carrier's commission data hasn't been imported yet, or the name is spelled differently.`}
                                       </p>
                                     </>
                                   )
@@ -3910,12 +3910,12 @@ export default function App() {
                                   <>
                                     <div className="pt-mini-label">Total corrected: <Money v={payableBatchTotal} /></div>
                                     <div className="pt-mini-label" style={{ marginTop: 10 }}>By agent</div>
-                                    {payableBatchByAgent.length === 0 ? <p className="pt-hint">No entries found (may have been deleted individually).</p> : payableBatchByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span>{a.count} record(s) \u00b7 <Money v={a.revenue} /></span></div>)}
+                                    {payableBatchByAgent.length === 0 ? <p className="pt-hint">No entries found (may have been deleted individually).</p> : payableBatchByAgent.map((a) => <div key={a.key} className="pt-mini-row"><span>{a.key}</span><span>{a.count} record(s) · <Money v={a.revenue} /></span></div>)}
                                   </>
                                 ) : (
                                   <>
                                     <div className="pt-mini-label">Landed under these carriers</div>
-                                    {commissionBreakdown.length === 0 ? <p className="pt-hint">No rows found for this import (they may have been deleted individually).</p> : commissionBreakdown.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span>{c.count} rows \u00b7 <Money v={c.revenue} /></span></div>)}
+                                    {commissionBreakdown.length === 0 ? <p className="pt-hint">No rows found for this import (they may have been deleted individually).</p> : commissionBreakdown.map((c) => <div key={c.key} className="pt-mini-row"><CarrierName carrier={c.key} /><span>{c.count} rows · <Money v={c.revenue} /></span></div>)}
                                   </>
                                 )}
                               </td>
@@ -3955,12 +3955,12 @@ export default function App() {
               <div className="pt-row-between">
                 <div>
                   <h3>Reset production data only</h3>
-                  <p className="pt-hint">Wipes all membership/production statements and overrides back to zero. Commission data, revenue, and agent payables are completely untouched.{membershipRecords.length === 0 && " (Currently empty \u2014 nothing to clear.)"}</p>
+                  <p className="pt-hint">Wipes all membership/production statements and overrides back to zero. Commission data, revenue, and agent payables are completely untouched.{membershipRecords.length === 0 && " (Currently empty — nothing to clear.)"}</p>
                 </div>
                 {confirmClearProduction ? (
                   <span className="pt-confirm-inline">
                     Clear all {membershipRecords.length} production record(s)? Commission data stays exactly as-is.
-                    <button className="pt-btn danger small" disabled={clearingProduction} onClick={clearAllProductionData}>{clearingProduction ? "Working\u2026" : "Yes, clear production data"}</button>
+                    <button className="pt-btn danger small" disabled={clearingProduction} onClick={clearAllProductionData}>{clearingProduction ? "Working…" : "Yes, clear production data"}</button>
                     <button className="pt-btn ghost small" onClick={() => setConfirmClearProduction(false)}>Cancel</button>
                   </span>
                 ) : (
@@ -3974,16 +3974,16 @@ export default function App() {
         {view === "payables" && (
           <div>
             <div className="pt-page-head">
-              <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency \u2014 money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
+              <div><h1>Agent payables</h1><p>Track commission dollars that don't actually belong to the agency — money you owe out to the true agent on record. Every bulk upload here also shows up in Manage Data, where you can delete it and fully undo it if something looks wrong.</p></div>
               {cloudCfg && payablesAvailable && payableLedger.length > 0 && (
                 confirmClearAllLedger ? (
                   <span className="pt-confirm-inline">
                     {clearingAllLedger ? clearAllProgress : `Restore all ${payableLedger.length} tracked amount(s) back to full income and clear every bit of tracking?`}
-                    <button className="pt-btn danger small" disabled={clearingAllLedger} onClick={clearAllLedgerDirectly}>{clearingAllLedger ? "Working\u2026" : "Yes, give it all to the agency"}</button>
+                    <button className="pt-btn danger small" disabled={clearingAllLedger} onClick={clearAllLedgerDirectly}>{clearingAllLedger ? "Working…" : "Yes, give it all to the agency"}</button>
                     <button className="pt-btn ghost small" onClick={() => setConfirmClearAllLedger(false)} disabled={clearingAllLedger}>Cancel</button>
                   </span>
                 ) : (
-                  <button className="pt-btn danger" onClick={() => setConfirmClearAllLedger(true)}><Trash2 size={14} /> Undo everything \u2014 all income to agency</button>
+                  <button className="pt-btn danger" onClick={() => setConfirmClearAllLedger(true)}><Trash2 size={14} /> Undo everything — all income to agency</button>
                 )
               )}
             </div>
@@ -4001,21 +4001,21 @@ export default function App() {
                 <div className="pt-grid-list">
                   <div className="pt-card">
                     <div className="pt-row-between">
-                      <h3>Recognized as owed to agents{payablesMonth ? ` \u2014 ${payablesMonth}` : " \u2014 all time"}</h3>
+                      <h3>Recognized as owed to agents{payablesMonth ? ` — ${payablesMonth}` : " — all time"}</h3>
                       <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
                         <option value="">All time</option>
                         {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
                       </select>
                     </div>
-                    <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it \u2014 recalculated fresh from your data every time, not a running balance. You decide what's already been paid. Click an agent to see exactly who this is coming from.</p>
+                    <p className="pt-hint" style={{ marginBottom: 10 }}>What the system recognizes for this period, net of any chargebacks that landed in it — recalculated fresh from your data every time, not a running balance. You decide what's already been paid. Click an agent to see exactly who this is coming from.</p>
                     {totalOwedByAgentThisMonth.length === 0 ? (
                       <p className="pt-hint">Nothing recognized for this period.</p>
                     ) : (
                       <>
-                        <input value={payableAgentSearch} onChange={(e) => setPayableAgentSearch(e.target.value)} placeholder="Filter agents\u2026" style={{ marginBottom: 8, width: "100%" }} />
+                        <input value={payableAgentSearch} onChange={(e) => setPayableAgentSearch(e.target.value)} placeholder="Filter agents…" style={{ marginBottom: 8, width: "100%" }} />
                         <select size={10} className="pt-listbox" value={selectedPayableAgent || ""} onChange={(e) => setSelectedPayableAgent(e.target.value)}>
                           {totalOwedByAgentThisMonth.filter((a) => !payableAgentSearch.trim() || a.key.toLowerCase().includes(payableAgentSearch.trim().toLowerCase())).map((a) => (
-                            <option key={a.key} value={a.key}>{a.key} \u2014 {fmtMoney(a.revenue)}</option>
+                            <option key={a.key} value={a.key}>{a.key} — {fmtMoney(a.revenue)}</option>
                           ))}
                         </select>
                       </>
@@ -4037,7 +4037,7 @@ export default function App() {
                           <thead><tr><th>Client</th><th>Carrier</th><th>Effective date</th><th className="num">Amount owed</th></tr></thead>
                           <tbody>
                             {selectedPayableAgentByClient.map((c) => (
-                              <tr key={c.id}><td>{c.clientName}</td><td><CarrierName carrier={c.carrier} /></td><td>{c.effectiveDate ? fmtDate(c.effectiveDate) : "\u2014"}</td><td className="num"><Money v={c.amount} /></td></tr>
+                              <tr key={c.id}><td>{c.clientName}</td><td><CarrierName carrier={c.carrier} /></td><td>{c.effectiveDate ? fmtDate(c.effectiveDate) : "—"}</td><td className="num"><Money v={c.amount} /></td></tr>
                             ))}
                           </tbody>
                         </table>
@@ -4048,7 +4048,7 @@ export default function App() {
 
                 <div className="pt-card" style={{ border: "2px solid var(--gold)" }}>
                   <h3>One-time historical correction</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Use this when you've already paid the agent and just need the Dashboard numbers to be accurate \u2014 fixes the dollar amount on matching past records and does nothing else. No rule, no ledger entry, no "owed" tracking, and it will not touch anything imported in the future. If those same clients keep needing this every month going forward, use "Add a payable rule" below instead \u2014 that one keeps applying automatically so you don't have to redo this by hand.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Use this when you've already paid the agent and just need the Dashboard numbers to be accurate — fixes the dollar amount on matching past records and does nothing else. No rule, no ledger entry, no "owed" tracking, and it will not touch anything imported in the future. If those same clients keep needing this every month going forward, use "Add a payable rule" below instead — that one keeps applying automatically so you don't have to redo this by hand.</p>
                   {!correctFileName ? (
                     <label className="pt-btn ghost">
                       Choose file
@@ -4056,7 +4056,7 @@ export default function App() {
                     </label>
                   ) : (
                     <>
-                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {correctFileName} \u00b7 {correctRows.length} rows</div>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {correctFileName} · {correctRows.length} rows</div>
                       <div style={{ marginTop: 12, marginBottom: 4 }}>
                         <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
                         <div className="pt-btn-row">
@@ -4079,7 +4079,7 @@ export default function App() {
                           <div className="pt-field">
                             <label>Carrier column *</label>
                             <select value={correctCarrierCol} onChange={(e) => setCorrectCarrierCol(e.target.value)}>
-                              <option value="">\u2014 choose \u2014</option>
+                              <option value="">— choose —</option>
                               {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                             </select>
                           </div>
@@ -4087,31 +4087,31 @@ export default function App() {
                         <div className="pt-field">
                           <label>Client name column *</label>
                           <select value={correctClientCol} onChange={(e) => setCorrectClientCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Effective date column *</label>
                           <select value={correctEffDateCol} onChange={(e) => setCorrectEffDateCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Amount to subtract column *</label>
                           <select value={correctAmountCol} onChange={(e) => setCorrectAmountCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {correctHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                       </div>
                       <div className="pt-row-between" style={{ marginTop: 12 }}>
-                        <div>{correcting && <p className="pt-hint">{correctProgress || "Working\u2026"}</p>}</div>
+                        <div>{correcting && <p className="pt-hint">{correctProgress || "Working…"}</p>}</div>
                         <div className="pt-btn-row">
                           <button className="pt-btn ghost" onClick={resetCorrectImport} disabled={correcting}>Cancel</button>
                           <button className="pt-btn primary" disabled={!correctImportValid || correcting} onClick={commitOneTimeCorrection}>
-                            {correcting ? "Correcting\u2026" : `Correct ${correctRows.length} rows`}
+                            {correcting ? "Correcting…" : `Correct ${correctRows.length} rows`}
                           </button>
                         </div>
                       </div>
@@ -4121,7 +4121,7 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Add a payable rule</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Tied to this exact effective date \u2014 as soon as this client shows up with a different (new) effective date, that's a fresh enrollment under their true agent, and this rule automatically stops applying to it. No need to turn anything off by hand.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Tied to this exact effective date — as soon as this client shows up with a different (new) effective date, that's a fresh enrollment under their true agent, and this rule automatically stops applying to it. No need to turn anything off by hand.</p>
                   <div className="pt-mapping-grid">
                     <div className="pt-field">
                       <label>Carrier</label>
@@ -4149,15 +4149,15 @@ export default function App() {
                       <input type="number" step="0.01" value={payableTotalAmount} onChange={(e) => setPayableTotalAmount(e.target.value)} placeholder="33.51" />
                     </div>
                   </div>
-                  <p className="pt-hint" style={{ marginTop: 6 }}>Leave the total blank to use whatever's currently on record. Fill it in when you know the carrier's true total \u2014 it's used as the source of truth instead, so a previous rule applied by mistake can't leave a stale amount behind.</p>
+                  <p className="pt-hint" style={{ marginTop: 6 }}>Leave the total blank to use whatever's currently on record. Fill it in when you know the carrier's true total — it's used as the source of truth instead, so a previous rule applied by mistake can't leave a stale amount behind.</p>
                   <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingPayableRule || !payableCarrier.trim() || !payableClientName.trim() || !payableAgentName.trim() || !payableAmount || !payableEffectiveDate} onClick={addPayableRule}>
-                    {addingPayableRule ? "Applying\u2026" : "Add rule"}
+                    {addingPayableRule ? "Applying…" : "Add rule"}
                   </button>
                 </div>
 
                 <div className="pt-card">
                   <h3>Bulk import payable rules</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is \u2014 if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Only corrects the dollar amount owed; the agent of record itself isn't touched \u2014 change that yourself via Client Lookup whenever you're ready.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Upload the raw file as-is — if it has both the wrong agent and the true agent as separate columns, map both and rows that already show the correct agent are automatically skipped. Only corrects the dollar amount owed; the agent of record itself isn't touched — change that yourself via Client Lookup whenever you're ready.</p>
                   {!payFileName ? (
                     <label className="pt-btn ghost">
                       Choose file
@@ -4165,7 +4165,7 @@ export default function App() {
                     </label>
                   ) : (
                     <>
-                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {payFileName} \u00b7 {payRows.length} rows</div>
+                      <div className="pt-file-chip"><FileSpreadsheet size={14} /> {payFileName} · {payRows.length} rows</div>
 
                       <div style={{ marginTop: 12, marginBottom: 4 }}>
                         <label style={{ display: "block", marginBottom: 6, fontSize: 13, color: "var(--muted)" }}>Which carrier does this file cover?</label>
@@ -4190,7 +4190,7 @@ export default function App() {
                           <div className="pt-field">
                             <label>Carrier column *</label>
                             <select value={payCarrierCol} onChange={(e) => setPayCarrierCol(e.target.value)}>
-                              <option value="">\u2014 choose \u2014</option>
+                              <option value="">— choose —</option>
                               {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                             </select>
                           </div>
@@ -4198,28 +4198,28 @@ export default function App() {
                         <div className="pt-field">
                           <label>Client name column (if one column has the full name)</label>
                           <select value={payClientCol} onChange={(e) => setPayClientCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>First name column (if name is split)</label>
                           <select value={payClientFirstCol} onChange={(e) => setPayClientFirstCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Last name column (if name is split)</label>
                           <select value={payClientLastCol} onChange={(e) => setPayClientLastCol(e.target.value)}>
-                            <option value="">\u2014 not used \u2014</option>
+                            <option value="">— not used —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Effective date column *</label>
                           <select value={payEffDateCol} onChange={(e) => setPayEffDateCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
@@ -4233,37 +4233,37 @@ export default function App() {
                         <div className="pt-field">
                           <label>True agent column *</label>
                           <select value={payAgentCol} onChange={(e) => setPayAgentCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Amount owed column *</label>
                           <select value={payAmountCol} onChange={(e) => setPayAmountCol(e.target.value)}>
-                            <option value="">\u2014 choose \u2014</option>
+                            <option value="">— choose —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                         <div className="pt-field">
                           <label>Total carrier paid column (optional)</label>
                           <select value={payTotalAmountCol} onChange={(e) => setPayTotalAmountCol(e.target.value)}>
-                            <option value="">\u2014 not in file \u2014</option>
+                            <option value="">— not in file —</option>
                             {payHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
                           </select>
                         </div>
                       </div>
                       {payTotalAmountCol && (
-                        <p className="pt-hint" style={{ marginTop: 8 }}>Using this column as the true total for each row, instead of whatever's currently on record \u2014 safer if any of these were touched by a rule before.</p>
+                        <p className="pt-hint" style={{ marginTop: 8 }}>Using this column as the true total for each row, instead of whatever's currently on record — safer if any of these were touched by a rule before.</p>
                       )}
                       {payWrongAgentCol && payAgentCol && (
-                        <p className="pt-hint" style={{ marginTop: 8 }}>{payableSkipCount} row(s) already show the correct agent and will be skipped automatically \u2014 only genuine mismatches get a rule.</p>
+                        <p className="pt-hint" style={{ marginTop: 8 }}>{payableSkipCount} row(s) already show the correct agent and will be skipped automatically — only genuine mismatches get a rule.</p>
                       )}
                       <div className="pt-row-between" style={{ marginTop: 12 }}>
-                        <div>{payImporting && <p className="pt-hint">{payImportProgress || "Working\u2026"}</p>}</div>
+                        <div>{payImporting && <p className="pt-hint">{payImportProgress || "Working…"}</p>}</div>
                         <div className="pt-btn-row">
                           <button className="pt-btn ghost" onClick={resetPayableImport} disabled={payImporting}>Cancel</button>
                           <button className="pt-btn primary" disabled={!payableImportValid || payImporting} onClick={commitPayableBulkImport}>
-                            {payImporting ? "Applying\u2026" : `Process ${payRows.length} rows`}
+                            {payImporting ? "Applying…" : `Process ${payRows.length} rows`}
                           </button>
                         </div>
                       </div>
@@ -4273,7 +4273,7 @@ export default function App() {
 
                 <div className="pt-card">
                   <h3>Agent compensation rules</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Different from the rules below \u2014 this applies permanently to every sale where this agent is on record for this carrier, not tied to one client. Renewal is a flat amount per transaction. First Year is months remaining in the calendar year (from the effective date) times a per-month rate, reversed automatically (fully if termed within 3 months, prorated after) whenever a Term Date shows up.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Different from the rules below — this applies permanently to every sale where this agent is on record for this carrier, not tied to one client. Renewal is a flat amount per transaction. First Year is months remaining in the calendar year (from the effective date) times a per-month rate, reversed automatically (fully if termed within 3 months, prorated after) whenever a Term Date shows up.</p>
                   <div className="pt-mapping-grid">
                     <div className="pt-field">
                       <label>Carrier</label>
@@ -4294,12 +4294,12 @@ export default function App() {
                     </div>
                   </div>
                   <button className="pt-btn primary" style={{ marginTop: 12 }} disabled={addingCompRule || !compCarrier.trim() || !compAgentName.trim() || !compRenewalAmount || !compFirstYearAmount} onClick={addAgentCompRule}>
-                    {addingCompRule ? "Applying\u2026" : "Add rule"}
+                    {addingCompRule ? "Applying…" : "Add rule"}
                   </button>
                   {agentCompRules.length > 0 && (
                     <>
                       <div className="pt-row-between" style={{ cursor: "pointer", marginTop: 16 }} onClick={() => setCompRulesExpanded(!compRulesExpanded)}>
-                        <span style={{ fontWeight: 600, fontSize: 13.5 }}>{compRulesExpanded ? "\u25be" : "\u25b8"} Existing rules ({agentCompRules.length})</span>
+                        <span style={{ fontWeight: 600, fontSize: 13.5 }}>{compRulesExpanded ? "▾" : "▸"} Existing rules ({agentCompRules.length})</span>
                       </div>
                       {compRulesExpanded && (
                     <table className="pt-table" style={{ marginTop: 8 }}>
@@ -4318,20 +4318,20 @@ export default function App() {
                               <td className="num">
                                 {confirmClearHistoryId === rule.id ? (
                                   <span className="pt-confirm-inline">
-                                    Clear tracking only \u2014 dollar amounts stay as-is, rule keeps running?
-                                    <button className="pt-btn danger small" disabled={clearingHistoryRuleId === rule.id} onClick={() => clearCompRuleHistory(rule.id)}>{clearingHistoryRuleId === rule.id ? "Working\u2026" : "Yes"}</button>
+                                    Clear tracking only — dollar amounts stay as-is, rule keeps running?
+                                    <button className="pt-btn danger small" disabled={clearingHistoryRuleId === rule.id} onClick={() => clearCompRuleHistory(rule.id)}>{clearingHistoryRuleId === rule.id ? "Working…" : "Yes"}</button>
                                     <button className="pt-btn ghost small" onClick={() => setConfirmClearHistoryId(null)}>Cancel</button>
                                   </span>
                                 ) : confirmUndoDoubleDeductionId === rule.id ? (
                                   <span className="pt-confirm-inline">
                                     Put every affected record back to what you actually uploaded, clear tracking, keep the rule active for next time?
-                                    <button className="pt-btn danger small" disabled={undoingDoubleDeductionId === rule.id} onClick={() => undoDoubleDeduction(rule.id)}>{undoingDoubleDeductionId === rule.id ? "Working\u2026" : "Yes"}</button>
+                                    <button className="pt-btn danger small" disabled={undoingDoubleDeductionId === rule.id} onClick={() => undoDoubleDeduction(rule.id)}>{undoingDoubleDeductionId === rule.id ? "Working…" : "Yes"}</button>
                                     <button className="pt-btn ghost small" onClick={() => setConfirmUndoDoubleDeductionId(null)}>Cancel</button>
                                   </span>
                                 ) : (
                                   <div className="pt-btn-row">
-                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmClearHistoryId(rule.id)}>Already paid \u2014 clear history</button>}
-                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmUndoDoubleDeductionId(rule.id)}>I pre-adjusted this upload \u2014 undo double deduction</button>}
+                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmClearHistoryId(rule.id)}>Already paid — clear history</button>}
+                                    {owed !== 0 && <button className="pt-btn ghost small" onClick={() => setConfirmUndoDoubleDeductionId(rule.id)}>I pre-adjusted this upload — undo double deduction</button>}
                                     <button className="pt-btn ghost small" onClick={() => toggleCompRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
                                     <button className="pt-btn ghost small" onClick={() => deleteAgentCompRule(rule.id)}><X size={12} /></button>
                                   </div>
@@ -4349,12 +4349,12 @@ export default function App() {
 
                 <div className="pt-card">
                   <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setPayableRulesExpanded(!payableRulesExpanded)}>
-                    <h3>{payableRulesExpanded ? "\u25be" : "\u25b8"} Rules ({payableRules.length})</h3>
+                    <h3>{payableRulesExpanded ? "▾" : "▸"} Rules ({payableRules.length})</h3>
                   </div>
                   {payableRulesExpanded && (
                     <>
                   <div className="pt-row-between" style={{ marginTop: 10 }}>
-                    <input value={payableRulesSearch} onChange={(e) => setPayableRulesSearch(e.target.value)} placeholder="Filter by client name\u2026" style={{ maxWidth: 280 }} />
+                    <input value={payableRulesSearch} onChange={(e) => setPayableRulesSearch(e.target.value)} placeholder="Filter by client name…" style={{ maxWidth: 280 }} />
                     <div className="pt-btn-row">
                       <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRulesFiltered.map((r) => r.id)))}>Select all ({payableRulesFiltered.length})</button>
                       <button className="pt-btn ghost small" onClick={() => setSelectedRuleIds(new Set(payableRulesFiltered.filter((r) => r.createdAt && (Date.now() - new Date(r.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((r) => r.id)))}>Select last 2 hours</button>
@@ -4362,7 +4362,7 @@ export default function App() {
                         confirmDeleteSelectedRules ? (
                           <span className="pt-confirm-inline">
                             Delete {selectedRuleIds.size} rule(s) and restore their records?
-                            <button className="pt-btn danger small" disabled={deletingSelectedRules} onClick={deleteSelectedRules}>{deletingSelectedRules ? "Working\u2026" : "Yes, delete"}</button>
+                            <button className="pt-btn danger small" disabled={deletingSelectedRules} onClick={deleteSelectedRules}>{deletingSelectedRules ? "Working…" : "Yes, delete"}</button>
                             <button className="pt-btn ghost small" onClick={() => setConfirmDeleteSelectedRules(false)}>Cancel</button>
                           </span>
                         ) : (
@@ -4371,7 +4371,7 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                  <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>Each rule only matches its exact effective date automatically \u2014 a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
+                  <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>Each rule only matches its exact effective date automatically — a new enrollment for the same client won't be touched. Pause is just a manual override if you ever need one. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
                   {payableRulesFiltered.length === 0 ? <p className="pt-hint">{payableRulesSearch ? "No matching rules." : "No payable rules yet."}</p> : (
                     <table className="pt-table">
                       <thead><tr><th></th><th>Status</th><th>Client</th><th>Carrier</th><th>Effective date</th><th>Owed to</th><th className="num">Per payment</th><th className="num">Total recognized</th><th>Created</th><th></th></tr></thead>
@@ -4389,7 +4389,7 @@ export default function App() {
                               <td>{rule.agentName}</td>
                               <td className="num mono">{fmtMoney(rule.amountPerTransaction)}</td>
                               <td className="num"><Money v={total} /></td>
-                              <td>{rule.createdAt ? new Date(rule.createdAt).toLocaleString() : "\u2014"}</td>
+                              <td>{rule.createdAt ? new Date(rule.createdAt).toLocaleString() : "—"}</td>
                               <td className="num">
                                 <div className="pt-btn-row">
                                   <button className="pt-btn ghost small" onClick={() => togglePayableRuleActive(rule.id, rule.active)}>{rule.active ? "Pause" : "Resume"}</button>
@@ -4409,7 +4409,7 @@ export default function App() {
                 {oneTimeCorrectionEntries.length > 0 && (
                   <div className="pt-card">
                     <div className="pt-row-between" style={{ cursor: "pointer" }} onClick={() => setOneTimeCorrectionsExpanded(!oneTimeCorrectionsExpanded)}>
-                      <h3>{oneTimeCorrectionsExpanded ? "\u25be" : "\u25b8"} One-time corrections ({oneTimeCorrectionEntries.length})</h3>
+                      <h3>{oneTimeCorrectionsExpanded ? "▾" : "▸"} One-time corrections ({oneTimeCorrectionEntries.length})</h3>
                     </div>
                     {oneTimeCorrectionsExpanded && (
                       <>
@@ -4418,22 +4418,22 @@ export default function App() {
                         <button className="pt-btn ghost small" onClick={() => setSelectedCorrectionIds(new Set(oneTimeCorrectionEntries.filter((e) => e.createdAt && (Date.now() - new Date(e.createdAt).getTime()) < 2 * 60 * 60 * 1000).map((e) => e.id)))}>Select last 2 hours</button>
                         {selectedCorrectionIds.size > 0 && (
                           <button className="pt-btn danger small" disabled={deletingSelectedCorrections} onClick={deleteSelectedCorrections}>
-                            {deletingSelectedCorrections ? "Working\u2026" : <><Trash2 size={12} /> Undo {selectedCorrectionIds.size} selected</>}
+                            {deletingSelectedCorrections ? "Working…" : <><Trash2 size={12} /> Undo {selectedCorrectionIds.size} selected</>}
                           </button>
                         )}
                     </div>
-                    <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>These came from the "One-time historical correction" tool \u2014 no rule attached, so they're listed individually here. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
+                    <p className="pt-hint" style={{ marginBottom: 10, marginTop: 8 }}>These came from the "One-time historical correction" tool — no rule attached, so they're listed individually here. Click "Select last 2 hours" to grab everything from your most recent upload at once.</p>
                     <table className="pt-table">
                       <thead><tr><th></th><th>Client</th><th>Carrier</th><th>Effective date</th><th className="num">Amount</th><th>Created</th></tr></thead>
                       <tbody>
                         {oneTimeCorrectionEntries.map((entry) => (
                           <tr key={entry.id}>
                             <td><input type="checkbox" checked={selectedCorrectionIds.has(entry.id)} onChange={() => toggleCorrectionSelected(entry.id)} /></td>
-                            <td>{entry.clientName || "\u2014"}</td>
+                            <td>{entry.clientName || "—"}</td>
                             <td><CarrierName carrier={entry.carrier} /></td>
                             <td>{fmtDate(entry.transactionDate)}</td>
                             <td className="num"><Money v={entry.amount} /></td>
-                            <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "\u2014"}</td>
+                            <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -4449,7 +4449,7 @@ export default function App() {
 
         {view === "marketing" && (
           <div>
-            <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Viancilena Contreras Ibanez's marketing agreement \u2014 $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
+            <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Viancilena Contreras Ibanez's marketing agreement — $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
 
             <div className="pt-card">
               <div className="pt-mapping-grid">
@@ -4471,7 +4471,7 @@ export default function App() {
                   <StatCard label="Budget accrued" value={fmtMoney(marketingBudgetTotal)} money={marketingBudgetTotal} />
                   <StatCard label="Use by" value={fmtDate(currentMarketingQuarter.deadline)} tone="ink" />
                 </div>
-                <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Current quarter: clients effective {currentMarketingQuarter.label}. {marketingDuplicateCount > 0 && `${marketingDuplicateCount} client(s) below were excluded \u2014 they already existed in the book before this quarter's sale, so no new marketing fund is owed for them.`}</p>
+                <p className="pt-hint" style={{ marginTop: -10, marginBottom: 16 }}>Current quarter: clients effective {currentMarketingQuarter.label}. {marketingDuplicateCount > 0 && `${marketingDuplicateCount} client(s) below were excluded — they already existed in the book before this quarter's sale, so no new marketing fund is owed for them.`}</p>
 
                 <div className="pt-card">
                   {marketingShowAllClients && (
@@ -4497,7 +4497,7 @@ export default function App() {
                         </tbody>
                       </table>
                       {!marketingShowAllClients && marketingQuarterClients.length > 5 && (
-                        <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMarketingShowAllClients(true)}>View all {marketingQuarterClients.length} \u2192</button>
+                        <button className="pt-btn ghost small" style={{ marginTop: 12 }} onClick={() => setMarketingShowAllClients(true)}>View all {marketingQuarterClients.length} →</button>
                       )}
                     </>
                   )}
@@ -4534,11 +4534,11 @@ export default function App() {
               </div>
               <div className="pt-btn-row" style={{ marginTop: 14 }}>
                 <button className="pt-btn primary" disabled={!cloudTestUrl.trim() || !cloudTestKey.trim() || cloudStatus === "connecting"} onClick={connectCloud}>
-                  {cloudStatus === "connecting" ? "Connecting\u2026" : "Connect"}
+                  {cloudStatus === "connecting" ? "Connecting…" : "Connect"}
                 </button>
                 {cloudCfg && <button className="pt-btn ghost" onClick={disconnectCloud}>Disconnect / use local only</button>}
               </div>
-              <p className="pt-hint" style={{ marginTop: 10 }}>Your URL and key are stored only in this browser and sent only to your own Supabase project \u2014 never to Claude or anyone else.</p>
+              <p className="pt-hint" style={{ marginTop: 10 }}>Your URL and key are stored only in this browser and sent only to your own Supabase project — never to Claude or anyone else.</p>
             </div>
 
             <div className="pt-card">
