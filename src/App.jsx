@@ -1510,8 +1510,6 @@ export default function App() {
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
   const byCarrierTop8 = useMemo(() => byCarrier.slice(0, 8), [byCarrier]);
   const [showAllCarriersChart, setShowAllCarriersChart] = useState(false);
-  const byAgent = useMemo(() => groupBy(filteredRecords, (r) => resolveAgentName(r.agent, "", "", "")).sort((a, b) => b.revenue - a.revenue), [filteredRecords, agentLookupMaps]);
-  const [showAllTopAgents, setShowAllTopAgents] = useState(false);
   const [membershipDrillDown, setMembershipDrillDown] = useState(null); // null | { type: "total"|"new"|"lost"|"agent", agentName?: string }
   const [drillFilterCarrier, setDrillFilterCarrier] = useState("All");
   const [drillFilterName, setDrillFilterName] = useState("");
@@ -1604,14 +1602,6 @@ export default function App() {
     });
   }, [membershipRecords, latestBatchIdByCarrierSource, filterCarrier, filterAgent, dateFrom, dateTo]);
   const totalActiveMembers = activeMembersList.length;
-  const activeMembersByAgent = useMemo(() => {
-    const map = {};
-    activeMembersList.forEach((r) => {
-      const agentKey = resolveAgentName(r.agent, "", "", "");
-      map[agentKey] = (map[agentKey] || 0) + 1;
-    });
-    return map;
-  }, [activeMembersList, agentLookupMaps]);
   const inactivePolicyCount = useMemo(() => filteredMembershipLatest.filter((r) => statusBucket(r.status) === "inactive").length, [filteredMembershipLatest]);
 
   // Period badges shown in the corner of each card, so nothing is left to
@@ -2960,28 +2950,6 @@ export default function App() {
                       <Line type="monotone" dataKey="revenue" stroke="#243C80" strokeWidth={2} dot={{ r: 3 }} />
                     </LineChart>
                   </ResponsiveContainer>
-                </div>
-
-                <div className="pt-card">
-                  <h3>Top agents in this view</h3>
-                  <p className="pt-hint" style={{ marginBottom: 10 }}>Click a row to see that agent's active clients — from production statements only, separate from the commission data behind Revenue.</p>
-                  <table className="pt-table">
-                    <thead><tr><th>Agent</th><th className="num">Total active members</th><th className="num">Revenue</th></tr></thead>
-                    <tbody>
-                      {(showAllTopAgents ? byAgent : byAgent.slice(0, 10)).map((a) => (
-                        <tr key={a.key} className={activeMembersByAgent[a.key] ? "pt-row-clickable" : ""} onClick={() => activeMembersByAgent[a.key] && openMembershipDrillDown({ type: "agent", agentName: a.key })}>
-                          <td>{a.key}</td>
-                          <td className="num">{(activeMembersByAgent[a.key] || 0).toLocaleString()}</td>
-                          <td className="num mono">{<Money v={a.revenue} />}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {byAgent.length > 10 && (
-                    <button className="pt-btn text" style={{ marginTop: 10 }} onClick={() => setShowAllTopAgents((v) => !v)}>
-                      {showAllTopAgents ? <>↑ Show top 10 only</> : <>↓ Show all {byAgent.length} agents</>}
-                    </button>
-                  )}
                 </div>
               </>
             )}
