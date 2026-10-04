@@ -1652,6 +1652,43 @@ export default function App() {
       .filter((a) => a.key.toLowerCase().includes(agentSearch.toLowerCase()))
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipLatestByPolicy, agentSearch, agentLookupMaps]);
+  // ---------- MONTHLY REVENUE BY AGENT (Agents page charts) ----------
+  const [agentChartPicks, setAgentChartPicks] = useState([null, null, null, null, null]);
+  const agentMonthly = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const byAgent = {};
+    const monthSet = new Set();
+    records.forEach((r) => {
+      if (!r.paymentDate) return;
+      const ym = r.paymentDate.slice(0, 7);
+      const yr = Number(ym.slice(0, 4));
+      if (!(yr >= 2015 && yr <= nowYear + 1)) return; // skip obviously bad dates
+      const name = resolveAgentName(r.agent, "", "", "");
+      monthSet.add(ym);
+      const m = byAgent[name] || (byAgent[name] = {});
+      m[ym] = (m[ym] || 0) + r.commissionAmount;
+    });
+    const months = [...monthSet].sort().slice(-24);
+    return { byAgent, months };
+  }, [records, agentLookupMaps]);
+  const topAgentsForCharts = useMemo(() => {
+    return groupBy(records, (r) => resolveAgentName(r.agent, "", "", ""))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5)
+      .map((a) => a.key);
+  }, [records, agentLookupMaps]);
+  const agentChartOptions = useMemo(() => {
+    const names = [...new Set(records.map((r) => resolveAgentName(r.agent, "", "", "")))].sort((a, b) => a.localeCompare(b));
+    const dirByName = {};
+    agentDirectory.forEach((d) => { dirByName[d.canonicalName] = d; });
+    const aliasValuesByAgent = {};
+    agentAliases.forEach((al) => { (aliasValuesByAgent[al.agentId] = aliasValuesByAgent[al.agentId] || []).push(al.aliasValue || ""); });
+    return names.map((name) => {
+      const d = dirByName[name];
+      const extra = d ? [d.npn || ""].concat(aliasValuesByAgent[d.id] || []).join(" ") : "";
+      return { name, searchText: (name + " " + extra).toLowerCase() };
+    });
+  }, [records, agentDirectory, agentAliases, agentLookupMaps]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
   const agentSalesCarrierOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.carrier))].sort(), [selectedAgentRecords]);
   const agentSalesStatusOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.status || "Active"))].sort(), [selectedAgentRecords]);
@@ -3164,6 +3201,7 @@ export default function App() {
           <div>
             <div className="pt-page-head"><div><h1>Agents</h1><p>Production by agent, across every carrier.</p></div></div>
             {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : !selectedAgent ? (
+              <>
               <div className="pt-card">
                 <input className="pt-search" placeholder="Search agents…" value={agentSearch} onChange={(e) => { setAgentSearch(e.target.value); setAgentListExpanded(false); setAgentListPage(0); }} />
                 <table className="pt-table">
@@ -3209,6 +3247,29 @@ export default function App() {
                 )}
                 <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import — it's optional, so some may show 0 even for agents with real membership.</p>
               </div>
+              {topAgentsForCharts.length > 0 && (
+                <>
+                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue by agent</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Top 5 agents by revenue to start. Type in a chart's "Change agent" field to switch that chart to any other agent.</p>
+                  {[0, 1, 2, 3, 4].map((i) => {
+                    const name = agentChartPicks[i] || topAgentsForCharts[i];
+                    if (!name) return null;
+                    return (
+                      <AgentMonthlyChart
+                        key={i}
+                        agentName={name}
+                        isCustom={!!agentChartPicks[i]}
+                        options={agentChartOptions}
+                        months={agentMonthly.months}
+                        monthlyMap={agentMonthly.byAgent}
+                        onPick={(picked) => setAgentChartPicks((prev) => prev.map((p, idx) => (idx === i ? picked : p)))}
+                        onReset={() => setAgentChartPicks((prev) => prev.map((p, idx) => (idx === i ? null : p)))}
+                      />
+                    );
+                  })}
+                </>
+              )}
+              </>
             ) : (
               <div className="pt-card">
                 <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={() => setSelectedAgent(null)}>Back to Agents</button>
@@ -4638,6 +4699,74 @@ function CarrierRevenueTooltip({ active, payload, label }) {
     <div style={{ background: "#fff", border: "1px solid #E2E4E9", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
       <div style={{ color: "#1E2A3A", marginBottom: 2, fontWeight: 600 }}>{label}</div>
       <div className={moneyClass(value)}>revenue : {fmtMoney(value)}</div>
+    </div>
+  );
+}
+function fmtMonthShort(ym) {
+  const d = new Date(ym + "-01T00:00:00");
+  if (isNaN(d.getTime())) return ym;
+  return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+}
+function MonthlyRevenueTooltip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E2E4E9", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+      <div style={{ color: "#1E2A3A", marginBottom: 2, fontWeight: 600 }}>{fmtMonthLabel(p.month)}</div>
+      <div className={moneyClass(p.revenue)}>revenue : {fmtMoney(p.revenue)}</div>
+    </div>
+  );
+}
+// One monthly-revenue bar chart for one agent, with its own type-to-switch field.
+function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, onPick, onReset }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const q = query.trim().toLowerCase();
+  const suggestions = q ? options.filter((o) => o.searchText.includes(q)).slice(0, 8) : [];
+  const agentMonths = (monthlyMap && monthlyMap[agentName]) || {};
+  const data = months.map((m) => ({ month: m, label: fmtMonthShort(m), revenue: agentMonths[m] || 0 }));
+  const total = data.reduce((s, d) => s + d.revenue, 0);
+  function choose(name) {
+    onPick(name);
+    setQuery("");
+    setOpen(false);
+  }
+  return (
+    <div className="pt-card">
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 8 }}>
+        <div className="pt-field" style={{ flex: "1 1 240px" }}>
+          <label>Agent</label>
+          <input value={agentName || ""} readOnly />
+        </div>
+        <div className="pt-field" style={{ flex: "1 1 240px", position: "relative" }}>
+          <label>Change agent</label>
+          <input
+            value={query}
+            placeholder="Type a name, NPN or ID to switch..."
+            onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setOpen(false)}
+          />
+          {open && suggestions.length > 0 && (
+            <div className="pt-card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 5, marginTop: 4, padding: 6, maxHeight: 260, overflowY: "auto" }}>
+              {suggestions.map((o) => (
+                <div key={o.name} className="pt-clickable" style={{ padding: "6px 8px", borderRadius: 4 }} onMouseDown={(e) => { e.preventDefault(); choose(o.name); }}>{o.name}</div>
+              ))}
+            </div>
+          )}
+        </div>
+        {isCustom && <button className="pt-btn ghost small" onClick={onReset}>Reset to top agent</button>}
+      </div>
+      <p className="pt-hint" style={{ marginBottom: 8 }}>Revenue by month (payment date). Total across the months shown: {fmtMoney(total)}</p>
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
+          <XAxis dataKey="label" interval={0} tick={{ fontSize: 10, fill: "#64748B" }} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+          <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+          <Tooltip content={<MonthlyRevenueTooltip />} />
+          <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
