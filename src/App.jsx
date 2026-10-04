@@ -882,7 +882,7 @@ export default function App() {
 
   function applyCarrierPreset(name) {
     setCarrierInput(name);
-    const preset = carrierMappings[name];
+    const preset = carrierMappings[name] || carrierMappings[canonicalCarrierName(name)];
     if (preset) {
       setMapping(preset.mapping || mapping);
       setCarrierMode(preset.carrierMode || "fixed");
@@ -896,14 +896,14 @@ export default function App() {
   async function commitImport() {
     if (!mappingValid) return;
     const batchId = "b_" + Date.now();
-    const carrier = carrierInput.trim();
+    const carrier = canonicalCarrierName(carrierInput);
     // If a carrier splits one First Year lump-sum payment across several
     // transactions in the same month, only the first one we see for a given
     // policy gets the lump sum — the rest are treated as already accounted
     // for, so the total credited never exceeds one correct lump sum.
     const firstYearLumpSumSeen = new Set();
     const newRecords = rawRows.map((r, i) => {
-      const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
+      const rowCarrier = carrierMode === "column" ? canonicalCarrierName(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
       const agentNpn = mapping.agentNpn ? String(r[mapping.agentNpn] ?? "").trim() : "";
       const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
@@ -1045,9 +1045,9 @@ export default function App() {
   // before but is missing now as termed on the last day of that prior month.
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
-    const carrier = carrierInput.trim();
+    const carrier = canonicalCarrierName(carrierInput);
     let memberRows = rawRows.map((r) => {
-      const rowCarrier = carrierMode === "column" ? (String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
+      const rowCarrier = carrierMode === "column" ? canonicalCarrierName(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rowClientName = memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]);
       const rowEffectiveDate = memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "";
       const rawAgent = memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "";
@@ -1792,9 +1792,18 @@ export default function App() {
       await sbFetch(cloudCfg, `policies?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
       await sbFetch(cloudCfg, `membership_updates?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
       await sbFetch(cloudCfg, `upload_batches?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) });
+      // Payable rules, their ledger, agent comp rules and client overrides also carry a
+      // carrier name — keep them pointing at the merged name so they still match.
+      for (const table of ["agent_payable_rules", "agent_payable_ledger", "agent_comp_rules", "membership_agent_overrides"]) {
+        try { await sbFetch(cloudCfg, `${table}?carrier=eq.${encodeURIComponent(fromCarrier)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ carrier: toCarrier }) }); } catch (e) { /* table may not exist yet */ }
+      }
       setRecords((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
       setMembershipRecords((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
       setBatches((prev) => prev.map((b) => (b.carrier === fromCarrier ? { ...b, carrier: toCarrier } : b)));
+      setPayableRules((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
+      setPayableLedger((prev) => prev.map((l) => (l.carrier === fromCarrier ? { ...l, carrier: toCarrier } : l)));
+      setAgentCompRules((prev) => prev.map((r) => (r.carrier === fromCarrier ? { ...r, carrier: toCarrier } : r)));
+      setMembershipOverrides((prev) => prev.map((o) => (o.carrier === fromCarrier ? { ...o, carrier: toCarrier } : o)));
       setSelectedCarrier(toCarrier);
       setMergeTargetCarrier("");
       setConfirmMergeCarrier(false);
@@ -2086,7 +2095,7 @@ export default function App() {
     try {
       for (let i = 0; i < ovRows.length; i++) {
         const r = ovRows[i];
-        const carrier = ovCarrierMode === "fixed" ? ovCarrierFixed.trim() : String(r[ovCarrierCol] ?? "").trim();
+        const carrier = canonicalCarrierName(ovCarrierMode === "fixed" ? ovCarrierFixed : String(r[ovCarrierCol] ?? ""));
         const directName = ovClientCol ? String(r[ovClientCol] ?? "").trim() : "";
         const clientName = directName || combineName(ovClientFirstCol ? r[ovClientFirstCol] : "", ovClientLastCol ? r[ovClientLastCol] : "");
         const effDate = parseDateValue(r[ovEffDateCol]);
@@ -2495,7 +2504,7 @@ export default function App() {
       setBatches((prev) => [...prev, { id: batchId, carrier: carrierLabel, fileName: correctFileName, uploadedAt: new Date().toISOString(), rowCount: correctRows.length, batchType: "payable_correction" }]);
       for (let i = 0; i < correctRows.length; i++) {
         const r = correctRows[i];
-        const carrier = correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : String(r[correctCarrierCol] ?? "").trim();
+        const carrier = canonicalCarrierName(correctCarrierMode === "fixed" ? correctCarrierFixed : String(r[correctCarrierCol] ?? ""));
         const clientName = String(r[correctClientCol] ?? "").trim();
         const effDate = parseDateValue(r[correctEffDateCol]);
         const amt = parseMoney(r[correctAmountCol]);
@@ -2542,7 +2551,7 @@ export default function App() {
       setBatches((prev) => [...prev, batchEntry]);
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
-        const carrier = payCarrierMode === "fixed" ? payCarrierFixed.trim() : String(r[payCarrierCol] ?? "").trim();
+        const carrier = canonicalCarrierName(payCarrierMode === "fixed" ? payCarrierFixed : String(r[payCarrierCol] ?? ""));
         const directName = payClientCol ? String(r[payClientCol] ?? "").trim() : "";
         const clientName = directName || combineName(payClientFirstCol ? r[payClientFirstCol] : "", payClientLastCol ? r[payClientLastCol] : "");
         const effDate = parseDateValue(r[payEffDateCol]);
@@ -4843,6 +4852,15 @@ function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, o
       </ResponsiveContainer>
     </div>
   );
+}
+// Alternate names / DBAs that must always count as ONE carrier. Matching is by
+// keyword (same approach as the logo lookup), so "The Brighton Group",
+// "Brighton Group LLC", "Carepoint Insurance" etc. all become "Carepoint".
+function canonicalCarrierName(raw) {
+  const name = String(raw || "").trim();
+  const s = name.toLowerCase();
+  if (s.includes("carepoint") || s.includes("brighton")) return "Carepoint";
+  return name;
 }
 function batchTypeKey(b) {
   return b.batchType === "membership" || b.batchType === "payable_rule" || b.batchType === "payable_correction" ? b.batchType : "commission";
