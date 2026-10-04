@@ -852,7 +852,7 @@ export default function App() {
     setMapping({ agent: "", agentNpn: "", agentCarrierId: "", product: "", clientName: "", saleDate: "", effectiveDate: "", status: "", commissionAmount: "", commissionType: "", paymentDate: "" });
     setMemberMapping({ clientName: "", clientFirstName: "", clientLastName: "", status: "", agent: "", agentNpn: "", agentCarrierId: "", planName: "", pbp: "", effectiveDate: "", termDate: "" });
     setImportError("");
-    setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null); setSourceLabel("");
+    setCarrierMode("fixed"); setCarrierColumn(""); setRawFileObject(null); setSourceLabel(""); setAppliedMemberPresetFor("");
   }
 
   function handleFile(e) {
@@ -1027,6 +1027,34 @@ export default function App() {
 
   const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && (carrierMode === "fixed" || carrierColumn);
 
+  // Remembered column choices for production imports (per carrier + source).
+  const [appliedMemberPresetFor, setAppliedMemberPresetFor] = useState("");
+  useEffect(() => {
+    if (importMode !== "membership" || !fileName || !carrierInput.trim()) return;
+    const key = productionPresetKey(carrierInput, sourceLabel);
+    const marker = key + "|" + fileName;
+    if (appliedMemberPresetFor === marker) return;
+    const preset = carrierMappings[key];
+    if (!preset) return;
+    // Only fill a field if that column actually exists in THIS file.
+    const next = {};
+    MEMBER_MAPPING_FIELDS.forEach((f) => {
+      const col = preset.mapping && preset.mapping[f.key];
+      next[f.key] = col && headers.includes(col) ? col : "";
+    });
+    setMemberMapping(next);
+    setCarrierMode(preset.carrierMode || "fixed");
+    setCarrierColumn(preset.carrierColumn && headers.includes(preset.carrierColumn) ? preset.carrierColumn : "");
+    setAppliedMemberPresetFor(marker);
+  }, [importMode, fileName, carrierInput, sourceLabel, headers, carrierMappings, appliedMemberPresetFor]);
+  async function saveProductionPreset(carrierLabel, sourceLabelArg) {
+    const key = productionPresetKey(carrierLabel, sourceLabelArg);
+    try {
+      await sbFetch(cloudCfg, "carrier_mappings", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([{ carrier: key, mapping: { ...memberMapping, __carrierMode: carrierMode, __carrierColumn: carrierColumn } }]) });
+      setCarrierMappings((prev) => ({ ...prev, [key]: { mapping: { ...memberMapping }, carrierMode, carrierColumn } }));
+    } catch (e) { /* remembering the mapping is a convenience; never block an import on it */ }
+  }
+
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
 
@@ -1086,6 +1114,7 @@ export default function App() {
     setImporting(true);
     try {
       await saveMembershipBatch(carrier, memberRows, dedupedCount, sourceLabel.trim());
+      await saveProductionPreset(carrier, sourceLabel);
       resetImportStaging();
       setView("dashboard");
     } catch (e) {
@@ -3124,6 +3153,7 @@ export default function App() {
                       {carriersList.map((c) => <option key={c} value={c} />)}
                     </datalist>
                     {importMode === "commission" && carrierMappings[carrierInput.trim()] && <p className="pt-hint">Loaded your saved column mapping for {carrierInput.trim()}. Adjust below if this file is different.</p>}
+                    {importMode === "membership" && carrierMappings[productionPresetKey(carrierInput, sourceLabel)] && <p className="pt-hint">Loaded your saved column mapping for {carrierInput.trim()}{sourceLabel.trim() ? " (source: " + sourceLabel.trim() + ")" : ""}. Adjust below if this file is different.</p>}
                   </div>
 
                   <div className="pt-plantype-block">
@@ -3161,6 +3191,11 @@ export default function App() {
                   <div className="pt-card">
                     <h3>Map your columns</h3>
                     <p className="pt-hint" style={{ marginBottom: 12 }}>Match each field to a column from your file. Fields marked * are required. Upload a clean, current-active-only roster — whatever's in your most recent upload for a carrier is what counts as active. Status is optional; if there's no status column, everyone defaults to Active. Status values like "Active," "Termed," "Disenrolled," or "Cancelled" are recognized automatically if you do map one.</p>
+                    <div className="pt-plantype-block" style={{ marginBottom: 14 }}>
+                      <label>Source (optional — only needed if this carrier has more than one independent feed)</label>
+                      <p className="pt-hint" style={{ marginBottom: 8 }}>Leave blank for a normal single-source carrier. If a carrier gets data from two separate places that shouldn't overwrite each other — like Humana from both a current upline and an old one — give each one its own consistent label (e.g. "Carepoint" and "Commission"). Each source tracks its own latest upload independently, and all of them get added together for the carrier's total.</p>
+                      <input value={sourceLabel} onChange={(e) => setSourceLabel(e.target.value)} placeholder="e.g. Carepoint" style={{ maxWidth: 260 }} />
+                    </div>
                     <div className="pt-mapping-grid">
                       {MEMBER_MAPPING_FIELDS.map((f) => (
                         <div className="pt-field" key={f.key}>
@@ -3172,11 +3207,7 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    <div className="pt-plantype-block">
-                      <label>Source (optional — only needed if this carrier has more than one independent feed)</label>
-                      <p className="pt-hint" style={{ marginBottom: 8 }}>Leave blank for a normal single-source carrier. If a carrier gets data from two separate places that shouldn't overwrite each other — like Humana from both a current upline and an old one — give each one its own consistent label (e.g. "Carepoint" and "Commission"). Each source tracks its own latest upload independently, and all of them get added together for the carrier's total.</p>
-                      <input value={sourceLabel} onChange={(e) => setSourceLabel(e.target.value)} placeholder="e.g. Carepoint" style={{ maxWidth: 260 }} />
-                    </div>
+
                   </div>
                 )}
 
@@ -4874,14 +4905,26 @@ function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = 
     </div>
   );
 }
-// Alternate names / DBAs that must always count as ONE carrier. Matching is by
-// keyword (same approach as the logo lookup), so "The Brighton Group",
-// "Brighton Group LLC", "Carepoint Insurance" etc. all become "Carepoint".
+// Alternate spellings that must always count as ONE carrier. The same carrier
+// is spelled differently depending on who sends the statement (for example
+// "Humana Inc." from the FMO vs "Humana" direct), so these are matched by
+// keyword and filed under the name already used in the data. Carepoint /
+// The Brighton Group is the FMO, not a carrier; it is only ever a label.
 function canonicalCarrierName(raw) {
   const name = String(raw || "").trim();
   const s = name.toLowerCase();
+  if (s.includes("humana")) return "Humana";
+  if (s.includes("aetna")) return "Aetna";
+  if (s.includes("unitedhealth") || s.includes("united health") || /\buhc\b/.test(s)) return "United Healthcare";
   if (s.includes("carepoint") || s.includes("brighton")) return "Carepoint";
   return name;
+}
+// Production (membership) imports remember their column choices per carrier AND
+// source label, because one carrier can have feeds with completely different
+// layouts (e.g. Humana via Carepoint vs. Humana commission-as-production).
+// Stored in the same carrier_mappings table under a prefixed key.
+function productionPresetKey(carrierLabel, sourceLabelArg) {
+  return "production::" + canonicalCarrierName(carrierLabel).toLowerCase() + "::" + String(sourceLabelArg || "").trim().toLowerCase();
 }
 function batchTypeKey(b) {
   return b.batchType === "membership" || b.batchType === "payable_rule" || b.batchType === "payable_correction" ? b.batchType : "commission";
