@@ -1708,6 +1708,26 @@ export default function App() {
       return { name, searchText: (name + " " + extra).toLowerCase() };
     });
   }, [records, agentDirectory, agentAliases, agentLookupMaps]);
+  // ---------- MONTHLY REVENUE BY CARRIER (Carriers page charts) ----------
+  const [carrierChartPicks, setCarrierChartPicks] = useState([null, null, null, null, null]);
+  const carrierMonthly = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const revenueByCarrier = {};
+    const monthSet = new Set();
+    records.forEach((r) => {
+      if (!r.paymentDate || !r.carrier) return;
+      const ym = r.paymentDate.slice(0, 7);
+      const yr = Number(ym.slice(0, 4));
+      if (!(yr >= 2015 && yr <= nowYear + 1)) return; // skip obviously bad dates
+      monthSet.add(ym);
+      const m = revenueByCarrier[r.carrier] || (revenueByCarrier[r.carrier] = {});
+      m[ym] = (m[ym] || 0) + r.commissionAmount;
+    });
+    const months = [...monthSet].sort().slice(-24);
+    return { byCarrier: revenueByCarrier, months };
+  }, [records]);
+  const topCarriersForCharts = useMemo(() => groupBy(records, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue).slice(0, 5).map((g) => g.key), [records]);
+  const carrierChartOptions = useMemo(() => [...new Set(records.map((r) => r.carrier).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map((name) => ({ name, searchText: name.toLowerCase() })), [records]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
   const agentSalesCarrierOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.carrier))].sort(), [selectedAgentRecords]);
   const agentSalesStatusOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.status || "Active"))].sort(), [selectedAgentRecords]);
@@ -3261,9 +3281,9 @@ export default function App() {
                     const name = agentChartPicks[i] || topAgentsForCharts[i];
                     if (!name) return null;
                     return (
-                      <AgentMonthlyChart
+                      <MonthlyRevenueChart
                         key={i}
-                        agentName={name}
+                        entityName={name}
                         isCustom={!!agentChartPicks[i]}
                         options={agentChartOptions}
                         months={agentMonthly.months}
@@ -3377,6 +3397,7 @@ export default function App() {
           <div>
             <div className="pt-page-head"><div><h1>Carriers</h1><p>Production and membership by carrier, across every agent.</p></div></div>
             {records.length === 0 && membershipRecords.length === 0 ? <EmptyState onGo={() => setView("import")} /> : (
+              <>
               <div className="pt-grid-list">
                 <div className="pt-card">
                   <input className="pt-search" placeholder="Search carriers…" value={carrierSearch} onChange={(e) => setCarrierSearch(e.target.value)} />
@@ -3445,6 +3466,31 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {topCarriersForCharts.length > 0 && (
+                <>
+                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue by carrier</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Top 5 carriers by revenue to start. Type in a chart's "Change carrier" field to switch that chart to any other carrier.</p>
+                  {[0, 1, 2, 3, 4].map((i) => {
+                    const name = carrierChartPicks[i] || topCarriersForCharts[i];
+                    if (!name) return null;
+                    return (
+                      <MonthlyRevenueChart
+                        key={i}
+                        entityName={name}
+                        entityLabel="Carrier"
+                        placeholder="Type a carrier name to switch..."
+                        isCustom={!!carrierChartPicks[i]}
+                        options={carrierChartOptions}
+                        months={carrierMonthly.months}
+                        monthlyMap={carrierMonthly.byCarrier}
+                        onPick={(picked) => setCarrierChartPicks((prev) => prev.map((p, idx) => (idx === i ? picked : p)))}
+                        onReset={() => setCarrierChartPicks((prev) => prev.map((p, idx) => (idx === i ? null : p)))}
+                      />
+                    );
+                  })}
+                </>
+              )}
+              </>
             )}
           </div>
         )}
@@ -4768,14 +4814,14 @@ function MonthlyRevenueTooltip({ active, payload }) {
     </div>
   );
 }
-// One monthly-revenue bar chart for one agent, with its own type-to-switch field.
-function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, onPick, onReset }) {
+// One monthly-revenue bar chart for one agent OR one carrier, with its own type-to-switch field.
+function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = "Type a name, NPN or ID to switch...", isCustom, options, months, monthlyMap, onPick, onReset }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const q = query.trim().toLowerCase();
   const suggestions = q ? options.filter((o) => o.searchText.includes(q)).slice(0, 8) : [];
-  const agentMonths = (monthlyMap && monthlyMap[agentName]) || {};
-  const data = months.map((m) => ({ month: m, label: fmtMonthShort(m), revenue: agentMonths[m] || 0 }));
+  const entityMonths = (monthlyMap && monthlyMap[entityName]) || {};
+  const data = months.map((m) => ({ month: m, label: fmtMonthShort(m), revenue: entityMonths[m] || 0 }));
   const total = data.reduce((s, d) => s + d.revenue, 0);
   function choose(name) {
     onPick(name);
@@ -4786,14 +4832,14 @@ function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, o
     <div className="pt-card">
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 8 }}>
         <div className="pt-field" style={{ flex: "1 1 240px" }}>
-          <label>Agent</label>
-          <input value={agentName || ""} readOnly />
+          <label>{entityLabel}</label>
+          <input value={entityName || ""} readOnly />
         </div>
         <div className="pt-field" style={{ flex: "1 1 240px", position: "relative" }}>
-          <label>Change agent</label>
+          <label>Change {entityLabel.toLowerCase()}</label>
           <input
             value={query}
-            placeholder="Type a name, NPN or ID to switch..."
+            placeholder={placeholder}
             onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
             onFocus={() => setOpen(true)}
             onBlur={() => setOpen(false)}
@@ -4806,7 +4852,7 @@ function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, o
             </div>
           )}
         </div>
-        {isCustom && <button className="pt-btn ghost small" onClick={onReset}>Reset to top agent</button>}
+        {isCustom && <button className="pt-btn ghost small" onClick={onReset}>Reset to top {entityLabel.toLowerCase()}</button>}
       </div>
       <p className="pt-hint" style={{ marginBottom: 8 }}>Revenue by month (payment date). Total across the months shown: {fmtMoney(total)}</p>
       <ResponsiveContainer width="100%" height={240}>
