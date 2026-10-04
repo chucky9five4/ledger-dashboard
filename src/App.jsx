@@ -3812,7 +3812,7 @@ export default function App() {
                       </div>
                       <div className="pt-field" style={{ marginTop: 14 }}>
                         <label>Filter (optional)</label>
-                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Narrow the list below, or leave blank to browse everyone" />
+                        <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Search by Name, NPN, or any other carrier writing ID" />
                       </div>
                       <div className="pt-listbox" style={{ marginTop: 8, maxHeight: 280, overflowY: "auto" }}>
                         {dirListAgents.map((a) => (
