@@ -1167,6 +1167,35 @@ export default function App() {
   // ---------- MANAGE DATA ----------
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [expandedBatchId, setExpandedBatchId] = useState(null);
+  // Manage data: 10 most recent by default, plus a filterable "view all" page.
+  const [manageViewAll, setManageViewAll] = useState(false);
+  const [manageFilters, setManageFilters] = useState({ dateFrom: "", dateTo: "", type: "", carrier: "" });
+  const [managePage, setManagePage] = useState(0);
+  const batchesNewestFirst = useMemo(() => [...batches].sort((a, b) => String(b.uploadedAt || "").localeCompare(String(a.uploadedAt || ""))), [batches]);
+  const manageCarrierOptions = useMemo(() => [...new Set(batches.map((b) => b.carrier).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [batches]);
+  const manageFilteredBatches = useMemo(() => {
+    const f = manageFilters;
+    return batchesNewestFirst.filter((b) => {
+      if (f.type && batchTypeKey(b) !== f.type) return false;
+      if (f.carrier && b.carrier !== f.carrier) return false;
+      const day = localDayFromIso(b.uploadedAt);
+      if (f.dateFrom && (!day || day < f.dateFrom)) return false;
+      if (f.dateTo && (!day || day > f.dateTo)) return false;
+      return true;
+    });
+  }, [batchesNewestFirst, manageFilters]);
+  const manageMaxPage = Math.max(0, Math.ceil(manageFilteredBatches.length / MANAGE_PAGE_SIZE) - 1);
+  const manageSafePage = Math.min(managePage, manageMaxPage);
+  const manageRowsToRender = manageViewAll
+    ? manageFilteredBatches.slice(manageSafePage * MANAGE_PAGE_SIZE, manageSafePage * MANAGE_PAGE_SIZE + MANAGE_PAGE_SIZE)
+    : batchesNewestFirst.slice(0, 10);
+  const manageFiltersActive = Object.values(manageFilters).some((v) => v !== "");
+  function updateManageFilter(key, value) {
+    setManageFilters((f) => ({ ...f, [key]: value }));
+    setManagePage(0);
+  }
+  function openManageViewAll() { setExpandedBatchId(null); setConfirmDeleteId(null); setManagePage(0); setManageViewAll(true); }
+  function closeManageViewAll() { setExpandedBatchId(null); setConfirmDeleteId(null); setManageViewAll(false); }
   const [batchDetailRows, setBatchDetailRows] = useState([]);
   const [batchDetailLoading, setBatchDetailLoading] = useState(false);
 
@@ -2769,7 +2798,7 @@ export default function App() {
         </div>
         <nav className="pt-nav">
           {NAV.map((n) => (
-            <button key={n.key} className={"pt-nav-item" + (view === n.key ? " active" : "")} onClick={() => setView(n.key)}>
+            <button key={n.key} className={"pt-nav-item" + (view === n.key ? " active" : "")} onClick={() => { if (n.key === "manage") { setManageViewAll(false); } setView(n.key); }}>
               <n.icon size={17} strokeWidth={1.75} />
               <span>{n.label}</span>
               {n.key === "directory" && unmatchedAgentNames.length > 0 && <span className="pt-nav-badge">{unmatchedAgentNames.length}</span>}
@@ -3942,13 +3971,46 @@ export default function App() {
 
         {view === "manage" && (
           <div>
-            <div className="pt-page-head"><div><h1>Manage data</h1><p>Every import you've run. Remove one if something loaded wrong.</p></div></div>
+            <div className="pt-page-head"><div><h1>{manageViewAll ? "All uploads" : "Manage data"}</h1><p>{manageViewAll ? "Filter by import date, type, or carrier — or leave everything blank to see every upload." : "Your 10 most recent imports. Remove one if something loaded wrong."}</p></div></div>
             <div className="pt-card">
-              {batches.length === 0 ? <p className="pt-hint">No imports yet.</p> : (
+              {manageViewAll && (
+                <>
+                  <button className="pt-btn primary small" style={{ marginBottom: 12 }} onClick={closeManageViewAll}>Back to Manage data</button>
+                  <div className="pt-filters" style={{ marginBottom: 12 }}>
+                    <div className="pt-filter">
+                      <label>Imported from</label>
+                      <input type="date" value={manageFilters.dateFrom} onChange={(e) => updateManageFilter("dateFrom", e.target.value)} />
+                    </div>
+                    <div className="pt-filter">
+                      <label>Imported to</label>
+                      <input type="date" value={manageFilters.dateTo} onChange={(e) => updateManageFilter("dateTo", e.target.value)} />
+                    </div>
+                    <div className="pt-filter">
+                      <label>Type</label>
+                      <select value={manageFilters.type} onChange={(e) => updateManageFilter("type", e.target.value)}>
+                        <option value="">All types</option>
+                        {BATCH_TYPE_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                      </select>
+                    </div>
+                    <div className="pt-filter">
+                      <label>Carrier</label>
+                      <select value={manageFilters.carrier} onChange={(e) => updateManageFilter("carrier", e.target.value)}>
+                        <option value="">All carriers</option>
+                        {manageCarrierOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    {manageFiltersActive && (
+                      <button className="pt-btn text" onClick={() => { setManageFilters({ dateFrom: "", dateTo: "", type: "", carrier: "" }); setManagePage(0); }}>Clear filters</button>
+                    )}
+                  </div>
+                  <p className="pt-hint" style={{ marginBottom: 10 }}>Showing {manageFilteredBatches.length} of {batches.length} upload(s).</p>
+                </>
+              )}
+              {batches.length === 0 ? <p className="pt-hint">No imports yet.</p> : manageRowsToRender.length === 0 ? <p className="pt-hint">No uploads match these filters.</p> : (
                 <table className="pt-table">
                   <thead><tr><th></th><th>Type</th><th>Carrier</th><th>File</th><th>Imported</th><th className="num">Rows</th><th></th></tr></thead>
                   <tbody>
-                    {[...batches].reverse().map((b) => {
+                    {manageRowsToRender.map((b) => {
                       const commissionBreakdown = b.batchType !== "membership" && b.batchType !== "payable_rule" && b.batchType !== "payable_correction" ? groupBy(records.filter((r) => r.uploadBatchId === b.id), (r) => r.carrier).sort((x, y) => y.count - x.count) : [];
                       const payableBatchEntries = (b.batchType === "payable_rule" || b.batchType === "payable_correction") ? payableLedger.filter((l) => l.batchId === b.id) : [];
                       const payableBatchTotal = payableBatchEntries.reduce((s, l) => s + l.amount, 0);
@@ -4032,8 +4094,18 @@ export default function App() {
                   </tbody>
                 </table>
               )}
+              {!manageViewAll && batches.length > 10 && (
+                <button className="pt-btn primary small" style={{ marginTop: 12 }} onClick={openManageViewAll}>View all {batches.length} uploads →</button>
+              )}
+              {manageViewAll && manageFilteredBatches.length > MANAGE_PAGE_SIZE && (
+                <div className="pt-row-between" style={{ marginTop: 12 }}>
+                  <button className="pt-btn ghost small" disabled={manageSafePage === 0} onClick={() => setManagePage(manageSafePage - 1)}>Previous {MANAGE_PAGE_SIZE}</button>
+                  <span className="pt-hint">{manageSafePage * MANAGE_PAGE_SIZE + 1}–{Math.min(manageFilteredBatches.length, manageSafePage * MANAGE_PAGE_SIZE + MANAGE_PAGE_SIZE)} of {manageFilteredBatches.length}</span>
+                  <button className="pt-btn ghost small" disabled={manageSafePage >= manageMaxPage} onClick={() => setManagePage(manageSafePage + 1)}>Next {MANAGE_PAGE_SIZE}</button>
+                </div>
+              )}
             </div>
-            {records.length > 0 && (
+            {!manageViewAll && records.length > 0 && (
               <div className="pt-card">
                 <div className="pt-row-between">
                   <div>
@@ -4056,6 +4128,7 @@ export default function App() {
               </div>
             )}
 
+            {!manageViewAll && (
             <div className="pt-card">
               <div className="pt-row-between">
                 <div>
@@ -4073,6 +4146,7 @@ export default function App() {
                 )}
               </div>
             </div>
+            )}
           </div>
         )}
 
@@ -4769,6 +4843,18 @@ function AgentMonthlyChart({ agentName, isCustom, options, months, monthlyMap, o
       </ResponsiveContainer>
     </div>
   );
+}
+function batchTypeKey(b) {
+  return b.batchType === "membership" || b.batchType === "payable_rule" || b.batchType === "payable_correction" ? b.batchType : "commission";
+}
+const BATCH_TYPE_OPTIONS = [["commission", "Commission"], ["membership", "Membership"], ["payable_rule", "Payable rule"], ["payable_correction", "One-time correction"]];
+const MANAGE_PAGE_SIZE = 25;
+// Local calendar day (YYYY-MM-DD) of an ISO timestamp, so date filters match
+// the time the Imported column shows, not UTC.
+function localDayFromIso(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 function CarrierAxisTick({ x, y, payload }) {
   const logo = getCarrierLogo(payload.value);
