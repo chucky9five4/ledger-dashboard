@@ -1275,8 +1275,19 @@ export default function App() {
     const sorted = [...agentDirectory].sort((a, b) => a.canonicalName.localeCompare(b.canonicalName));
     const q = dirSearchQuery.trim().toLowerCase();
     if (!q) return sorted;
-    return sorted.filter((a) => a.canonicalName.toLowerCase().includes(q) || (a.npn && a.npn.includes(q)));
-  }, [agentDirectory, dirSearchQuery]);
+    // Match on name, NPN, or any carrier-specific ID on file (Humana ID,
+    // United Healthcare ID, any other alias) — not just the canonical name.
+    const aliasesByAgent = {};
+    agentAliases.forEach((al) => {
+      (aliasesByAgent[al.agentId] = aliasesByAgent[al.agentId] || []).push(al);
+    });
+    return sorted.filter((a) => {
+      if (a.canonicalName.toLowerCase().includes(q)) return true;
+      if (a.npn && a.npn.toLowerCase().includes(q)) return true;
+      const aliases = aliasesByAgent[a.id] || [];
+      return aliases.some((al) => (al.aliasValue || "").toLowerCase().includes(q));
+    });
+  }, [agentDirectory, agentAliases, dirSearchQuery]);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentNpn, setNewAgentNpn] = useState("");
   const [editAgentName, setEditAgentName] = useState("");
@@ -3742,14 +3753,13 @@ export default function App() {
                         <label>Filter (optional)</label>
                         <input value={dirSearchQuery} onChange={(e) => setDirSearchQuery(e.target.value)} placeholder="Narrow the list below, or leave blank to browse everyone" />
                       </div>
-                      <select size={10} className="pt-listbox" style={{ marginTop: 8 }} value={selectedDirAgent || ""} onChange={(e) => {
-                        const a = agentDirectory.find((ag) => ag.id === e.target.value);
-                        if (a) { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }
-                      }}>
+                      <div className="pt-listbox" style={{ marginTop: 8, maxHeight: 280, overflowY: "auto" }}>
                         {dirListAgents.map((a) => (
-                          <option key={a.id} value={a.id}>{a.canonicalName}{a.npn ? ` · ${a.npn}` : ""}</option>
+                          <div key={a.id} className={"pt-mini-row pt-clickable" + (selectedDirAgent === a.id ? " selected" : "")} onClick={() => { setSelectedDirAgent(a.id); setEditAgentName(a.canonicalName); setEditAgentNpn(a.npn); }}>
+                            <span>{a.canonicalName}{a.npn ? ` · ${a.npn}` : ""}</span>
+                          </div>
                         ))}
-                      </select>
+                      </div>
                       <p className="pt-hint" style={{ marginTop: 6 }}>{dirListAgents.length} agent(s) — scroll to see more, click one to open it below.</p>
                     </div>
 
