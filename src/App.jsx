@@ -3478,6 +3478,7 @@ export default function App() {
                         key={i}
                         entityName={name}
                         entityLabel="Carrier"
+                        showLogo
                         placeholder="Type a carrier name to switch..."
                         isCustom={!!carrierChartPicks[i]}
                         options={carrierChartOptions}
@@ -4815,7 +4816,7 @@ function MonthlyRevenueTooltip({ active, payload }) {
   );
 }
 // One monthly-revenue bar chart for one agent OR one carrier, with its own type-to-switch field.
-function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = "Type a name, NPN or ID to switch...", isCustom, options, months, monthlyMap, onPick, onReset }) {
+function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = "Type a name, NPN or ID to switch...", showLogo = false, isCustom, options, months, monthlyMap, onPick, onReset }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const q = query.trim().toLowerCase();
@@ -4833,7 +4834,13 @@ function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 8 }}>
         <div className="pt-field" style={{ flex: "1 1 240px" }}>
           <label>{entityLabel}</label>
-          <input value={entityName || ""} readOnly />
+          {showLogo ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 5, padding: "5px 9px", minHeight: 38, display: "flex", alignItems: "center", background: "#FFFFFF" }}>
+              <CarrierName carrier={entityName} style={{ height: "2.2em" }} />
+            </div>
+          ) : (
+            <input value={entityName || ""} readOnly />
+          )}
         </div>
         <div className="pt-field" style={{ flex: "1 1 240px", position: "relative" }}>
           <label>Change {entityLabel.toLowerCase()}</label>
@@ -4847,7 +4854,7 @@ function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = 
           {open && suggestions.length > 0 && (
             <div className="pt-card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 5, marginTop: 4, padding: 6, maxHeight: 260, overflowY: "auto" }}>
               {suggestions.map((o) => (
-                <div key={o.name} className="pt-clickable" style={{ padding: "6px 8px", borderRadius: 4 }} onMouseDown={(e) => { e.preventDefault(); choose(o.name); }}>{o.name}</div>
+                <div key={o.name} className="pt-clickable" style={{ padding: "6px 8px", borderRadius: 4 }} onMouseDown={(e) => { e.preventDefault(); choose(o.name); }}>{showLogo ? <span style={{ background: "#FFFFFF", padding: "2px 8px", borderRadius: 4, display: "inline-flex", alignItems: "center" }}><CarrierName carrier={o.name} style={{ height: "1.8em" }} /></span> : o.name}</div>
               ))}
             </div>
           )}
