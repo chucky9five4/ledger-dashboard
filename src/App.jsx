@@ -896,14 +896,15 @@ export default function App() {
   async function commitImport() {
     if (!mappingValid) return;
     const batchId = "b_" + Date.now();
-    const carrier = canonicalCarrierName(carrierInput);
+    const resolveCarrier = makeCarrierResolver(carriersList);
+    const carrier = carrierMode === "column" ? canonicalCarrierName(carrierInput) : resolveCarrier(carrierInput);
     // If a carrier splits one First Year lump-sum payment across several
     // transactions in the same month, only the first one we see for a given
     // policy gets the lump sum — the rest are treated as already accounted
     // for, so the total credited never exceeds one correct lump sum.
     const firstYearLumpSumSeen = new Set();
     const newRecords = rawRows.map((r, i) => {
-      const rowCarrier = carrierMode === "column" ? canonicalCarrierName(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
+      const rowCarrier = carrierMode === "column" ? resolveCarrier(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rawAgent = String(r[mapping.agent] ?? "").trim() || "Unassigned";
       const agentNpn = mapping.agentNpn ? String(r[mapping.agentNpn] ?? "").trim() : "";
       const agentCarrierId = mapping.agentCarrierId ? String(r[mapping.agentCarrierId] ?? "").trim() : "";
@@ -1027,6 +1028,26 @@ export default function App() {
 
   const memberMappingValid = carrierInput.trim() && (memberMapping.clientName || (memberMapping.clientFirstName && memberMapping.clientLastName)) && (carrierMode === "fixed" || carrierColumn);
 
+  // Read-only preview of how this file's carrier names will be filed, using the
+  // exact same resolver the import uses, so nothing is a surprise.
+  const carrierCheck = useMemo(() => {
+    if (!fileName) return [];
+    const resolve = makeCarrierResolver(carriersList);
+    const known = new Set(carriersList);
+    const tally = new Map();
+    const add = (raw, n) => {
+      const t = tally.get(raw) || { raw, filedAs: resolve(raw), count: 0 };
+      t.count += n;
+      tally.set(raw, t);
+    };
+    if (carrierMode === "column") {
+      if (!carrierColumn) return [];
+      rawRows.forEach((r) => add(String(r[carrierColumn] ?? "").trim() || "Unknown", 1));
+    } else if (carrierInput.trim()) {
+      add(carrierInput.trim(), rawRows.length);
+    }
+    return [...tally.values()].map((t) => ({ ...t, isNew: !known.has(t.filedAs), renamed: t.filedAs !== t.raw })).sort((a, b) => b.count - a.count);
+  }, [fileName, carrierMode, carrierColumn, carrierInput, rawRows, carriersList]);
   // Remembered column choices for production imports (per carrier + source).
   const [appliedMemberPresetFor, setAppliedMemberPresetFor] = useState("");
   useEffect(() => {
@@ -1073,9 +1094,10 @@ export default function App() {
   // before but is missing now as termed on the last day of that prior month.
   async function commitMembershipImport() {
     if (!memberMappingValid) return;
-    const carrier = canonicalCarrierName(carrierInput);
+    const resolveCarrier = makeCarrierResolver(carriersList);
+    const carrier = carrierMode === "column" ? canonicalCarrierName(carrierInput) : resolveCarrier(carrierInput);
     let memberRows = rawRows.map((r) => {
-      const rowCarrier = carrierMode === "column" ? canonicalCarrierName(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
+      const rowCarrier = carrierMode === "column" ? resolveCarrier(String(r[carrierColumn] ?? "").trim() || "Unknown") : carrier;
       const rowClientName = memberMapping.clientName ? String(r[memberMapping.clientName] ?? "").trim() : combineName(r[memberMapping.clientFirstName], r[memberMapping.clientLastName]);
       const rowEffectiveDate = memberMapping.effectiveDate ? parseDateValue(r[memberMapping.effectiveDate]) : "";
       const rawAgent = memberMapping.agent ? String(r[memberMapping.agent] ?? "").trim() : "";
@@ -2127,6 +2149,7 @@ export default function App() {
     return ovRows.filter((r) => String(r[ovWrongAgentCol] ?? "").trim() === String(r[ovAgentCol] ?? "").trim()).length;
   }, [ovRows, ovWrongAgentCol, ovAgentCol]);
   async function commitOverrideBulkImport() {
+    const resolveCarrier = makeCarrierResolver(carriersList);
     if (!cloudCfg || !overrideImportValid) return;
     setOvImporting(true);
     const batchId = "bulkoverride_" + Date.now();
@@ -2134,7 +2157,7 @@ export default function App() {
     try {
       for (let i = 0; i < ovRows.length; i++) {
         const r = ovRows[i];
-        const carrier = canonicalCarrierName(ovCarrierMode === "fixed" ? ovCarrierFixed : String(r[ovCarrierCol] ?? ""));
+        const carrier = resolveCarrier(ovCarrierMode === "fixed" ? ovCarrierFixed : String(r[ovCarrierCol] ?? ""));
         const directName = ovClientCol ? String(r[ovClientCol] ?? "").trim() : "";
         const clientName = directName || combineName(ovClientFirstCol ? r[ovClientFirstCol] : "", ovClientLastCol ? r[ovClientLastCol] : "");
         const effDate = parseDateValue(r[ovEffDateCol]);
@@ -2532,6 +2555,7 @@ export default function App() {
   const correctImportValid = (correctCarrierMode === "fixed" ? correctCarrierFixed.trim() : correctCarrierCol) && correctClientCol && correctEffDateCol && correctAmountCol;
 
   async function commitOneTimeCorrection() {
+    const resolveCarrier = makeCarrierResolver(carriersList);
     if (!cloudCfg || !correctImportValid) return;
     setCorrecting(true);
     const batchId = "b_" + Date.now();
@@ -2543,7 +2567,7 @@ export default function App() {
       setBatches((prev) => [...prev, { id: batchId, carrier: carrierLabel, fileName: correctFileName, uploadedAt: new Date().toISOString(), rowCount: correctRows.length, batchType: "payable_correction" }]);
       for (let i = 0; i < correctRows.length; i++) {
         const r = correctRows[i];
-        const carrier = canonicalCarrierName(correctCarrierMode === "fixed" ? correctCarrierFixed : String(r[correctCarrierCol] ?? ""));
+        const carrier = resolveCarrier(correctCarrierMode === "fixed" ? correctCarrierFixed : String(r[correctCarrierCol] ?? ""));
         const clientName = String(r[correctClientCol] ?? "").trim();
         const effDate = parseDateValue(r[correctEffDateCol]);
         const amt = parseMoney(r[correctAmountCol]);
@@ -2576,6 +2600,7 @@ export default function App() {
   }
 
   async function commitPayableBulkImport() {
+    const resolveCarrier = makeCarrierResolver(carriersList);
     if (!cloudCfg || !payableImportValid) return;
     setPayImporting(true);
     const batchId = "b_" + Date.now();
@@ -2590,7 +2615,7 @@ export default function App() {
       setBatches((prev) => [...prev, batchEntry]);
       for (let i = 0; i < payRows.length; i++) {
         const r = payRows[i];
-        const carrier = canonicalCarrierName(payCarrierMode === "fixed" ? payCarrierFixed : String(r[payCarrierCol] ?? ""));
+        const carrier = resolveCarrier(payCarrierMode === "fixed" ? payCarrierFixed : String(r[payCarrierCol] ?? ""));
         const directName = payClientCol ? String(r[payClientCol] ?? "").trim() : "";
         const clientName = directName || combineName(payClientFirstCol ? r[payClientFirstCol] : "", payClientLastCol ? r[payClientLastCol] : "");
         const effDate = parseDateValue(r[payEffDateCol]);
@@ -3169,6 +3194,19 @@ export default function App() {
                       </select>
                     )}
                   </div>
+                  {carrierCheck.length > 0 && (
+                    <div className="pt-plantype-block" style={{ marginTop: 12 }}>
+                      <label>Carrier check: how this file will be filed</label>
+                      {carrierCheck.slice(0, 20).map((cc) => (
+                        <div key={cc.raw} className="pt-mini-row">
+                          <span>{cc.raw}{cc.renamed ? " → " + cc.filedAs : ""}</span>
+                          <span>{cc.count.toLocaleString()} row(s){cc.isNew ? " · NEW carrier" : ""}</span>
+                        </div>
+                      ))}
+                      {carrierCheck.length > 20 && <p className="pt-hint">+ {carrierCheck.length - 20} more names</p>}
+                      {carrierCheck.some((cc) => cc.isNew) && <p className="pt-hint" style={{ marginTop: 6 }}>NEW carrier means no carrier with that name exists yet, so one will be created. If it is really an existing carrier spelled differently, tell me before importing so the data doesn't split.</p>}
+                    </div>
+                  )}
                 </div>
 
                 {importMode === "commission" ? (
@@ -4905,26 +4943,58 @@ function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = 
     </div>
   );
 }
-// Alternate spellings that must always count as ONE carrier. The same carrier
-// is spelled differently depending on who sends the statement (for example
-// "Humana Inc." from the FMO vs "Humana" direct), so these are matched by
-// keyword and filed under the name already used in the data. Carepoint /
-// The Brighton Group is the FMO, not a carrier; it is only ever a label.
-function canonicalCarrierName(raw) {
-  const name = String(raw || "").trim();
-  const s = name.toLowerCase();
+// ---- Carrier name recognition -------------------------------------------------
+// The same carrier arrives spelled differently depending on who sends the
+// statement ("Humana Inc." from the FMO, "Humana" direct, "Aetna Health Plans").
+// Two layers keep them as ONE carrier so the data never splits:
+//  Layer 1. Known brands are matched by keyword and filed under the name already used
+//     in the data. Carepoint / The Brighton Group is the FMO, not a carrier; it is
+//     only ever a label.
+//  Layer 2. Any other carrier: the name is reduced to its brand (corporate and generic
+//     words like Inc, LLC, Health, Plans, Insurance are ignored) and matched against
+//     the carriers already in the app, so the existing spelling is reused.
+function matchCarrierAlias(raw) {
+  const s = String(raw || "").trim().toLowerCase();
   if (s.includes("humana")) return "Humana";
   if (s.includes("aetna")) return "Aetna";
   if (s.includes("unitedhealth") || s.includes("united health") || /\buhc\b/.test(s)) return "United Healthcare";
+  if (s.includes("anthem")) return "Anthem";
   if (s.includes("carepoint") || s.includes("brighton")) return "Carepoint";
-  return name;
+  return null;
+}
+function canonicalCarrierName(raw) {
+  return matchCarrierAlias(raw) || String(raw || "").trim();
+}
+const CARRIER_DESCRIPTOR_WORDS = new Set(["inc", "incorporated", "llc", "llp", "lp", "corp", "corporation", "co", "company", "ltd", "limited", "the", "of", "and", "insurance", "assurance", "health", "healthcare", "care", "plan", "plans", "medical", "life", "advantage", "medicare"]);
+function carrierBrandKey(raw) {
+  return String(raw || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean).filter((t) => !CARRIER_DESCRIPTOR_WORDS.has(t)).join(" ");
+}
+// One resolver per import: seeded with the carriers already in the app, and the
+// first spelling it sees wins for the rest of that file, so a file that spells a
+// new carrier two ways still ends up as one carrier.
+function makeCarrierResolver(knownNames) {
+  const byKey = new Map();
+  (knownNames || []).forEach((n) => { const k = carrierBrandKey(n); if (k && !byKey.has(k)) byKey.set(k, n); });
+  const cache = new Map();
+  return function resolveCarrier(raw) {
+    const name = String(raw || "").trim();
+    if (cache.has(name)) return cache.get(name);
+    let out = matchCarrierAlias(name);
+    if (!out) {
+      const k = carrierBrandKey(name);
+      if (k && byKey.has(k)) out = byKey.get(k);
+      else { out = name; if (k) byKey.set(k, name); }
+    }
+    cache.set(name, out);
+    return out;
+  };
 }
 // Production (membership) imports remember their column choices per carrier AND
 // source label, because one carrier can have feeds with completely different
 // layouts (e.g. Humana via Carepoint vs. Humana commission-as-production).
 // Stored in the same carrier_mappings table under a prefixed key.
 function productionPresetKey(carrierLabel, sourceLabelArg) {
-  return "production::" + canonicalCarrierName(carrierLabel).toLowerCase() + "::" + String(sourceLabelArg || "").trim().toLowerCase();
+  return "production::" + (carrierBrandKey(canonicalCarrierName(carrierLabel)) || canonicalCarrierName(carrierLabel).toLowerCase()) + "::" + String(sourceLabelArg || "").trim().toLowerCase();
 }
 function batchTypeKey(b) {
   return b.batchType === "membership" || b.batchType === "payable_rule" || b.batchType === "payable_correction" ? b.batchType : "commission";
