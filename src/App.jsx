@@ -1722,6 +1722,37 @@ export default function App() {
       .filter((a) => a.key.toLowerCase().includes(agentSearch.toLowerCase()))
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipLatestByPolicy, agentSearch, agentLookupMaps]);
+  // ---------- MONTHLY PRODUCTION (members by effective-date month) ----------
+  // Production = distinct clients (carrier + client name) from each carrier/source's latest
+  // production upload, counted in the month of their effective date. Rows without a usable
+  // effective date can't be placed on a month, so they are left out of these charts only.
+  const productionMonthly = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const byCarrier = {};
+    const byAgent = {};
+    const monthSet = new Set();
+    const seen = new Set();
+    membershipRecords.forEach((r) => {
+      const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
+      if (latestBatchIdByCarrierSource[key] !== r.uploadBatchId) return;
+      if (!r.effectiveDate || !r.carrier) return;
+      const ym = String(r.effectiveDate).slice(0, 7);
+      const yr = Number(ym.slice(0, 4));
+      if (!(yr >= 2015 && yr <= nowYear + 1)) return;
+      const dedupKey = r.carrier + "::" + normalizeClientKey(r.clientName);
+      if (seen.has(dedupKey)) return;
+      seen.add(dedupKey);
+      monthSet.add(ym);
+      const c = byCarrier[r.carrier] || (byCarrier[r.carrier] = {});
+      c[ym] = (c[ym] || 0) + 1;
+      if (r.agent) {
+        const name = resolveAgentName(r.agent, "", "", "");
+        const a = byAgent[name] || (byAgent[name] = {});
+        a[ym] = (a[ym] || 0) + 1;
+      }
+    });
+    return { byCarrier, byAgent, months: [...monthSet] };
+  }, [membershipRecords, latestBatchIdByCarrierSource, agentLookupMaps]);
   // ---------- MONTHLY REVENUE BY AGENT (Agents page charts) ----------
   const [agentChartPicks, setAgentChartPicks] = useState([null, null, null, null, null]);
   const agentMonthly = useMemo(() => {
@@ -1738,9 +1769,10 @@ export default function App() {
       const m = byAgent[name] || (byAgent[name] = {});
       m[ym] = (m[ym] || 0) + r.commissionAmount;
     });
+    productionMonthly.months.forEach((m) => monthSet.add(m));
     const months = [...monthSet].sort().slice(-24);
     return { byAgent, months };
-  }, [records, agentLookupMaps]);
+  }, [records, agentLookupMaps, productionMonthly]);
   const topAgentsForCharts = useMemo(() => {
     return groupBy(records, (r) => resolveAgentName(r.agent, "", "", ""))
       .sort((a, b) => b.revenue - a.revenue)
@@ -1774,9 +1806,10 @@ export default function App() {
       const m = revenueByCarrier[r.carrier] || (revenueByCarrier[r.carrier] = {});
       m[ym] = (m[ym] || 0) + r.commissionAmount;
     });
+    productionMonthly.months.forEach((m) => monthSet.add(m));
     const months = [...monthSet].sort().slice(-24);
     return { byCarrier: revenueByCarrier, months };
-  }, [records]);
+  }, [records, productionMonthly]);
   const topCarriersForCharts = useMemo(() => groupBy(records, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue).slice(0, 5).map((g) => g.key), [records]);
   const carrierChartOptions = useMemo(() => [...new Set(records.map((r) => r.carrier).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map((name) => ({ name, searchText: name.toLowerCase() })), [records]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
@@ -3344,8 +3377,8 @@ export default function App() {
               </div>
               {topAgentsForCharts.length > 0 && (
                 <>
-                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue by agent</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Top 5 agents by revenue to start. Type in a chart's "Change agent" field to switch that chart to any other agent.</p>
+                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue &amp; production by agent</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Red bars are revenue (payment date), navy bars are production (members by effective date). Top 5 agents by revenue to start. Type in a chart's "Change agent" field to switch that chart to any other agent.</p>
                   {[0, 1, 2, 3, 4].map((i) => {
                     const name = agentChartPicks[i] || topAgentsForCharts[i];
                     if (!name) return null;
@@ -3357,6 +3390,7 @@ export default function App() {
                         options={agentChartOptions}
                         months={agentMonthly.months}
                         monthlyMap={agentMonthly.byAgent}
+                        productionMap={productionMonthly.byAgent}
                         onPick={(picked) => setAgentChartPicks((prev) => prev.map((p, idx) => (idx === i ? picked : p)))}
                         onReset={() => setAgentChartPicks((prev) => prev.map((p, idx) => (idx === i ? null : p)))}
                       />
@@ -3537,8 +3571,8 @@ export default function App() {
               </div>
               {topCarriersForCharts.length > 0 && (
                 <>
-                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue by carrier</h3>
-                  <p className="pt-hint" style={{ marginBottom: 12 }}>Top 5 carriers by revenue to start. Type in a chart's "Change carrier" field to switch that chart to any other carrier.</p>
+                  <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue &amp; production by carrier</h3>
+                  <p className="pt-hint" style={{ marginBottom: 12 }}>Red bars are revenue (payment date), navy bars are production (members by effective date). Top 5 carriers by revenue to start. Type in a chart's "Change carrier" field to switch that chart to any other carrier.</p>
                   {[0, 1, 2, 3, 4].map((i) => {
                     const name = carrierChartPicks[i] || topCarriersForCharts[i];
                     if (!name) return null;
@@ -3553,6 +3587,7 @@ export default function App() {
                         options={carrierChartOptions}
                         months={carrierMonthly.months}
                         monthlyMap={carrierMonthly.byCarrier}
+                        productionMap={productionMonthly.byCarrier}
                         onPick={(picked) => setCarrierChartPicks((prev) => prev.map((p, idx) => (idx === i ? picked : p)))}
                         onReset={() => setCarrierChartPicks((prev) => prev.map((p, idx) => (idx === i ? null : p)))}
                       />
@@ -4881,18 +4916,21 @@ function MonthlyRevenueTooltip({ active, payload }) {
     <div style={{ background: "#fff", border: "1px solid #E2E4E9", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
       <div style={{ color: "#1E2A3A", marginBottom: 2, fontWeight: 600 }}>{fmtMonthLabel(p.month)}</div>
       <div className={moneyClass(p.revenue)}>revenue : {fmtMoney(p.revenue)}</div>
+      <div style={{ color: "#1E2A3A" }}>production : {p.production} {p.production === 1 ? "member" : "members"}</div>
     </div>
   );
 }
 // One monthly-revenue bar chart for one agent OR one carrier, with its own type-to-switch field.
-function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = "Type a name, NPN or ID to switch...", showLogo = false, isCustom, options, months, monthlyMap, onPick, onReset }) {
+function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = "Type a name, NPN or ID to switch...", showLogo = false, isCustom, options, months, monthlyMap, productionMap, onPick, onReset }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const q = query.trim().toLowerCase();
   const suggestions = q ? options.filter((o) => o.searchText.includes(q)).slice(0, 8) : [];
   const entityMonths = (monthlyMap && monthlyMap[entityName]) || {};
-  const data = months.map((m) => ({ month: m, label: fmtMonthShort(m), revenue: entityMonths[m] || 0 }));
+  const prodMonths = (productionMap && productionMap[entityName]) || {};
+  const data = months.map((m) => ({ month: m, label: fmtMonthShort(m), revenue: entityMonths[m] || 0, production: prodMonths[m] || 0 }));
   const total = data.reduce((s, d) => s + d.revenue, 0);
+  const totalProd = data.reduce((s, d) => s + d.production, 0);
   function choose(name) {
     onPick(name);
     setQuery("");
@@ -4930,14 +4968,17 @@ function MonthlyRevenueChart({ entityName, entityLabel = "Agent", placeholder = 
         </div>
         {isCustom && <button className="pt-btn ghost small" onClick={onReset}>Reset to top {entityLabel.toLowerCase()}</button>}
       </div>
-      <p className="pt-hint" style={{ marginBottom: 8 }}>Revenue by month (payment date). Total across the months shown: {fmtMoney(total)}</p>
+      <p className="pt-hint" style={{ marginBottom: 8 }}>Revenue by month (payment date): {fmtMoney(total)}. Production by month (effective date): {totalProd} {totalProd === 1 ? "member" : "members"}. Totals cover the months shown.</p>
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
           <XAxis dataKey="label" interval={0} tick={{ fontSize: 10, fill: "#64748B" }} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
-          <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+          <YAxis yAxisId="rev" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+          <YAxis yAxisId="prod" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
           <Tooltip content={<MonthlyRevenueTooltip />} />
-          <Bar dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
+          <Legend verticalAlign="top" height={24} iconType="square" formatter={(v) => (v === "revenue" ? "Revenue" : "Production")} wrapperStyle={{ fontSize: 12 }} />
+          <Bar yAxisId="rev" dataKey="revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
+          <Bar yAxisId="prod" dataKey="production" fill="#1E2A3A" radius={[3, 3, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
