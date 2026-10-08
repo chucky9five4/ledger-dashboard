@@ -5243,6 +5243,36 @@ const CSS = `
   .pt-grid-2, .pt-grid-list, .pt-mapping-grid, .pt-mini-grid { grid-template-columns: 1fr; }
 }
 
+/* ---------- PHONE LAYOUT ----------
+   Desktop is untouched. Under 760px wide the sidebar becomes a compact top bar
+   with a swipeable menu row, the page uses the full width, and wide tables and
+   charts scroll sideways inside their card instead of squeezing. */
+@media (max-width: 760px) {
+  .pt-app { flex-direction: column; }
+  .pt-sidebar { width: 100%; flex-direction: column; padding: 10px 10px 8px; position: sticky; top: 0; z-index: 30; }
+  .pt-brand { flex-direction: row; justify-content: flex-start; gap: 10px; padding: 0 2px 8px; }
+  .pt-brand-logo-wrap { padding: 5px 9px; }
+  .pt-brand-logo { width: 64px; }
+  .pt-brand-caption { text-align: left; font-size: 9px; }
+  .pt-nav { flex-direction: row; overflow-x: auto; gap: 4px; margin-top: 0; padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .pt-nav::-webkit-scrollbar { display: none; }
+  .pt-nav-item { flex-shrink: 0; white-space: nowrap; padding: 8px 12px; border-left: none; border-bottom: 2px solid transparent; font-size: 13px; }
+  .pt-nav-item.active { border-bottom-color: var(--gold); }
+  .pt-sidebar-footer { display: none; }
+  .pt-main { padding: 14px 12px 48px; max-width: 100%; width: 100%; }
+  .pt-cards, .pt-cards-2, .pt-cards-3, .pt-cards-4 { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pt-card { padding-left: 14px; padding-right: 14px; }
+  .pt-table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+  .pt-modal-backdrop { padding: 10px; }
+  .pt-modal { padding: 16px; max-height: 92vh; }
+  .pt-btn { min-height: 38px; }
+  .pt-field input, .pt-field select, .pt-field textarea { font-size: 16px; }
+  h2 { font-size: 20px; }
+}
+@media (max-width: 420px) {
+  .pt-cards, .pt-cards-2, .pt-cards-3, .pt-cards-4 { grid-template-columns: 1fr; }
+}
+
 /* ---------- DARK MODE ----------
    Most of the app already reads its colors from the variables on .pt-app,
    so overriding them here covers the majority of the UI automatically.
