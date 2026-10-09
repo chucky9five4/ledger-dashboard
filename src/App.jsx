@@ -1891,8 +1891,9 @@ export default function App() {
     const d90 = new Date(nowMs - 90 * 86400000).toISOString().slice(0, 10);
     const agents = {};
     const getA = (n) => agents[n] || (agents[n] = { name: n, income: {}, invested: {}, incomeAll: 0, investedAll: 0, income90: 0, invested90: 0, firstInvest: "", entries: [] });
-    const company = { income: {}, agentInv: {}, companyExp: {}, incomeYtd: 0, agentInvYtd: 0, companyExpYtd: 0, companyCats: {}, agentCats: {} };
+    const company = { income: {}, agentInv: {}, companyExp: {}, incomeAll: 0, agentInvAll: 0, companyExpAll: 0, companyCats: {}, agentCats: {} };
     records.forEach((r) => {
+      company.incomeAll += r.commissionAmount;
       if (!r.paymentDate) return;
       const y = Number(r.paymentDate.slice(0, 4));
       if (!(y >= 2015 && y <= yr + 1)) return;
@@ -1903,7 +1904,6 @@ export default function App() {
         const ym = r.paymentDate.slice(0, 7);
         a.income[ym] = (a.income[ym] || 0) + r.commissionAmount;
         company.income[ym] = (company.income[ym] || 0) + r.commissionAmount;
-        company.incomeYtd += r.commissionAmount;
       }
     });
     expenses.forEach((e) => {
@@ -1920,12 +1920,12 @@ export default function App() {
         if (inYear) {
           a.invested[ym] = (a.invested[ym] || 0) + e.amount;
           company.agentInv[ym] = (company.agentInv[ym] || 0) + e.amount;
-          company.agentInvYtd += e.amount;
-          company.agentCats[cat] = (company.agentCats[cat] || 0) + e.amount;
         }
-      } else if (inYear) {
-        company.companyExp[ym] = (company.companyExp[ym] || 0) + e.amount;
-        company.companyExpYtd += e.amount;
+        company.agentInvAll += e.amount;
+        company.agentCats[cat] = (company.agentCats[cat] || 0) + e.amount;
+      } else {
+        if (inYear) company.companyExp[ym] = (company.companyExp[ym] || 0) + e.amount;
+        company.companyExpAll += e.amount;
         company.companyCats[cat] = (company.companyCats[cat] || 0) + e.amount;
       }
     });
@@ -5105,7 +5105,7 @@ function RoiCharts({ series, spendName = "Invested" }) {
   const axisTick = { fontSize: 10, fill: "#64748B" };
   return (
     <>
-      <div className="pt-mini-label" style={{ marginTop: 14 }}>Retained income vs. {spendName.toLowerCase()}, by month</div>
+      <div className="pt-mini-label" style={{ marginTop: 14 }}>Net revenue vs. {spendName.toLowerCase()}, by month</div>
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
@@ -5113,20 +5113,9 @@ function RoiCharts({ series, spendName = "Invested" }) {
           <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
           <Tooltip content={<RoiTooltip />} />
           <Legend verticalAlign="top" height={24} iconType="square" wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="income" name="Retained income" fill="#CE3334" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="income" name="Net revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
           <Bar dataKey="invested" name={spendName} fill="#64748B" radius={[3, 3, 0, 0]} />
         </BarChart>
-      </ResponsiveContainer>
-      <div className="pt-mini-label" style={{ marginTop: 14 }}>Running net (retained income minus {spendName.toLowerCase()}), year to date</div>
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
-          <XAxis dataKey="label" interval={0} tick={axisTick} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
-          <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
-          <Tooltip content={<RoiTooltip />} />
-          <ReferenceLine y={0} stroke="#64748B" strokeDasharray="4 4" />
-          <Line type="monotone" dataKey="cumulative" name="Running net" stroke="#4F6FD0" strokeWidth={2} dot={{ r: 3 }} />
-        </LineChart>
       </ResponsiveContainer>
     </>
   );
@@ -5134,7 +5123,7 @@ function RoiCharts({ series, spendName = "Invested" }) {
 function RoiMonthTable({ series, spendName = "Invested" }) {
   return (
     <table className="pt-table" style={{ marginTop: 10 }}>
-      <thead><tr><th>Month</th><th className="num">Retained income</th><th className="num">{spendName}</th><th className="num">Net</th><th className="num">Running net</th></tr></thead>
+      <thead><tr><th>Month</th><th className="num">Net revenue</th><th className="num">{spendName}</th><th className="num">Net</th></tr></thead>
       <tbody>
         {series.map((s) => (
           <tr key={s.month}>
@@ -5142,7 +5131,6 @@ function RoiMonthTable({ series, spendName = "Invested" }) {
             <td className="num"><Money v={s.income} /></td>
             <td className="num mono">{fmtMoney(s.invested)}</td>
             <td className="num"><Money v={s.net} /></td>
-            <td className="num"><Money v={s.cumulative} /></td>
           </tr>
         ))}
       </tbody>
@@ -5172,10 +5160,10 @@ function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
         </>
       ) : (
         <>
-          <p className="pt-hint" style={{ marginBottom: 10 }}>Retained income is what the house keeps after passing the agent's share through. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
+          <p className="pt-hint" style={{ marginBottom: 10 }}>Net revenue here is what the house keeps after passing the agent's share through. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 6 }}>
             <StatCard label="Invested (YTD)" value={fmtMoney(a.investedYtd)} tone="ink" period={String(yr)} />
-            <StatCard label="Retained income (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} />
+            <StatCard label="Net revenue (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} />
             <StatCard label="Net (YTD)" value={fmtMoney(a.incomeYtd - a.investedYtd)} money={a.incomeYtd - a.investedYtd} period={String(yr)} />
             <StatCard label="ROI (YTD)" value={fmtPct(a.roiYtd)} money={a.roiYtd === null ? 0 : a.roiYtd} caption={a.roiYtd === null ? "" : "(income − invested) ÷ invested"} period={String(yr)} />
           </div>
@@ -5224,7 +5212,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
           <input type="number" min="1" max="24" value={graceMonths} onChange={(e) => onGraceChange(Math.max(1, Math.min(24, Number(e.target.value) || 6)))} style={{ width: 64 }} />
         </div>
       </div>
-      <p className="pt-hint" style={{ marginBottom: 12 }}>Only money invested in agents counts here. Company expenses are on the Company tab and never affect an agent's ROI. Retained income is what the house keeps after the agent's share is passed through.</p>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Only money invested in agents counts here. Company expenses are on the Company tab and never affect an agent's ROI. Net revenue is what the house keeps after the agent's share is passed through.</p>
       {!expensesAvailable ? (
         <>
           <p className="pt-hint">Investments haven't been set up yet. Open Manage data to create the table and add or upload your first entries.</p>
@@ -5239,7 +5227,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
         <>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
             <StatCard label="Invested in agents" value={fmtMoney(invested)} tone="ink" period={String(roi.yr)} />
-            <StatCard label="Retained income" value={fmtMoney(income)} money={income} period={String(roi.yr)} caption="From the agents you've invested in" />
+            <StatCard label="Net revenue" value={fmtMoney(income)} money={income} period={String(roi.yr)} caption="From the agents you've invested in" />
             <StatCard label="Net" value={fmtMoney(income - invested)} money={income - invested} period={String(roi.yr)} />
             <StatCard label="ROI" value={fmtPct(roiPct(income, invested))} money={roiPct(income, invested) === null ? 0 : roiPct(income, invested)} period={String(roi.yr)} />
           </div>
@@ -5253,7 +5241,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
           </div>
           {showAll && <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search agent…" style={{ width: "100%", marginBottom: 8 }} />}
           <table className="pt-table">
-            <thead><tr><th>Agent</th><th className="num">Invested</th><th className="num">Retained income</th><th className="num">Net</th><th className="num">ROI</th><th>Status</th></tr></thead>
+            <thead><tr><th>Agent</th><th className="num">Invested</th><th className="num">Net revenue</th><th className="num">Net</th><th className="num">ROI</th><th>Status</th></tr></thead>
             <tbody>
               {shown.map((a) => (
                 <tr key={a.name} className="pt-clickable" onClick={() => onOpenAgent(a.name)}>
@@ -5286,15 +5274,16 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
 // ---- Company tab: agency-level numbers, kept completely separate from agent ROI ----
 function CompanyView({ roi, expensesAvailable, onGoManage }) {
   const c = roi.company;
-  const spendYtd = c.agentInvYtd + c.companyExpYtd;
-  const net = c.incomeYtd - spendYtd;
+  const spendAll = c.agentInvAll + c.companyExpAll;
+  const net = c.incomeAll - spendAll;
+  const spendYtd = c.series.reduce((t, x) => t + x.invested, 0);
   const monthsElapsed = roi.months.length || 1;
   const catRows = (obj) => Object.keys(obj).map((k) => ({ k, v: obj[k] })).sort((x, y) => y.v - x.v);
   const companyCats = catRows(c.companyCats);
   const agentCats = catRows(c.agentCats);
   return (
     <div>
-      <div className="pt-page-head"><div><h1>Company</h1><p>The agency's own numbers for {roi.yr}. These are kept apart from agent ROI, so platform and overhead costs never make a good agent look worse.</p></div></div>
+      <div className="pt-page-head"><div><h1>Company</h1><p>The agency's own numbers across all the data in the app. Net revenue is the same number as on the Dashboard; the spending comes off after it. These are kept apart from agent ROI, so platform and overhead costs never make a good agent look worse.</p></div></div>
       {!expensesAvailable ? (
         <div className="pt-card">
           <p className="pt-hint">Expenses haven't been set up yet. Open Manage data to create the table and add or upload your QuickBooks entries.</p>
@@ -5303,40 +5292,40 @@ function CompanyView({ roi, expensesAvailable, onGoManage }) {
       ) : (
         <>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
-            <StatCard label="Retained income" value={fmtMoney(c.incomeYtd)} money={c.incomeYtd} period={String(roi.yr)} caption="After agent pass-through" />
-            <StatCard label="Invested in agents" value={fmtMoney(c.agentInvYtd)} tone="ink" period={String(roi.yr)} />
-            <StatCard label="Company expenses" value={fmtMoney(c.companyExpYtd)} tone="ink" period={String(roi.yr)} />
-            <StatCard label="Net profit" value={fmtMoney(net)} money={net} period={String(roi.yr)} />
+            <StatCard label="Net revenue" value={fmtMoney(c.incomeAll)} money={c.incomeAll} period="All time" caption="Gross − chargebacks (same as Dashboard)" />
+            <StatCard label="Invested in agents" value={fmtMoney(c.agentInvAll)} tone="ink" period="All time" />
+            <StatCard label="Company expenses" value={fmtMoney(c.companyExpAll)} tone="ink" period="All time" />
+            <StatCard label="Net profit" value={fmtMoney(net)} money={net} period="All time" caption="Net revenue − investments − expenses" />
           </div>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
-            <StatCard label="Profit margin" value={c.incomeYtd > 0 ? fmtPct((net / c.incomeYtd) * 100) : "—"} money={net} caption="Net profit ÷ retained income" />
-            <StatCard label="Return on total spend" value={spendYtd > 0 ? fmtPct((net / spendYtd) * 100) : "—"} money={net} caption="Net profit ÷ (agents + company)" />
-            <StatCard label="Expense ratio" value={c.incomeYtd > 0 ? fmtPct((c.companyExpYtd / c.incomeYtd) * 100) : "—"} tone="ink" caption="Company expenses ÷ retained income" />
-            <StatCard label="Avg monthly spend" value={fmtMoney(spendYtd / monthsElapsed)} tone="ink" caption="Retained income needed per month to break even" />
+            <StatCard label="Profit margin" value={c.incomeAll > 0 ? fmtPct((net / c.incomeAll) * 100) : "—"} money={net} caption="Net profit ÷ net revenue" />
+            <StatCard label="Return on total spend" value={spendAll > 0 ? fmtPct((net / spendAll) * 100) : "—"} money={net} caption="Net profit ÷ (agents + company)" />
+            <StatCard label="Expense ratio" value={c.incomeAll > 0 ? fmtPct((c.companyExpAll / c.incomeAll) * 100) : "—"} tone="ink" caption="Company expenses ÷ net revenue" />
+            <StatCard label="Avg monthly spend" value={fmtMoney(spendYtd / monthsElapsed)} tone="ink" caption={"Net revenue needed per month to break even (" + roi.yr + ")"} />
           </div>
           <div className="pt-card">
             <RoiCharts series={c.series} spendName="Total spend" />
             <RoiMonthTable series={c.series} spendName="Total spend" />
           </div>
           <div className="pt-card">
-            <h3 style={{ marginTop: 0 }}>Where the money went · {roi.yr}</h3>
+            <h3 style={{ marginTop: 0 }}>Where the money went · all time</h3>
             <div className="pt-mini-label">Company expenses</div>
             <table className="pt-table">
               <thead><tr><th>Category</th><th className="num">Amount</th><th className="num">Share of company expenses</th></tr></thead>
               <tbody>
-                {companyCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.companyExpYtd > 0 ? fmtPct((r.v / c.companyExpYtd) * 100) : "—"}</td></tr>)}
-                {companyCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No company expenses logged for {roi.yr}.</td></tr>}
+                {companyCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.companyExpAll > 0 ? fmtPct((r.v / c.companyExpAll) * 100) : "—"}</td></tr>)}
+                {companyCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No company expenses logged yet.</td></tr>}
               </tbody>
             </table>
             <div className="pt-mini-label" style={{ marginTop: 16 }}>Invested in agents</div>
             <table className="pt-table">
               <thead><tr><th>Category</th><th className="num">Amount</th><th className="num">Share of agent investment</th></tr></thead>
               <tbody>
-                {agentCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.agentInvYtd > 0 ? fmtPct((r.v / c.agentInvYtd) * 100) : "—"}</td></tr>)}
-                {agentCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No agent investments logged for {roi.yr}.</td></tr>}
+                {agentCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.agentInvAll > 0 ? fmtPct((r.v / c.agentInvAll) * 100) : "—"}</td></tr>)}
+                {agentCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No agent investments logged yet.</td></tr>}
               </tbody>
             </table>
-            <p className="pt-hint" style={{ marginTop: 10 }}>Members on file (latest production uploads): {roi.membersOnFile.toLocaleString()}{roi.membersOnFile > 0 && c.incomeYtd !== 0 ? " · retained income per member, year to date: " + fmtMoney(c.incomeYtd / roi.membersOnFile) : ""}</p>
+            <p className="pt-hint" style={{ marginTop: 10 }}>Members on file (latest production uploads): {roi.membersOnFile.toLocaleString()}{roi.membersOnFile > 0 && c.incomeAll !== 0 ? " · net revenue per member: " + fmtMoney(c.incomeAll / roi.membersOnFile) : ""}</p>
           </div>
         </>
       )}
