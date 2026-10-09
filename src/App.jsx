@@ -2,12 +2,12 @@ import React, { useState, useEffect, useMemo } from "react";
 import * as XLSX from "xlsx";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, Legend
+  PieChart, Pie, Cell, LineChart, Line, Legend, ReferenceLine
 } from "recharts";
 import {
   LayoutDashboard, UploadCloud, Users, Building2, Search, Database,
   Trash2, Download, AlertTriangle, CheckCircle2, FileSpreadsheet, X,
-  Settings, Cloud, CloudOff, Contact, Link2, UserPlus, Layers, Sun, Moon
+  Settings, Cloud, CloudOff, Contact, Link2, UserPlus, Layers, Sun, Moon, Briefcase
 } from "lucide-react";
 
 // Local browser storage (used only as a fallback before Supabase is connected).
@@ -700,6 +700,9 @@ export default function App() {
   const [payableRules, setPayableRules] = useState([]);
   const [payableLedger, setPayableLedger] = useState([]);
   const [payablesAvailable, setPayablesAvailable] = useState(false);
+  const [expenses, setExpenses] = useState([]);
+  const [expensesAvailable, setExpensesAvailable] = useState(false);
+  const [roiGraceMonths, setRoiGraceMonths] = useState(6);
 
   async function loadDirectory(cfg) {
     try {
@@ -751,6 +754,11 @@ export default function App() {
       setMembershipOverrides((overrides || []).map((r) => ({ id: r.id, carrier: r.carrier, clientName: r.client_name, agentName: r.agent_name, effectiveDate: r.effective_date || "", active: r.active !== false, bulkBatchId: r.bulk_batch_id || "", createdAt: r.created_at || "" })));
       setMembershipOverridesAvailable(true);
     } catch (e) { setMembershipOverridesAvailable(false); }
+    try {
+      const ex = await sbFetchAll(cfg, "roi_expenses?select=*&order=expense_date.desc");
+      setExpenses((ex || []).map(mapExpenseRow));
+      setExpensesAvailable(true);
+    } catch (e) { setExpensesAvailable(false); }
   }
 
   useEffect(() => {
@@ -780,6 +788,66 @@ export default function App() {
   function showToast(msg, type = "success") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
+  }
+
+  // ---------- AGENT ROI: investments + company expenses ----------
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await storage.get("roi-grace-months", false);
+        if (saved && saved.value) setRoiGraceMonths(Math.max(1, Math.min(24, Number(saved.value) || 6)));
+      } catch (e) {}
+    })();
+  }, []);
+  function changeRoiGrace(v) {
+    setRoiGraceMonths(v);
+    try { storage.set("roi-grace-months", String(v), false); } catch (e) {}
+  }
+  async function reloadExpenses(cfg) {
+    const ex = await sbFetchAll(cfg, "roi_expenses?select=*&order=expense_date.desc");
+    setExpenses((ex || []).map(mapExpenseRow));
+  }
+  async function addExpenseEntries(rows, sourceFile, opts) {
+    if (!cloudCfg) { showToast("Connect your database first.", "error"); return false; }
+    try {
+      const canon = (r) => ({ ...r, agentName: r.agentName ? resolveAgentName(r.agentName, "", "", "") : "" });
+      const existing = new Set(expenses.map(expenseKey));
+      const fresh = [];
+      let dup = 0;
+      rows.map(canon).forEach((r) => {
+        if (!(opts && opts.skipDupCheck)) {
+          const k = expenseKey(r);
+          if (existing.has(k)) { dup++; return; }
+          existing.add(k);
+        }
+        fresh.push(r);
+      });
+      if (!fresh.length) { showToast(dup ? "Nothing new: all " + dup + " row(s) were already imported." : "No rows to import.", "error"); return false; }
+      const batchId = sourceFile ? "exp_" + Date.now() : "";
+      const body = fresh.map((r) => ({ expense_date: r.date, amount: r.amount, agent_name: r.agentName || null, category: r.category || null, vendor: r.vendor || null, memo: r.memo || null, batch_id: batchId || null, source_file: sourceFile || null }));
+      for (let i = 0; i < body.length; i += 200) {
+        await sbFetch(cloudCfg, "roi_expenses", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(body.slice(i, i + 200)) });
+      }
+      await reloadExpenses(cloudCfg);
+      showToast("Added " + fresh.length + " entr" + (fresh.length === 1 ? "y" : "ies") + (dup ? " (" + dup + " already imported, skipped)" : "") + ".");
+      return true;
+    } catch (e) { showToast("Could not save: " + e.message, "error"); return false; }
+  }
+  async function deleteExpenseIds(ids) {
+    if (!cloudCfg || !ids.length) return;
+    try {
+      await sbFetch(cloudCfg, `roi_expenses?id=${encodeURIComponent(pgInList(ids))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+      showToast("Entry deleted.");
+    } catch (e) { showToast("Could not delete: " + e.message, "error"); }
+  }
+  async function deleteExpenseBatch(batchId) {
+    if (!cloudCfg || !batchId) return;
+    try {
+      await sbFetch(cloudCfg, `roi_expenses?batch_id=eq.${encodeURIComponent(batchId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setExpenses((prev) => prev.filter((e) => e.batchId !== batchId));
+      showToast("Upload removed.");
+    } catch (e) { showToast("Could not remove: " + e.message, "error"); }
   }
 
   async function connectCloud() {
@@ -1812,6 +1880,86 @@ export default function App() {
   }, [records, productionMonthly]);
   const topCarriersForCharts = useMemo(() => groupBy(records, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue).slice(0, 5).map((g) => g.key), [records]);
   const carrierChartOptions = useMemo(() => [...new Set(records.map((r) => r.carrier).filter(Boolean))].sort((a, b) => a.localeCompare(b)).map((name) => ({ name, searchText: name.toLowerCase() })), [records]);
+  // ---------- AGENT ROI + COMPANY (memo) ----------
+  const roiData = useMemo(() => {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const yr = now.getFullYear();
+    const yrStr = String(yr);
+    const months = [];
+    for (let i = 0; i <= now.getMonth(); i++) months.push(yrStr + "-" + String(i + 1).padStart(2, "0"));
+    const d90 = new Date(nowMs - 90 * 86400000).toISOString().slice(0, 10);
+    const agents = {};
+    const getA = (n) => agents[n] || (agents[n] = { name: n, income: {}, invested: {}, incomeAll: 0, investedAll: 0, income90: 0, invested90: 0, firstInvest: "", entries: [] });
+    const company = { income: {}, agentInv: {}, companyExp: {}, incomeYtd: 0, agentInvYtd: 0, companyExpYtd: 0, companyCats: {}, agentCats: {} };
+    records.forEach((r) => {
+      if (!r.paymentDate) return;
+      const y = Number(r.paymentDate.slice(0, 4));
+      if (!(y >= 2015 && y <= yr + 1)) return;
+      const a = getA(resolveAgentName(r.agent, "", "", ""));
+      a.incomeAll += r.commissionAmount;
+      if (r.paymentDate >= d90) a.income90 += r.commissionAmount;
+      if (r.paymentDate.slice(0, 4) === yrStr) {
+        const ym = r.paymentDate.slice(0, 7);
+        a.income[ym] = (a.income[ym] || 0) + r.commissionAmount;
+        company.income[ym] = (company.income[ym] || 0) + r.commissionAmount;
+        company.incomeYtd += r.commissionAmount;
+      }
+    });
+    expenses.forEach((e) => {
+      if (!e.date) return;
+      const inYear = e.date.slice(0, 4) === yrStr;
+      const ym = e.date.slice(0, 7);
+      const cat = e.category || "Uncategorized";
+      if (e.agentName) {
+        const a = getA(resolveAgentName(e.agentName, "", "", ""));
+        a.entries.push(e);
+        a.investedAll += e.amount;
+        if (e.date >= d90) a.invested90 += e.amount;
+        if (!a.firstInvest || e.date < a.firstInvest) a.firstInvest = e.date;
+        if (inYear) {
+          a.invested[ym] = (a.invested[ym] || 0) + e.amount;
+          company.agentInv[ym] = (company.agentInv[ym] || 0) + e.amount;
+          company.agentInvYtd += e.amount;
+          company.agentCats[cat] = (company.agentCats[cat] || 0) + e.amount;
+        }
+      } else if (inYear) {
+        company.companyExp[ym] = (company.companyExp[ym] || 0) + e.amount;
+        company.companyExpYtd += e.amount;
+        company.companyCats[cat] = (company.companyCats[cat] || 0) + e.amount;
+      }
+    });
+    const list = Object.values(agents).map((a) => {
+      let cum = 0;
+      const series = months.map((m) => {
+        const inc = a.income[m] || 0;
+        const inv = a.invested[m] || 0;
+        cum += inc - inv;
+        return { month: m, label: fmtMonthShort(m), income: inc, invested: inv, net: inc - inv, cumulative: cum };
+      });
+      const incomeYtd = series.reduce((t, x) => t + x.income, 0);
+      const investedYtd = series.reduce((t, x) => t + x.invested, 0);
+      return { ...a, series, incomeYtd, investedYtd, roiYtd: roiPct(incomeYtd, investedYtd), status: roiStatusFor(a, roiGraceMonths, nowMs) };
+    });
+    const byName = {};
+    list.forEach((a) => { byName[a.name] = a; });
+    let cumC = 0;
+    company.series = months.map((m) => {
+      const inc = company.income[m] || 0;
+      const spend = (company.agentInv[m] || 0) + (company.companyExp[m] || 0);
+      cumC += inc - spend;
+      return { month: m, label: fmtMonthShort(m), income: inc, invested: spend, net: inc - spend, cumulative: cumC };
+    });
+    const seen = new Set();
+    membershipRecords.forEach((r) => {
+      const key = normalizeNameKey(r.carrier) + "::" + normalizeNameKey(r.sourceLabel || "");
+      if (latestBatchIdByCarrierSource[key] !== r.uploadBatchId) return;
+      seen.add(r.carrier + "::" + normalizeClientKey(r.clientName));
+    });
+    return { yr, months, list, agents: byName, company, membersOnFile: seen.size };
+  }, [records, expenses, agentLookupMaps, roiGraceMonths, membershipRecords, latestBatchIdByCarrierSource]);
+  const expenseAgentNames = useMemo(() => [...new Set(agentDirectory.map((d) => d.canonicalName).concat(agentSummary.map((a) => a.key)))].filter(Boolean).sort((a, b) => a.localeCompare(b)), [agentDirectory, agentSummary]);
+  const expenseKnownAgentKeys = useMemo(() => new Set(expenseAgentNames.map((n) => normalizeNameKey(n))), [expenseAgentNames]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
   const agentSalesCarrierOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.carrier))].sort(), [selectedAgentRecords]);
   const agentSalesStatusOptions = useMemo(() => [...new Set(selectedAgentRecords.map((r) => r.status || "Active"))].sort(), [selectedAgentRecords]);
@@ -2883,6 +3031,7 @@ export default function App() {
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "import", label: "Import statement", icon: UploadCloud },
     { key: "agents", label: "Agents", icon: Users },
+    { key: "company", label: "Company", icon: Briefcase },
     { key: "directory", label: "Agent directory", icon: Contact },
     { key: "carriers", label: "Carriers", icon: Building2 },
     { key: "clients", label: "Client lookup", icon: Search },
@@ -3375,6 +3524,14 @@ export default function App() {
                 )}
                 <p className="pt-hint" style={{ marginTop: 10 }}>Active/Inactive only populate when the Agent column was mapped on a production statement import — it's optional, so some may show 0 even for agents with real membership.</p>
               </div>
+              <AgentsRoiCard
+                roi={roiData}
+                expensesAvailable={expensesAvailable}
+                graceMonths={roiGraceMonths}
+                onGraceChange={changeRoiGrace}
+                onOpenAgent={(n) => setSelectedAgent(n)}
+                onGoManage={() => { setManageViewAll(false); setView("manage"); }}
+              />
               {topAgentsForCharts.length > 0 && (
                 <>
                   <h3 style={{ margin: "24px 0 4px" }}>Monthly revenue &amp; production by agent</h3>
@@ -3423,6 +3580,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                <AgentRoiSection agentName={selectedAgent} a={roiData.agents[selectedAgent]} graceMonths={roiGraceMonths} yr={roiData.yr} onGoManage={() => { setManageViewAll(false); setView("manage"); }} />
                 <div>
                   <div className="pt-mini-label">By carrier {agentSalesFilters.carrier && "(always shows all carriers — click to filter All sales below)"}</div>
                   {selectedAgentByCarrier.map((c) => (
@@ -4275,6 +4433,20 @@ export default function App() {
               </div>
             </div>
             )}
+            {!manageViewAll && (
+              <ExpensesManager
+                cloudCfg={cloudCfg}
+                available={expensesAvailable}
+                expenses={expenses}
+                knownAgentKeys={expenseKnownAgentKeys}
+                resolveName={(n) => resolveAgentName(n, "", "", "")}
+                agentNames={expenseAgentNames}
+                onAdd={addExpenseEntries}
+                onDeleteIds={deleteExpenseIds}
+                onDeleteBatch={deleteExpenseBatch}
+                showToast={showToast}
+              />
+            )}
           </div>
         )}
 
@@ -4754,6 +4926,10 @@ export default function App() {
           </div>
         )}
 
+        {view === "company" && (
+          <CompanyView roi={roiData} expensesAvailable={expensesAvailable} onGoManage={() => { setManageViewAll(false); setView("manage"); }} />
+        )}
+
         {view === "marketing" && (
           <div>
             <div className="pt-page-head"><div><h1>Marketing budget</h1><p>Viancilena Contreras Ibanez's marketing agreement — $ per genuinely new client, use-by deadline tied to their effective date, no rollover.</p></div></div>
@@ -4856,6 +5032,547 @@ export default function App() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+// ================= AGENT ROI + COMPANY NUMBERS =================
+// Income used everywhere in ROI is RETAINED income: the commission amounts already
+// stored in the app are net of what is passed through to the true agent, so what is
+// counted here is only what the house keeps. Investment = money put into an agent
+// (marketing, leads, events, advances). Company expenses are tracked separately and
+// never mixed into any agent's ROI.
+const EXPENSES_SQL = `create table if not exists roi_expenses (
+  id uuid primary key default gen_random_uuid(),
+  expense_date date not null,
+  amount numeric not null,
+  agent_name text,
+  category text,
+  vendor text,
+  memo text,
+  batch_id text,
+  source_file text,
+  created_at timestamptz default now()
+);
+alter table roi_expenses enable row level security;
+drop policy if exists "allow all - solo use" on roi_expenses;
+create policy "allow all - solo use" on roi_expenses for all using (true) with check (true);`;
+
+const AGENT_INVEST_CATEGORIES = ["Marketing", "Leads", "Events", "Advance", "Other"];
+const COMPANY_EXPENSE_CATEGORIES = ["Technology & CRM", "Platforms & Software", "Payroll", "Rent & Utilities", "Professional Fees", "Marketing (general)", "Other"];
+
+function mapExpenseRow(r) {
+  return { id: r.id, date: r.expense_date || "", amount: Number(r.amount) || 0, agentName: r.agent_name || "", category: r.category || "", vendor: r.vendor || "", memo: r.memo || "", batchId: r.batch_id || "", sourceFile: r.source_file || "", createdAt: r.created_at || "" };
+}
+function expenseKey(e) {
+  return [e.date, (Number(e.amount) || 0).toFixed(2), normalizeNameKey(e.agentName || ""), normalizeNameKey(e.vendor || ""), normalizeNameKey(e.memo || "")].join("|");
+}
+function roiPct(income, invested) {
+  return invested > 0 ? ((income - invested) / invested) * 100 : null;
+}
+function fmtPct(p) {
+  if (p === null || p === undefined || isNaN(p)) return "—";
+  return (p < 0 ? "-" : "") + Math.abs(p).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+}
+function roiStatusFor(a, graceMonths, nowMs) {
+  if (!a.firstInvest) return { key: "none", label: "No investment logged" };
+  const monthsIn = (nowMs - new Date(a.firstInvest + "T00:00:00").getTime()) / (30.4375 * 86400000);
+  if (monthsIn < graceMonths) return { key: "ramp", label: "Ramping up · month " + Math.min(graceMonths, Math.floor(Math.max(0, monthsIn)) + 1) + " of " + graceMonths };
+  if (a.incomeAll - a.investedAll >= 0) {
+    return a.income90 > a.invested90 ? { key: "strong", label: "Strong" } : { key: "paying", label: "Paying off" };
+  }
+  return { key: "behind", label: "Behind" };
+}
+
+function RoiStatusPill({ status }) {
+  const colors = { none: "var(--muted)", ramp: "#B7791F", paying: "#1E9E63", strong: "#1E9E63", behind: "#C0392B" };
+  const color = colors[status.key] || colors.none;
+  return (
+    <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, color, border: "1px solid " + color, background: status.key === "strong" ? "rgba(30,158,99,0.12)" : "transparent", whiteSpace: "nowrap" }}>{status.label}</span>
+  );
+}
+function RoiTooltip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E2E4E9", borderRadius: 6, padding: "8px 10px", fontSize: 12, color: "#1E2A3A" }}>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>{fmtMonthLabel(p.month)}</div>
+      {payload.map((x) => <div key={x.dataKey}>{x.name} : {fmtMoney(x.value)}</div>)}
+    </div>
+  );
+}
+function RoiCharts({ series, spendName = "Invested" }) {
+  const axisTick = { fontSize: 10, fill: "#64748B" };
+  return (
+    <>
+      <div className="pt-mini-label" style={{ marginTop: 14 }}>Retained income vs. {spendName.toLowerCase()}, by month</div>
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
+          <XAxis dataKey="label" interval={0} tick={axisTick} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+          <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+          <Tooltip content={<RoiTooltip />} />
+          <Legend verticalAlign="top" height={24} iconType="square" wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="income" name="Retained income" fill="#CE3334" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="invested" name={spendName} fill="#64748B" radius={[3, 3, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+      <div className="pt-mini-label" style={{ marginTop: 14 }}>Running net (retained income minus {spendName.toLowerCase()}), year to date</div>
+      <ResponsiveContainer width="100%" height={200}>
+        <LineChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
+          <XAxis dataKey="label" interval={0} tick={axisTick} axisLine={{ stroke: "#E2E4E9" }} tickLine={false} />
+          <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
+          <Tooltip content={<RoiTooltip />} />
+          <ReferenceLine y={0} stroke="#64748B" strokeDasharray="4 4" />
+          <Line type="monotone" dataKey="cumulative" name="Running net" stroke="#4F6FD0" strokeWidth={2} dot={{ r: 3 }} />
+        </LineChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+function RoiMonthTable({ series, spendName = "Invested" }) {
+  return (
+    <table className="pt-table" style={{ marginTop: 10 }}>
+      <thead><tr><th>Month</th><th className="num">Retained income</th><th className="num">{spendName}</th><th className="num">Net</th><th className="num">Running net</th></tr></thead>
+      <tbody>
+        {series.map((s) => (
+          <tr key={s.month}>
+            <td>{fmtMonthLabel(s.month)}</td>
+            <td className="num"><Money v={s.income} /></td>
+            <td className="num mono">{fmtMoney(s.invested)}</td>
+            <td className="num"><Money v={s.net} /></td>
+            <td className="num"><Money v={s.cumulative} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// ---- One agent's ROI (inside the agent profile) ----
+function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const hasInvest = a && a.firstInvest;
+  const entries = hasInvest ? [...a.entries].sort((x, y) => (y.date || "").localeCompare(x.date || "")) : [];
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? entries.filter((e) => (e.vendor + " " + e.memo + " " + e.category + " " + e.date).toLowerCase().includes(ql)) : entries;
+  const shown = showAll ? filtered : filtered.slice(0, 5);
+  return (
+    <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+      <div className="pt-row-between" style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>Return on investment · {yr}</h3>
+        {hasInvest && <RoiStatusPill status={a.status} />}
+      </div>
+      {!hasInvest ? (
+        <>
+          <p className="pt-hint">No investment has been logged for {agentName} yet, so there is nothing to compare their income against. Add one in Manage data (single entry or a QuickBooks upload).</p>
+          <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={onGoManage}>Go to Manage data</button>
+        </>
+      ) : (
+        <>
+          <p className="pt-hint" style={{ marginBottom: 10 }}>Retained income is what the house keeps after passing the agent's share through. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
+          <div className="pt-cards pt-cards-4" style={{ marginBottom: 6 }}>
+            <StatCard label="Invested (YTD)" value={fmtMoney(a.investedYtd)} tone="ink" period={String(yr)} />
+            <StatCard label="Retained income (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} />
+            <StatCard label="Net (YTD)" value={fmtMoney(a.incomeYtd - a.investedYtd)} money={a.incomeYtd - a.investedYtd} period={String(yr)} />
+            <StatCard label="ROI (YTD)" value={fmtPct(a.roiYtd)} money={a.roiYtd === null ? 0 : a.roiYtd} caption={a.roiYtd === null ? "" : "(income − invested) ÷ invested"} period={String(yr)} />
+          </div>
+          <RoiCharts series={a.series} spendName="Invested" />
+          <RoiMonthTable series={a.series} spendName="Invested" />
+          <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 6 }}>
+            <div className="pt-mini-label" style={{ marginTop: 0 }}>Investments ({filtered.length})</div>
+            {filtered.length > 5 && (
+              <button className="pt-btn primary small" onClick={() => setShowAll(!showAll)}>{showAll ? "Show top 5" : "View all (" + filtered.length + ")"}</button>
+            )}
+          </div>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search vendor, memo or category…" style={{ width: "100%", marginBottom: 8 }} />
+          <table className="pt-table">
+            <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Memo</th><th className="num">Amount</th></tr></thead>
+            <tbody>
+              {shown.map((e) => (
+                <tr key={e.id}><td>{fmtDate(e.date)}</td><td>{e.category || "—"}</td><td>{e.vendor || "—"}</td><td>{e.memo || "—"}</td><td className="num mono">{fmtMoney(e.amount)}</td></tr>
+              ))}
+              {shown.length === 0 && <tr><td colSpan={5} className="pt-hint">No matches.</td></tr>}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- All agents together (Agents tab) ----
+function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onOpenAgent, onGoManage }) {
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [page, setPage] = useState(0);
+  const PAGE = 10;
+  const rows = roi.list.filter((a) => a.firstInvest).sort((x, y) => (y.incomeYtd - y.investedYtd) - (x.incomeYtd - x.investedYtd));
+  const invested = rows.reduce((s, a) => s + a.investedYtd, 0);
+  const income = rows.reduce((s, a) => s + a.incomeYtd, 0);
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? rows.filter((a) => a.name.toLowerCase().includes(ql)) : rows;
+  const shown = showAll ? filtered.slice(page * PAGE, page * PAGE + PAGE) : filtered.slice(0, 5);
+  return (
+    <div className="pt-card" style={{ marginTop: 24 }}>
+      <div className="pt-row-between" style={{ marginBottom: 4 }}>
+        <h3 style={{ margin: 0 }}>Return on investment by agent · {roi.yr}</h3>
+        <div className="pt-field" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <label style={{ whiteSpace: "nowrap" }}>Ramp-up (months)</label>
+          <input type="number" min="1" max="24" value={graceMonths} onChange={(e) => onGraceChange(Math.max(1, Math.min(24, Number(e.target.value) || 6)))} style={{ width: 64 }} />
+        </div>
+      </div>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Only money invested in agents counts here. Company expenses are on the Company tab and never affect an agent's ROI. Retained income is what the house keeps after the agent's share is passed through.</p>
+      {!expensesAvailable ? (
+        <>
+          <p className="pt-hint">Investments haven't been set up yet. Open Manage data to create the table and add or upload your first entries.</p>
+          <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={onGoManage}>Go to Manage data</button>
+        </>
+      ) : rows.length === 0 ? (
+        <>
+          <p className="pt-hint">No agent investments logged yet. Add them in Manage data (single entry or a QuickBooks upload) and each agent's ROI shows up here.</p>
+          <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={onGoManage}>Go to Manage data</button>
+        </>
+      ) : (
+        <>
+          <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
+            <StatCard label="Invested in agents" value={fmtMoney(invested)} tone="ink" period={String(roi.yr)} />
+            <StatCard label="Retained income" value={fmtMoney(income)} money={income} period={String(roi.yr)} caption="From the agents you've invested in" />
+            <StatCard label="Net" value={fmtMoney(income - invested)} money={income - invested} period={String(roi.yr)} />
+            <StatCard label="ROI" value={fmtPct(roiPct(income, invested))} money={roiPct(income, invested) === null ? 0 : roiPct(income, invested)} period={String(roi.yr)} />
+          </div>
+          <div className="pt-row-between" style={{ marginBottom: 6 }}>
+            <div className="pt-mini-label" style={{ marginTop: 0 }}>{showAll ? "All agents (" + filtered.length + ")" : "Top 5 by net"}</div>
+            {showAll ? (
+              <button className="pt-btn primary small" onClick={() => { setShowAll(false); setPage(0); setQ(""); }}>Back to top 5</button>
+            ) : (
+              rows.length > 5 && <button className="pt-btn primary small" onClick={() => setShowAll(true)}>View all ({rows.length})</button>
+            )}
+          </div>
+          {showAll && <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search agent…" style={{ width: "100%", marginBottom: 8 }} />}
+          <table className="pt-table">
+            <thead><tr><th>Agent</th><th className="num">Invested</th><th className="num">Retained income</th><th className="num">Net</th><th className="num">ROI</th><th>Status</th></tr></thead>
+            <tbody>
+              {shown.map((a) => (
+                <tr key={a.name} className="pt-clickable" onClick={() => onOpenAgent(a.name)}>
+                  <td>{a.name}</td>
+                  <td className="num mono">{fmtMoney(a.investedYtd)}</td>
+                  <td className="num"><Money v={a.incomeYtd} /></td>
+                  <td className="num"><Money v={a.incomeYtd - a.investedYtd} /></td>
+                  <td className="num mono">{fmtPct(a.roiYtd)}</td>
+                  <td><RoiStatusPill status={a.status} /></td>
+                </tr>
+              ))}
+              {shown.length === 0 && <tr><td colSpan={6} className="pt-hint">No matches.</td></tr>}
+            </tbody>
+          </table>
+          {showAll && filtered.length > PAGE && (
+            <div className="pt-row-between" style={{ marginTop: 8 }}>
+              <span className="pt-hint">Showing {page * PAGE + 1}–{Math.min(filtered.length, page * PAGE + PAGE)} of {filtered.length}</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="pt-btn ghost small" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</button>
+                <button className="pt-btn ghost small" disabled={(page + 1) * PAGE >= filtered.length} onClick={() => setPage((p) => p + 1)}>Next</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Company tab: agency-level numbers, kept completely separate from agent ROI ----
+function CompanyView({ roi, expensesAvailable, onGoManage }) {
+  const c = roi.company;
+  const spendYtd = c.agentInvYtd + c.companyExpYtd;
+  const net = c.incomeYtd - spendYtd;
+  const monthsElapsed = roi.months.length || 1;
+  const catRows = (obj) => Object.keys(obj).map((k) => ({ k, v: obj[k] })).sort((x, y) => y.v - x.v);
+  const companyCats = catRows(c.companyCats);
+  const agentCats = catRows(c.agentCats);
+  return (
+    <div>
+      <div className="pt-page-head"><div><h1>Company</h1><p>The agency's own numbers for {roi.yr}. These are kept apart from agent ROI, so platform and overhead costs never make a good agent look worse.</p></div></div>
+      {!expensesAvailable ? (
+        <div className="pt-card">
+          <p className="pt-hint">Expenses haven't been set up yet. Open Manage data to create the table and add or upload your QuickBooks entries.</p>
+          <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={onGoManage}>Go to Manage data</button>
+        </div>
+      ) : (
+        <>
+          <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
+            <StatCard label="Retained income" value={fmtMoney(c.incomeYtd)} money={c.incomeYtd} period={String(roi.yr)} caption="After agent pass-through" />
+            <StatCard label="Invested in agents" value={fmtMoney(c.agentInvYtd)} tone="ink" period={String(roi.yr)} />
+            <StatCard label="Company expenses" value={fmtMoney(c.companyExpYtd)} tone="ink" period={String(roi.yr)} />
+            <StatCard label="Net profit" value={fmtMoney(net)} money={net} period={String(roi.yr)} />
+          </div>
+          <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
+            <StatCard label="Profit margin" value={c.incomeYtd > 0 ? fmtPct((net / c.incomeYtd) * 100) : "—"} money={net} caption="Net profit ÷ retained income" />
+            <StatCard label="Return on total spend" value={spendYtd > 0 ? fmtPct((net / spendYtd) * 100) : "—"} money={net} caption="Net profit ÷ (agents + company)" />
+            <StatCard label="Expense ratio" value={c.incomeYtd > 0 ? fmtPct((c.companyExpYtd / c.incomeYtd) * 100) : "—"} tone="ink" caption="Company expenses ÷ retained income" />
+            <StatCard label="Avg monthly spend" value={fmtMoney(spendYtd / monthsElapsed)} tone="ink" caption="Retained income needed per month to break even" />
+          </div>
+          <div className="pt-card">
+            <RoiCharts series={c.series} spendName="Total spend" />
+            <RoiMonthTable series={c.series} spendName="Total spend" />
+          </div>
+          <div className="pt-card">
+            <h3 style={{ marginTop: 0 }}>Where the money went · {roi.yr}</h3>
+            <div className="pt-mini-label">Company expenses</div>
+            <table className="pt-table">
+              <thead><tr><th>Category</th><th className="num">Amount</th><th className="num">Share of company expenses</th></tr></thead>
+              <tbody>
+                {companyCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.companyExpYtd > 0 ? fmtPct((r.v / c.companyExpYtd) * 100) : "—"}</td></tr>)}
+                {companyCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No company expenses logged for {roi.yr}.</td></tr>}
+              </tbody>
+            </table>
+            <div className="pt-mini-label" style={{ marginTop: 16 }}>Invested in agents</div>
+            <table className="pt-table">
+              <thead><tr><th>Category</th><th className="num">Amount</th><th className="num">Share of agent investment</th></tr></thead>
+              <tbody>
+                {agentCats.map((r) => <tr key={r.k}><td>{r.k}</td><td className="num mono">{fmtMoney(r.v)}</td><td className="num mono">{c.agentInvYtd > 0 ? fmtPct((r.v / c.agentInvYtd) * 100) : "—"}</td></tr>)}
+                {agentCats.length === 0 && <tr><td colSpan={3} className="pt-hint">No agent investments logged for {roi.yr}.</td></tr>}
+              </tbody>
+            </table>
+            <p className="pt-hint" style={{ marginTop: 10 }}>Members on file (latest production uploads): {roi.membersOnFile.toLocaleString()}{roi.membersOnFile > 0 && c.incomeYtd !== 0 ? " · retained income per member, year to date: " + fmtMoney(c.incomeYtd / roi.membersOnFile) : ""}</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Manage data: add / upload / review investments and company expenses ----
+function detectExpenseCol(headers, patterns) {
+  for (const p of patterns) {
+    const h = headers.find((x) => p.test(String(x)));
+    if (h !== undefined) return h;
+  }
+  return "";
+}
+function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolveName, agentNames, onAdd, onDeleteIds, onDeleteBatch, showToast }) {
+  const [form, setForm] = useState({ date: "", amount: "", agent: "", category: "", vendor: "", memo: "" });
+  const [saving, setSaving] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [headers, setHeaders] = useState([]);
+  const [rawRows, setRawRows] = useState([]);
+  const [map, setMap] = useState({ date: "", amount: "", cls: "", category: "", vendor: "", memo: "" });
+  const [importing, setImporting] = useState(false);
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [page, setPage] = useState(0);
+  const [confirmId, setConfirmId] = useState(null);
+  const [confirmBatch, setConfirmBatch] = useState(null);
+  const PAGE = 25;
+
+  function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
+        const hi = grid.findIndex((row) => row.filter((c) => String(c).trim() !== "").length >= 3 && row.some((c) => /date/i.test(String(c))) && row.some((c) => /amount|debit/i.test(String(c))));
+        if (hi < 0) { showToast("Couldn't find a header row with a Date and an Amount column.", "error"); return; }
+        const hs = grid[hi].map((c, i) => String(c).trim() || "Column " + (i + 1));
+        const rows = grid.slice(hi + 1).map((r) => { const o = {}; hs.forEach((h, i) => { o[h] = r[i]; }); return o; });
+        setHeaders(hs);
+        setRawRows(rows);
+        setFileName(file.name);
+        setMap({
+          date: detectExpenseCol(hs, [/^date$/i, /transaction date/i, /date/i]),
+          amount: detectExpenseCol(hs, [/^amount$/i, /^debit$/i, /amount/i]),
+          cls: detectExpenseCol(hs, [/^class$/i, /agent/i, /^tag/i]),
+          category: detectExpenseCol(hs, [/investment type/i, /^account$/i, /category/i, /^split$/i]),
+          vendor: detectExpenseCol(hs, [/^name$/i, /vendor/i, /payee/i]),
+          memo: detectExpenseCol(hs, [/memo/i, /description/i]),
+        });
+      } catch (err) { showToast("Couldn't read that file.", "error"); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = "";
+  }
+  function cleanClass(v) {
+    let s = String(v === undefined || v === null ? "" : v).trim();
+    if (s.includes(":")) s = s.split(":").pop().trim();
+    if (!s || /^agency general$/i.test(s) || /^company$/i.test(s) || /^not specified$/i.test(s)) return "";
+    return s;
+  }
+  const parsed = rawRows.map((r) => ({
+    date: map.date ? parseDateValue(r[map.date]) : "",
+    amount: map.amount ? parseMoney(r[map.amount]) : 0,
+    agentName: map.cls ? cleanClass(r[map.cls]) : "",
+    category: map.category ? String(r[map.category] || "").trim() : "",
+    vendor: map.vendor ? String(r[map.vendor] || "").trim() : "",
+    memo: map.memo ? String(r[map.memo] || "").trim() : "",
+  })).filter((r) => r.date && r.amount !== 0);
+  const byClass = {};
+  parsed.forEach((r) => {
+    const k = r.agentName || "Agency General (company)";
+    byClass[k] = byClass[k] || { n: 0, total: 0, known: !r.agentName || knownAgentKeys.has(normalizeNameKey(resolveName(r.agentName))) };
+    byClass[k].n += 1; byClass[k].total += r.amount;
+  });
+  const parsedTotal = parsed.reduce((s, r) => s + r.amount, 0);
+  function resetUpload() { setFileName(""); setHeaders([]); setRawRows([]); }
+  async function doImport() {
+    setImporting(true);
+    const res = await onAdd(parsed, fileName, {});
+    setImporting(false);
+    if (res) resetUpload();
+  }
+  async function addOne() {
+    const amt = parseMoney(form.amount);
+    const d = parseDateValue(form.date);
+    if (!d || !amt) { showToast("Enter a date and an amount.", "error"); return; }
+    setSaving(true);
+    const res = await onAdd([{ date: d, amount: amt, agentName: form.agent.trim(), category: form.category.trim(), vendor: form.vendor.trim(), memo: form.memo.trim() }], "", { skipDupCheck: true });
+    setSaving(false);
+    if (res) setForm({ date: "", amount: "", agent: "", category: "", vendor: "", memo: "" });
+  }
+
+  const sorted = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? sorted.filter((e) => ((e.agentName || "company") + " " + e.category + " " + e.vendor + " " + e.memo + " " + e.date).toLowerCase().includes(ql)) : sorted;
+  const shown = showAll ? filtered.slice(page * PAGE, page * PAGE + PAGE) : filtered.slice(0, 10);
+  const batches = {};
+  expenses.forEach((e) => {
+    if (!e.batchId || !e.sourceFile) return;
+    const b = batches[e.batchId] || (batches[e.batchId] = { id: e.batchId, file: e.sourceFile, n: 0, total: 0, at: e.createdAt });
+    b.n += 1; b.total += e.amount;
+  });
+  const batchList = Object.values(batches).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+
+  return (
+    <div className="pt-card" style={{ marginTop: 18 }}>
+      <h3 style={{ marginTop: 0 }}>Agent investments &amp; company expenses</h3>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Money you put into an agent counts toward that agent's ROI. Leave the agent blank (or use the class "Agency General") for company expenses; those only show on the Company tab. Nothing here ever changes commission or payable data.</p>
+      {!cloudCfg ? (
+        <p className="pt-hint">Connect your database (Database connection tab) to use this.</p>
+      ) : !available ? (
+        <>
+          <p className="pt-error">Your database doesn't have the investments table yet.</p>
+          <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
+          <pre className="pt-sql">{EXPENSES_SQL}</pre>
+        </>
+      ) : (
+        <>
+          <div className="pt-mini-label">Add one entry</div>
+          <div className="pt-mapping-grid" style={{ marginBottom: 8 }}>
+            <div className="pt-field"><label>Date</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
+            <div className="pt-field"><label>Amount</label><input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="250.00" /></div>
+            <div className="pt-field"><label>Agent (blank = company)</label><input list="roi-agent-list" value={form.agent} onChange={(e) => setForm({ ...form, agent: e.target.value })} placeholder="Type an agent name…" /></div>
+            <div className="pt-field"><label>Category</label><input list="roi-cat-list" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Marketing, Leads, Events…" /></div>
+            <div className="pt-field"><label>Vendor</label><input value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} /></div>
+            <div className="pt-field"><label>Memo</label><input value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} /></div>
+          </div>
+          <datalist id="roi-agent-list">{agentNames.map((n) => <option key={n} value={n} />)}</datalist>
+          <datalist id="roi-cat-list">{AGENT_INVEST_CATEGORIES.concat(COMPANY_EXPENSE_CATEGORIES).filter((v, i, arr) => arr.indexOf(v) === i).map((n) => <option key={n} value={n} />)}</datalist>
+          <button className="pt-btn primary small" disabled={saving} onClick={addOne}>{saving ? "Saving…" : "Add entry"}</button>
+
+          <div className="pt-mini-label" style={{ marginTop: 20 }}>Upload a QuickBooks export (.xlsx or .csv)</div>
+          <p className="pt-hint" style={{ marginBottom: 8 }}>Run Transaction Detail by Account, add the Class column, and export. Needed columns: Date, Amount, Class (the agent). Helpful: Account or Investment Type, Name, Memo. Rows already imported before are skipped, so re-uploading an overlapping export won't double count.</p>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+          {fileName && (
+            <div style={{ marginTop: 12 }}>
+              <div className="pt-mapping-grid" style={{ marginBottom: 8 }}>
+                {[["date", "Date"], ["amount", "Amount"], ["cls", "Class / Agent"], ["category", "Category (Account or Type)"], ["vendor", "Vendor / Name"], ["memo", "Memo"]].map(([k, label]) => (
+                  <div className="pt-field" key={k}>
+                    <label>{label}</label>
+                    <select value={map[k]} onChange={(e) => setMap({ ...map, [k]: e.target.value })}>
+                      <option value="">— none —</option>
+                      {headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <p className="pt-hint" style={{ marginBottom: 6 }}>{fileName}: {parsed.length} usable row(s), {fmtMoney(parsedTotal)} total. Rows with no date or a zero amount (headers, subtotals) are ignored.</p>
+              <table className="pt-table">
+                <thead><tr><th>Goes to</th><th className="num">Rows</th><th className="num">Total</th><th>Note</th></tr></thead>
+                <tbody>
+                  {Object.keys(byClass).sort().map((k) => (
+                    <tr key={k}><td>{k}</td><td className="num mono">{byClass[k].n}</td><td className="num mono">{fmtMoney(byClass[k].total)}</td><td className="pt-hint">{byClass[k].known ? "" : "Not in your sales yet (new agent?). Imported under this name."}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="pt-btn primary" disabled={importing || parsed.length === 0 || !map.date || !map.amount} onClick={doImport}>{importing ? "Importing…" : "Import " + parsed.length + " row(s)"}</button>
+                <button className="pt-btn ghost" disabled={importing} onClick={resetUpload}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {batchList.length > 0 && (
+            <>
+              <div className="pt-mini-label" style={{ marginTop: 20 }}>Uploads ({batchList.length})</div>
+              <table className="pt-table">
+                <thead><tr><th>File</th><th className="num">Rows</th><th className="num">Total</th><th></th></tr></thead>
+                <tbody>
+                  {batchList.map((b) => (
+                    <tr key={b.id}>
+                      <td>{b.file}</td><td className="num mono">{b.n}</td><td className="num mono">{fmtMoney(b.total)}</td>
+                      <td className="num">
+                        {confirmBatch === b.id ? (
+                          <span className="pt-confirm-inline">Remove all {b.n} row(s)?
+                            <button className="pt-btn danger small" onClick={async () => { await onDeleteBatch(b.id); setConfirmBatch(null); }}>Yes, remove</button>
+                            <button className="pt-btn ghost small" onClick={() => setConfirmBatch(null)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button className="pt-btn danger small" onClick={() => setConfirmBatch(b.id)}><Trash2 size={13} /> Remove</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          <div className="pt-row-between" style={{ marginTop: 20, marginBottom: 6 }}>
+            <div className="pt-mini-label" style={{ marginTop: 0 }}>{showAll ? "All entries (" + filtered.length + ")" : "Most recent entries (" + Math.min(10, filtered.length) + " of " + filtered.length + ")"}</div>
+            {showAll ? (
+              <button className="pt-btn primary small" onClick={() => { setShowAll(false); setPage(0); }}>Back</button>
+            ) : (
+              filtered.length > 10 && <button className="pt-btn primary small" onClick={() => setShowAll(true)}>View all ({filtered.length})</button>
+            )}
+          </div>
+          <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search agent, category, vendor or memo…" style={{ width: "100%", marginBottom: 8 }} />
+          <table className="pt-table">
+            <thead><tr><th>Date</th><th>For</th><th>Category</th><th>Vendor</th><th>Memo</th><th className="num">Amount</th><th></th></tr></thead>
+            <tbody>
+              {shown.map((e) => (
+                <tr key={e.id}>
+                  <td>{fmtDate(e.date)}</td><td>{e.agentName || "Company"}</td><td>{e.category || "—"}</td><td>{e.vendor || "—"}</td><td>{e.memo || "—"}</td>
+                  <td className="num mono">{fmtMoney(e.amount)}</td>
+                  <td className="num">
+                    {confirmId === e.id ? (
+                      <span className="pt-confirm-inline">
+                        <button className="pt-btn danger small" onClick={async () => { await onDeleteIds([e.id]); setConfirmId(null); }}>Delete</button>
+                        <button className="pt-btn ghost small" onClick={() => setConfirmId(null)}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button className="pt-btn ghost small" onClick={() => setConfirmId(e.id)}><Trash2 size={13} /></button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {shown.length === 0 && <tr><td colSpan={7} className="pt-hint">Nothing logged yet.</td></tr>}
+            </tbody>
+          </table>
+          {showAll && filtered.length > PAGE && (
+            <div className="pt-row-between" style={{ marginTop: 8 }}>
+              <span className="pt-hint">Showing {page * PAGE + 1}–{Math.min(filtered.length, page * PAGE + PAGE)} of {filtered.length}</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="pt-btn ghost small" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</button>
+                <button className="pt-btn ghost small" disabled={(page + 1) * PAGE >= filtered.length} onClick={() => setPage((p) => p + 1)}>Next</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
