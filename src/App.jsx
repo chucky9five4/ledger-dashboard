@@ -1724,20 +1724,25 @@ export default function App() {
     (!dateTo || (r.paymentDate && r.paymentDate <= dateTo))
   ), [records, filterCarrier, filterAgent, dateFrom, dateTo, agentLookupMaps]);
 
-  const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   // Bonuses and other income aren't tied to a carrier or an agent, so they are left out
   // while either of those filters is on. They follow the same Paid from / to dates.
   const bonusTotal = useMemo(() => {
     if (filterCarrier !== "All" || filterAgent !== "All") return 0;
     return otherIncome.filter((i) => i.date && (!dateFrom || i.date >= dateFrom) && (!dateTo || i.date <= dateTo)).reduce((t, i) => t + i.amount, 0);
   }, [otherIncome, filterCarrier, filterAgent, dateFrom, dateTo]);
+  const bonusMonths = useMemo(() => {
+    if (filterCarrier !== "All" || filterAgent !== "All") return [];
+    return otherIncome.filter((i) => i.date && (!dateFrom || i.date >= dateFrom) && (!dateTo || i.date <= dateTo)).map((i) => i.date.slice(0, 7));
+  }, [otherIncome, filterCarrier, filterAgent, dateFrom, dateTo]);
+  // Bonuses are part of gross and net revenue, and count as first-year income in the averages.
+  const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0) + bonusTotal, [filteredRecords, bonusTotal]);
   const chargebacks = useMemo(() => filteredRecords.filter((r) => r.commissionAmount < 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
-  const grossRevenue = useMemo(() => filteredRecords.filter((r) => r.commissionAmount > 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  const grossRevenue = useMemo(() => filteredRecords.filter((r) => r.commissionAmount > 0).reduce((s, r) => s + r.commissionAmount, 0) + bonusTotal, [filteredRecords, bonusTotal]);
   const firstYearRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "First Year").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const renewalRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Renewal").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
-  const distinctPaidMonths = useMemo(() => new Set(filteredRecords.filter((r) => r.paymentDate).map((r) => r.paymentDate.slice(0, 7))).size, [filteredRecords]);
+  const distinctPaidMonths = useMemo(() => new Set([...filteredRecords.filter((r) => r.paymentDate).map((r) => r.paymentDate.slice(0, 7)), ...bonusMonths]).size, [filteredRecords, bonusMonths]);
   const avgNetPerMonth = distinctPaidMonths ? netRevenue / distinctPaidMonths : 0;
-  const avgFirstYearPerMonth = distinctPaidMonths ? firstYearRevenue / distinctPaidMonths : 0;
+  const avgFirstYearPerMonth = distinctPaidMonths ? (firstYearRevenue + bonusTotal) / distinctPaidMonths : 0;
   const avgRenewalPerMonth = distinctPaidMonths ? renewalRevenue / distinctPaidMonths : 0;
   const unclassifiedCommissionCount = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "Unclassified").length, [filteredRecords]);
   const byCarrier = useMemo(() => groupBy(filteredRecords, (r) => r.carrier).sort((a, b) => b.revenue - a.revenue), [filteredRecords]);
@@ -3255,25 +3260,18 @@ export default function App() {
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Cash flow</div>
                   <div className="pt-cards pt-cards-3">
-                    <StatCard label="Gross revenue" value={fmtMoney(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
+                    <StatCard label="Gross revenue" value={fmtMoney(grossRevenue)} money={grossRevenue} caption="Includes bonuses" period={commissionPeriodLabel} />
                     <StatCard label="Chargebacks" value={fmtMoney(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
-                    <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross − Chargebacks" period={commissionPeriodLabel} />
-                  </div>
-                </div>
-
-                <div className="pt-stat-section">
-                  <div className="pt-stat-section-label">Bonuses &amp; total income</div>
-                  <div className="pt-cards pt-cards-2">
-                    <StatCard label="Bonuses & other income" value={fmtMoney(bonusTotal)} money={bonusTotal} caption={filterCarrier !== "All" || filterAgent !== "All" ? "Hidden while a carrier or agent filter is on" : "Entered manually in Manage data"} period={commissionPeriodLabel} />
-                    <StatCard label="Total income" value={fmtMoney(netRevenue + bonusTotal)} money={netRevenue + bonusTotal} caption="Net revenue + bonuses" period={commissionPeriodLabel} />
+                    <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross − Chargebacks (bonuses included)" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
                 <div className="pt-stat-section">
                   <div className="pt-stat-section-label">Revenue breakdown</div>
-                  <div className="pt-cards pt-cards-2">
+                  <div className="pt-cards pt-cards-3">
                     <StatCard label="First year revenue" value={fmtMoney(firstYearRevenue)} money={firstYearRevenue} caption="First-year paid, minus first-year chargebacks" period={commissionPeriodLabel} />
                     <StatCard label="Renewal revenue" value={fmtMoney(renewalRevenue)} money={renewalRevenue} caption="Renewal paid, minus renewal chargebacks" period={commissionPeriodLabel} />
+                    <StatCard label="Bonuses" value={fmtMoney(bonusTotal)} money={bonusTotal} caption={filterCarrier !== "All" || filterAgent !== "All" ? "Hidden while a carrier or agent filter is on" : "Entered in Manage data"} period={commissionPeriodLabel} />
                   </div>
                 </div>
 
@@ -3281,7 +3279,7 @@ export default function App() {
                   <div className="pt-stat-section-label">Monthly averages {distinctPaidMonths > 0 && <span className="pt-stat-section-sub">— across {distinctPaidMonths} month{distinctPaidMonths === 1 ? "" : "s"} in this view</span>}</div>
                   <div className="pt-cards pt-cards-3">
                     <StatCard label="Avg net" value={fmtMoney(avgNetPerMonth)} money={avgNetPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
-                    <StatCard label="Avg first year" value={fmtMoney(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
+                    <StatCard label="Avg first year" value={fmtMoney(avgFirstYearPerMonth)} money={avgFirstYearPerMonth} caption="Per month, bonuses included" period={commissionPeriodLabel} />
                     <StatCard label="Avg renewal" value={fmtMoney(avgRenewalPerMonth)} money={avgRenewalPerMonth} caption="Per month, this view" period={commissionPeriodLabel} />
                   </div>
                 </div>
@@ -5439,10 +5437,9 @@ function CompanyView({ roi, expensesAvailable, onGoManage }) {
         </div>
       ) : (
         <>
-          <div className="pt-cards pt-cards-3" style={{ marginBottom: 12 }}>
-            <StatCard label="Net revenue" value={fmtMoney(c.incomeAll)} money={c.incomeAll} period="All time" caption="Gross − chargebacks (same as Dashboard)" />
-            <StatCard label="Bonuses & other income" value={fmtMoney(c.bonusAll)} money={c.bonusAll} period="All time" caption="Entered in Manage data" />
-            <StatCard label="Total income" value={fmtMoney(totalIncome)} money={totalIncome} period="All time" caption="Net revenue + bonuses" />
+          <div className="pt-cards pt-cards-2" style={{ marginBottom: 12 }}>
+            <StatCard label="Net revenue" value={fmtMoney(totalIncome)} money={totalIncome} period="All time" caption="Gross − chargebacks + bonuses (same as Dashboard)" />
+            <StatCard label="Bonuses included" value={fmtMoney(c.bonusAll)} money={c.bonusAll} period="All time" caption="Entered in Manage data" />
           </div>
           <div className="pt-cards pt-cards-3" style={{ marginBottom: 12 }}>
             <StatCard label="Invested in agents" value={fmtMoney(c.agentInvAll)} tone="ink" period="All time" />
@@ -5756,7 +5753,7 @@ function OtherIncomeManager({ cloudCfg, available, items, onAdd, onDelete }) {
   return (
     <div className="pt-card" style={{ marginTop: 18 }}>
       <h3 style={{ marginTop: 0 }}>Bonuses &amp; other income <span className="pt-hint">({items.length})</span></h3>
-      <p className="pt-hint" style={{ marginBottom: 12 }}>Money that came in to the agency but isn't on a carrier statement, for example a bonus from Carepoint. Enter it once with the date you received it. It adds to your total income on the Dashboard and the Company tab, and it never counts toward any agent's ROI or any carrier.</p>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Money that came in to the agency but isn't on a carrier statement, for example a bonus from Carepoint. Enter it once with the date you received it. It adds to Gross and Net revenue on the Dashboard (counted as first-year income in the monthly averages) and to the Company tab. It never counts toward any agent's ROI or any carrier.</p>
       {!cloudCfg ? (
         <p className="pt-hint">Connect your database (Database connection tab) to use this.</p>
       ) : !available ? (
