@@ -721,6 +721,8 @@ export default function App() {
   const [payablesAvailable, setPayablesAvailable] = useState(false);
   const [expenses, setExpenses] = useState([]);
   const [expensesAvailable, setExpensesAvailable] = useState(false);
+  const [otherIncome, setOtherIncome] = useState([]);
+  const [otherIncomeAvailable, setOtherIncomeAvailable] = useState(false);
   const [roiGraceMonths, setRoiGraceMonths] = useState(6);
 
   async function loadDirectory(cfg) {
@@ -778,6 +780,11 @@ export default function App() {
       setExpenses((ex || []).map(mapExpenseRow));
       setExpensesAvailable(true);
     } catch (e) { setExpensesAvailable(false); }
+    try {
+      const oi = await sbFetchAll(cfg, "other_income?select=*&order=income_date.desc");
+      setOtherIncome((oi || []).map(mapOtherIncomeRow));
+      setOtherIncomeAvailable(true);
+    } catch (e) { setOtherIncomeAvailable(false); }
   }
 
   useEffect(() => {
@@ -857,6 +864,25 @@ export default function App() {
     try {
       await sbFetch(cloudCfg, `roi_expenses?id=${encodeURIComponent(pgInList(ids))}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
       setExpenses((prev) => prev.filter((e) => !ids.includes(e.id)));
+      showToast("Entry deleted.");
+    } catch (e) { showToast("Could not delete: " + e.message, "error"); }
+  }
+  async function addOtherIncome(entry) {
+    if (!entry) { showToast("Enter a date and an amount.", "error"); return false; }
+    if (!cloudCfg) { showToast("Connect your database first.", "error"); return false; }
+    try {
+      await sbFetch(cloudCfg, "other_income", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ income_date: entry.date, amount: entry.amount, source: entry.source || null, category: entry.category || null, memo: entry.memo || null }]) });
+      const oi = await sbFetchAll(cloudCfg, "other_income?select=*&order=income_date.desc");
+      setOtherIncome((oi || []).map(mapOtherIncomeRow));
+      showToast("Added " + fmtMoney(entry.amount) + " to your income.");
+      return true;
+    } catch (e) { showToast("Could not save: " + e.message, "error"); return false; }
+  }
+  async function deleteOtherIncome(id) {
+    if (!cloudCfg) return;
+    try {
+      await sbFetch(cloudCfg, `other_income?id=eq.${encodeURIComponent(id)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setOtherIncome((prev) => prev.filter((i) => i.id !== id));
       showToast("Entry deleted.");
     } catch (e) { showToast("Could not delete: " + e.message, "error"); }
   }
@@ -1699,6 +1725,12 @@ export default function App() {
   ), [records, filterCarrier, filterAgent, dateFrom, dateTo, agentLookupMaps]);
 
   const netRevenue = useMemo(() => filteredRecords.reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
+  // Bonuses and other income aren't tied to a carrier or an agent, so they are left out
+  // while either of those filters is on. They follow the same Paid from / to dates.
+  const bonusTotal = useMemo(() => {
+    if (filterCarrier !== "All" || filterAgent !== "All") return 0;
+    return otherIncome.filter((i) => i.date && (!dateFrom || i.date >= dateFrom) && (!dateTo || i.date <= dateTo)).reduce((t, i) => t + i.amount, 0);
+  }, [otherIncome, filterCarrier, filterAgent, dateFrom, dateTo]);
   const chargebacks = useMemo(() => filteredRecords.filter((r) => r.commissionAmount < 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const grossRevenue = useMemo(() => filteredRecords.filter((r) => r.commissionAmount > 0).reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
   const firstYearRevenue = useMemo(() => filteredRecords.filter((r) => classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "First Year").reduce((s, r) => s + r.commissionAmount, 0), [filteredRecords]);
@@ -1975,7 +2007,7 @@ export default function App() {
     const d90 = new Date(nowMs - 90 * 86400000).toISOString().slice(0, 10);
     const agents = {};
     const getA = (n) => agents[n] || (agents[n] = { name: n, income: {}, invested: {}, incomeAll: 0, investedAll: 0, income90: 0, invested90: 0, firstInvest: "", entries: [] });
-    const company = { income: {}, agentInv: {}, companyExp: {}, incomeAll: 0, agentInvAll: 0, companyExpAll: 0, companyCats: {}, agentCats: {} };
+    const company = { income: {}, agentInv: {}, companyExp: {}, incomeAll: 0, bonusAll: 0, agentInvAll: 0, companyExpAll: 0, companyCats: {}, agentCats: {} };
     records.forEach((r) => {
       company.incomeAll += r.commissionAmount;
       if (!r.paymentDate) return;
@@ -1988,6 +2020,13 @@ export default function App() {
         const ym = r.paymentDate.slice(0, 7);
         a.income[ym] = (a.income[ym] || 0) + r.commissionAmount;
         company.income[ym] = (company.income[ym] || 0) + r.commissionAmount;
+      }
+    });
+    otherIncome.forEach((i) => {
+      company.bonusAll += i.amount;
+      if (i.date && i.date.slice(0, 4) === yrStr) {
+        const ym = i.date.slice(0, 7);
+        company.income[ym] = (company.income[ym] || 0) + i.amount;
       }
     });
     expenses.forEach((e) => {
@@ -2041,7 +2080,7 @@ export default function App() {
       seen.add(r.carrier + "::" + normalizeClientKey(r.clientName));
     });
     return { yr, months, list, agents: byName, company, membersOnFile: seen.size };
-  }, [records, expenses, agentLookupMaps, roiGraceMonths, membershipRecords, latestBatchIdByCarrierSource]);
+  }, [records, expenses, otherIncome, agentLookupMaps, roiGraceMonths, membershipRecords, latestBatchIdByCarrierSource]);
   const expenseAgentNames = useMemo(() => [...new Set(agentDirectory.map((d) => d.canonicalName).concat(agentSummary.map((a) => a.key)))].filter(Boolean).sort((a, b) => a.localeCompare(b)), [agentDirectory, agentSummary]);
   const expenseKnownAgentKeys = useMemo(() => new Set(expenseAgentNames.map((n) => normalizeNameKey(n))), [expenseAgentNames]);
   const selectedAgentRecords = useMemo(() => records.filter((r) => resolveAgentName(r.agent, "", "", "") === selectedAgent), [records, selectedAgent, agentLookupMaps]);
@@ -3219,6 +3258,14 @@ export default function App() {
                     <StatCard label="Gross revenue" value={fmtMoney(grossRevenue)} money={grossRevenue} period={commissionPeriodLabel} />
                     <StatCard label="Chargebacks" value={fmtMoney(chargebacks)} money={chargebacks} period={commissionPeriodLabel} />
                     <StatCard label="Net revenue" value={fmtMoney(netRevenue)} money={netRevenue} caption="Gross − Chargebacks" period={commissionPeriodLabel} />
+                  </div>
+                </div>
+
+                <div className="pt-stat-section">
+                  <div className="pt-stat-section-label">Bonuses &amp; total income</div>
+                  <div className="pt-cards pt-cards-2">
+                    <StatCard label="Bonuses & other income" value={fmtMoney(bonusTotal)} money={bonusTotal} caption={filterCarrier !== "All" || filterAgent !== "All" ? "Hidden while a carrier or agent filter is on" : "Entered manually in Manage data"} period={commissionPeriodLabel} />
+                    <StatCard label="Total income" value={fmtMoney(netRevenue + bonusTotal)} money={netRevenue + bonusTotal} caption="Net revenue + bonuses" period={commissionPeriodLabel} />
                   </div>
                 </div>
 
@@ -4531,6 +4578,9 @@ export default function App() {
             </div>
             )}
             {!manageViewAll && (
+              <OtherIncomeManager cloudCfg={cloudCfg} available={otherIncomeAvailable} items={otherIncome} onAdd={addOtherIncome} onDelete={deleteOtherIncome} />
+            )}
+            {!manageViewAll && (
               <ExpensesManager
                 cloudCfg={cloudCfg}
                 available={expensesAvailable}
@@ -5198,11 +5248,11 @@ function RoiTooltip({ active, payload }) {
     </div>
   );
 }
-function RoiCharts({ series, spendName = "Invested" }) {
+function RoiCharts({ series, spendName = "Invested", incomeName = "Net revenue" }) {
   const axisTick = { fontSize: 10, fill: "#64748B" };
   return (
     <>
-      <div className="pt-mini-label" style={{ marginTop: 14 }}>Net revenue vs. {spendName.toLowerCase()}, by month</div>
+      <div className="pt-mini-label" style={{ marginTop: 14 }}>{incomeName} vs. {spendName.toLowerCase()}, by month</div>
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#E2E4E9" vertical={false} />
@@ -5210,17 +5260,17 @@ function RoiCharts({ series, spendName = "Invested" }) {
           <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtMoneyShort(v)} />
           <Tooltip content={<RoiTooltip />} />
           <Legend verticalAlign="top" height={24} iconType="square" wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="income" name="Net revenue" fill="#CE3334" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="income" name={incomeName} fill="#CE3334" radius={[3, 3, 0, 0]} />
           <Bar dataKey="invested" name={spendName} fill="#64748B" radius={[3, 3, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </>
   );
 }
-function RoiMonthTable({ series, spendName = "Invested" }) {
+function RoiMonthTable({ series, spendName = "Invested", incomeName = "Net revenue" }) {
   return (
     <table className="pt-table" style={{ marginTop: 10 }}>
-      <thead><tr><th>Month</th><th className="num">Net revenue</th><th className="num">{spendName}</th><th className="num">Net</th></tr></thead>
+      <thead><tr><th>Month</th><th className="num">{incomeName}</th><th className="num">{spendName}</th><th className="num">Net</th></tr></thead>
       <tbody>
         {series.map((s) => (
           <tr key={s.month}>
@@ -5372,7 +5422,8 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
 function CompanyView({ roi, expensesAvailable, onGoManage }) {
   const c = roi.company;
   const spendAll = c.agentInvAll + c.companyExpAll;
-  const net = c.incomeAll - spendAll;
+  const totalIncome = c.incomeAll + c.bonusAll;
+  const net = totalIncome - spendAll;
   const spendYtd = c.series.reduce((t, x) => t + x.invested, 0);
   const monthsElapsed = roi.months.length || 1;
   const catRows = (obj) => Object.keys(obj).map((k) => ({ k, v: obj[k] })).sort((x, y) => y.v - x.v);
@@ -5388,21 +5439,25 @@ function CompanyView({ roi, expensesAvailable, onGoManage }) {
         </div>
       ) : (
         <>
-          <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
+          <div className="pt-cards pt-cards-3" style={{ marginBottom: 12 }}>
             <StatCard label="Net revenue" value={fmtMoney(c.incomeAll)} money={c.incomeAll} period="All time" caption="Gross − chargebacks (same as Dashboard)" />
+            <StatCard label="Bonuses & other income" value={fmtMoney(c.bonusAll)} money={c.bonusAll} period="All time" caption="Entered in Manage data" />
+            <StatCard label="Total income" value={fmtMoney(totalIncome)} money={totalIncome} period="All time" caption="Net revenue + bonuses" />
+          </div>
+          <div className="pt-cards pt-cards-3" style={{ marginBottom: 12 }}>
             <StatCard label="Invested in agents" value={fmtMoney(c.agentInvAll)} tone="ink" period="All time" />
             <StatCard label="Company expenses" value={fmtMoney(c.companyExpAll)} tone="ink" period="All time" />
-            <StatCard label="Net profit" value={fmtMoney(net)} money={net} period="All time" caption="Net revenue − investments − expenses" />
+            <StatCard label="Net profit" value={fmtMoney(net)} money={net} period="All time" caption="Total income − investments − expenses" />
           </div>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 16 }}>
-            <StatCard label="Profit margin" value={c.incomeAll > 0 ? fmtPct((net / c.incomeAll) * 100) : "—"} money={net} caption="Net profit ÷ net revenue" />
+            <StatCard label="Profit margin" value={totalIncome > 0 ? fmtPct((net / totalIncome) * 100) : "—"} money={net} caption="Net profit ÷ total income" />
             <StatCard label="Return on total spend" value={spendAll > 0 ? fmtPct((net / spendAll) * 100) : "—"} money={net} caption="Net profit ÷ (agents + company)" />
-            <StatCard label="Expense ratio" value={c.incomeAll > 0 ? fmtPct((c.companyExpAll / c.incomeAll) * 100) : "—"} tone="ink" caption="Company expenses ÷ net revenue" />
-            <StatCard label="Avg monthly spend" value={fmtMoney(spendYtd / monthsElapsed)} tone="ink" caption={"Net revenue needed per month to break even (" + roi.yr + ")"} />
+            <StatCard label="Expense ratio" value={totalIncome > 0 ? fmtPct((c.companyExpAll / totalIncome) * 100) : "—"} tone="ink" caption="Company expenses ÷ total income" />
+            <StatCard label="Avg monthly spend" value={fmtMoney(spendYtd / monthsElapsed)} tone="ink" caption={"Income needed per month to break even (" + roi.yr + ")"} />
           </div>
           <div className="pt-card">
-            <RoiCharts series={c.series} spendName="Total spend" />
-            <RoiMonthTable series={c.series} spendName="Total spend" />
+            <RoiCharts series={c.series} spendName="Total spend" incomeName="Total income" />
+            <RoiMonthTable series={c.series} spendName="Total spend" incomeName="Total income" />
           </div>
           <div className="pt-card">
             <h3 style={{ marginTop: 0 }}>Where the money went · all time</h3>
@@ -5657,6 +5712,100 @@ function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolv
               </div>
             </div>
           )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Bonuses & other income (manual entries, like an FMO bonus) ----
+// These are income to the house that don't come on a carrier statement and aren't tied to
+// one carrier or agent, so they are kept in their own table and shown as their own line.
+const OTHER_INCOME_SQL = `create table if not exists other_income (
+  id uuid primary key default gen_random_uuid(),
+  income_date date not null,
+  amount numeric not null,
+  source text,
+  category text,
+  memo text,
+  created_at timestamptz default now()
+);
+alter table other_income enable row level security;
+drop policy if exists "allow all - solo use" on other_income;
+create policy "allow all - solo use" on other_income for all using (true) with check (true);`;
+function mapOtherIncomeRow(r) {
+  return { id: r.id, date: r.income_date || "", amount: Number(r.amount) || 0, source: r.source || "", category: r.category || "", memo: r.memo || "", createdAt: r.created_at || "" };
+}
+function OtherIncomeManager({ cloudCfg, available, items, onAdd, onDelete }) {
+  const [form, setForm] = useState({ date: "", amount: "", source: "", category: "Bonus", memo: "" });
+  const [saving, setSaving] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+  const sorted = [...items].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const shown = showAll ? sorted : sorted.slice(0, 10);
+  const total = items.reduce((s, i) => s + i.amount, 0);
+  async function save() {
+    const amt = parseMoney(form.amount);
+    const d = parseDateValue(form.date);
+    if (!d || !amt) { await onAdd(null); return; }
+    setSaving(true);
+    const ok = await onAdd({ date: d, amount: amt, source: form.source.trim(), category: form.category.trim() || "Bonus", memo: form.memo.trim() });
+    setSaving(false);
+    if (ok) setForm({ date: "", amount: "", source: "", category: "Bonus", memo: "" });
+  }
+  return (
+    <div className="pt-card" style={{ marginTop: 18 }}>
+      <h3 style={{ marginTop: 0 }}>Bonuses &amp; other income <span className="pt-hint">({items.length})</span></h3>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Money that came in to the agency but isn't on a carrier statement, for example a bonus from Carepoint. Enter it once with the date you received it. It adds to your total income on the Dashboard and the Company tab, and it never counts toward any agent's ROI or any carrier.</p>
+      {!cloudCfg ? (
+        <p className="pt-hint">Connect your database (Database connection tab) to use this.</p>
+      ) : !available ? (
+        <>
+          <p className="pt-error">Your database doesn't have the bonuses table yet.</p>
+          <p className="pt-hint" style={{ marginTop: 6, marginBottom: 10 }}>Run this once in your Supabase SQL Editor, then refresh this page:</p>
+          <pre className="pt-sql">{OTHER_INCOME_SQL}</pre>
+        </>
+      ) : (
+        <>
+          <div className="pt-mapping-grid" style={{ marginBottom: 8 }}>
+            <div className="pt-field"><label>Date received</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
+            <div className="pt-field"><label>Amount</label><input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="20000.00" /></div>
+            <div className="pt-field"><label>From (who paid it)</label><input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Carepoint" /></div>
+            <div className="pt-field"><label>Type</label><input list="other-income-types" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></div>
+            <div className="pt-field"><label>Memo</label><input value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} placeholder="Optional note" /></div>
+          </div>
+          <datalist id="other-income-types">{["Bonus", "Override", "Incentive", "Marketing reimbursement", "Other"].map((n) => <option key={n} value={n} />)}</datalist>
+          <button className="pt-btn primary small" disabled={saving} onClick={save}>{saving ? "Saving…" : "Add income"}</button>
+          <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 6 }}>
+            <div className="pt-mini-label" style={{ marginTop: 0 }}>{showAll ? "All entries" : "Most recent"} · total {fmtMoney(total)}</div>
+            {showAll ? (
+              <button className="pt-btn primary small" onClick={() => setShowAll(false)}>Back</button>
+            ) : (
+              sorted.length > 10 && <button className="pt-btn primary small" onClick={() => setShowAll(true)}>View all ({sorted.length})</button>
+            )}
+          </div>
+          <table className="pt-table">
+            <thead><tr><th>Date</th><th>From</th><th>Type</th><th>Memo</th><th className="num">Amount</th><th></th></tr></thead>
+            <tbody>
+              {shown.map((i) => (
+                <tr key={i.id}>
+                  <td>{fmtDate(i.date)}</td><td>{i.source || "—"}</td><td>{i.category || "—"}</td><td>{i.memo || "—"}</td>
+                  <td className="num"><Money v={i.amount} /></td>
+                  <td className="num">
+                    {confirmId === i.id ? (
+                      <span className="pt-confirm-inline">
+                        <button className="pt-btn danger small" onClick={async () => { await onDelete(i.id); setConfirmId(null); }}>Delete</button>
+                        <button className="pt-btn ghost small" onClick={() => setConfirmId(null)}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button className="pt-btn ghost small" onClick={() => setConfirmId(i.id)}><Trash2 size={13} /></button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {shown.length === 0 && <tr><td colSpan={6} className="pt-hint">Nothing entered yet.</td></tr>}
+            </tbody>
+          </table>
         </>
       )}
     </div>
