@@ -2032,7 +2032,7 @@ export default function App() {
     for (let i = 0; i <= now.getMonth(); i++) months.push(yrStr + "-" + String(i + 1).padStart(2, "0"));
     const d90 = new Date(nowMs - 90 * 86400000).toISOString().slice(0, 10);
     const agents = {};
-    const getA = (n) => agents[n] || (agents[n] = { name: n, income: {}, invested: {}, incomeAll: 0, investedAll: 0, income90: 0, invested90: 0, firstInvest: "", entries: [] });
+    const getA = (n) => agents[n] || (agents[n] = { name: n, income: {}, invested: {}, resid: {}, incomeAll: 0, investedAll: 0, income90: 0, invested90: 0, residAll: 0, totalAll: 0, firstInvest: "", entries: [] });
     const company = { income: {}, agentInv: {}, companyExp: {}, incomeAll: 0, bonusAll: 0, agentInvAll: 0, companyExpAll: 0, companyCats: {}, agentCats: {} };
     records.forEach((r) => {
       company.incomeAll += r.commissionAmount;
@@ -2040,13 +2040,22 @@ export default function App() {
       const y = Number(r.paymentDate.slice(0, 4));
       if (!(y >= 2015 && y <= yr + 1)) return;
       const a = getA(resolveAgentName(r.agent, "", "", ""));
-      a.incomeAll += r.commissionAmount;
-      if (r.paymentDate >= d90) a.income90 += r.commissionAmount;
-      if (r.paymentDate.slice(0, 4) === yrStr) {
-        const ym = r.paymentDate.slice(0, 7);
-        a.income[ym] = (a.income[ym] || 0) + r.commissionAmount;
-        company.income[ym] = (company.income[ym] || 0) + r.commissionAmount;
+      // Agent ROI counts first-year commissions only (net of first-year chargebacks).
+      // Renewals, and anything that can't be labeled first-year, are house money: they
+      // are tracked on the side and never feed ROI.
+      const isFirstYear = classifyCommissionCategory(r.commissionType, r.effectiveDate, r.paymentDate) === "First Year";
+      const inThisYear = r.paymentDate.slice(0, 4) === yrStr;
+      const ym = r.paymentDate.slice(0, 7);
+      a.totalAll += r.commissionAmount;
+      if (isFirstYear) {
+        a.incomeAll += r.commissionAmount;
+        if (r.paymentDate >= d90) a.income90 += r.commissionAmount;
+        if (inThisYear) a.income[ym] = (a.income[ym] || 0) + r.commissionAmount;
+      } else {
+        a.residAll += r.commissionAmount;
+        if (inThisYear) a.resid[ym] = (a.resid[ym] || 0) + r.commissionAmount;
       }
+      if (inThisYear) company.income[ym] = (company.income[ym] || 0) + r.commissionAmount;
     });
     otherIncome.forEach((i) => {
       company.bonusAll += i.amount;
@@ -2088,7 +2097,8 @@ export default function App() {
       });
       const incomeYtd = series.reduce((t, x) => t + x.income, 0);
       const investedYtd = series.reduce((t, x) => t + x.invested, 0);
-      return { ...a, series, incomeYtd, investedYtd, roiYtd: roiPct(incomeYtd, investedYtd), status: roiStatusFor(a, roiGraceMonths, nowMs) };
+      const residYtd = months.reduce((t, m) => t + (a.resid[m] || 0), 0);
+      return { ...a, series, incomeYtd, investedYtd, residYtd, roiYtd: roiPct(incomeYtd, investedYtd), status: roiStatusFor(a, roiGraceMonths, nowMs) };
     });
     const byName = {};
     list.forEach((a) => { byName[a.name] = a; });
@@ -5327,15 +5337,21 @@ function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
         </>
       ) : (
         <>
-          <p className="pt-hint" style={{ marginBottom: 10 }}>Net revenue here is what the house keeps after passing the agent's share through. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
+          <p className="pt-hint" style={{ marginBottom: 10 }}>Return on investment counts first-year sales only (net of first-year chargebacks), after the agent's share is passed through. Renewals are house money and are not part of ROI. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 6 }}>
             <StatCard label="Invested (YTD)" value={fmtMoney(a.investedYtd)} tone="ink" period={String(yr)} />
-            <StatCard label="Net revenue (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} />
+            <StatCard label="First-year net revenue (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} caption="First-year paid − first-year chargebacks" />
             <StatCard label="Net (YTD)" value={fmtMoney(a.incomeYtd - a.investedYtd)} money={a.incomeYtd - a.investedYtd} period={String(yr)} />
             <StatCard label="ROI (YTD)" value={fmtPct(a.roiYtd)} money={a.roiYtd === null ? 0 : a.roiYtd} caption={a.roiYtd === null ? "" : "(income − invested) ÷ invested"} period={String(yr)} />
           </div>
-          <RoiCharts series={a.series} spendName="Invested" />
-          <RoiMonthTable series={a.series} spendName="Invested" />
+          <div className="pt-mini-label" style={{ marginTop: 10 }}>Everything this agent has earned for the agency (not part of ROI)</div>
+          <div className="pt-cards pt-cards-3" style={{ marginBottom: 6 }}>
+            <StatCard label="Renewals (YTD)" value={fmtMoney(a.residYtd)} money={a.residYtd} period={String(yr)} caption="House money, excluded from ROI" />
+            <StatCard label="Total from agent (YTD)" value={fmtMoney(a.incomeYtd + a.residYtd)} money={a.incomeYtd + a.residYtd} period={String(yr)} caption="First year + renewals" />
+            <StatCard label="Total from agent (lifetime)" value={fmtMoney(a.totalAll)} money={a.totalAll} period="All time" caption="Everything in the app, net of chargebacks" />
+          </div>
+          <RoiCharts series={a.series} spendName="Invested" incomeName="First-year net revenue" />
+          <RoiMonthTable series={a.series} spendName="Invested" incomeName="First-year net revenue" />
           <div className="pt-row-between" style={{ marginTop: 16, marginBottom: 6 }}>
             <div className="pt-mini-label" style={{ marginTop: 0 }}>Investments ({filtered.length})</div>
             {filtered.length > 5 && (
@@ -5379,7 +5395,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
           <input type="number" min="1" max="24" value={graceMonths} onChange={(e) => onGraceChange(Math.max(1, Math.min(24, Number(e.target.value) || 6)))} style={{ width: 64 }} />
         </div>
       </div>
-      <p className="pt-hint" style={{ marginBottom: 12 }}>Only money invested in agents counts here. Company expenses are on the Company tab and never affect an agent's ROI. Net revenue is what the house keeps after the agent's share is passed through.</p>
+      <p className="pt-hint" style={{ marginBottom: 12 }}>Only money invested in agents counts here. Company expenses are on the Company tab and never affect an agent's ROI. ROI counts first-year sales only, net of first-year chargebacks and after the agent's share is passed through. Renewals are house money and stay out of it. Lifetime total shows everything the agent has earned for the agency, renewals included.</p>
       {!expensesAvailable ? (
         <>
           <p className="pt-hint">Investments haven't been set up yet. Open Manage data to create the table and add or upload your first entries.</p>
@@ -5394,7 +5410,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
         <>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 12 }}>
             <StatCard label="Invested in agents" value={fmtMoney(invested)} tone="ink" period={String(roi.yr)} />
-            <StatCard label="Net revenue" value={fmtMoney(income)} money={income} period={String(roi.yr)} caption="From the agents you've invested in" />
+            <StatCard label="First-year net revenue" value={fmtMoney(income)} money={income} period={String(roi.yr)} caption="From the agents you've invested in" />
             <StatCard label="Net" value={fmtMoney(income - invested)} money={income - invested} period={String(roi.yr)} />
             <StatCard label="ROI" value={fmtPct(roiPct(income, invested))} money={roiPct(income, invested) === null ? 0 : roiPct(income, invested)} period={String(roi.yr)} />
           </div>
@@ -5408,7 +5424,7 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
           </div>
           {showAll && <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search agent…" style={{ width: "100%", marginBottom: 8 }} />}
           <table className="pt-table">
-            <thead><tr><th>Agent</th><th className="num">Invested</th><th className="num">Net revenue</th><th className="num">Net</th><th className="num">ROI</th><th>Status</th></tr></thead>
+            <thead><tr><th>Agent</th><th className="num">Invested</th><th className="num">First-year net</th><th className="num">Net</th><th className="num">ROI</th><th className="num">Lifetime total</th><th>Status</th></tr></thead>
             <tbody>
               {shown.map((a) => (
                 <tr key={a.name} className="pt-clickable" onClick={() => onOpenAgent(a.name)}>
@@ -5417,10 +5433,11 @@ function AgentsRoiCard({ roi, expensesAvailable, graceMonths, onGraceChange, onO
                   <td className="num"><Money v={a.incomeYtd} /></td>
                   <td className="num"><Money v={a.incomeYtd - a.investedYtd} /></td>
                   <td className="num mono">{fmtPct(a.roiYtd)}</td>
+                  <td className="num"><Money v={a.totalAll} /></td>
                   <td><RoiStatusPill status={a.status} /></td>
                 </tr>
               ))}
-              {shown.length === 0 && <tr><td colSpan={6} className="pt-hint">No matches.</td></tr>}
+              {shown.length === 0 && <tr><td colSpan={7} className="pt-hint">No matches.</td></tr>}
             </tbody>
           </table>
           {showAll && filtered.length > PAGE && (
