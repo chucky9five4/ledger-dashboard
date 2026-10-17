@@ -1514,7 +1514,49 @@ export default function App() {
       await loadDirectory(cloudCfg);
     } catch (e) { showToast("Could not remove alias: " + e.message, "error"); }
   }
-  async function linkRawNameToAgent(rawName, agentId, canonicalName) {
+  // Saves the NPN and carrier IDs that came in with an imported name onto the agent in the
+  // directory, so the next upload matches on the ID even if the name is spelled differently.
+  // An ID already owned by a different agent is never moved; it is reported instead.
+  async function saveAgentIdentifiers(agentId, currentNpn, npns, carrierIds) {
+    const existing = agentAliases.filter((a) => a.agentId === agentId);
+    const rows = [];
+    const conflicts = [];
+    let setNpn = null;
+    let addedNpn = 0;
+    let addedCid = 0;
+    (npns || []).forEach((n) => {
+      const k = normalizeIdValue(n);
+      if (!k) return;
+      const owner = agentLookupMaps.npnMap[k];
+      if (owner && owner !== agentId) { conflicts.push("NPN " + n); return; }
+      if (existing.some((a) => a.aliasType === "npn" && normalizeIdValue(a.aliasValue) === k)) return;
+      if (rows.some((r) => r.alias_type === "npn" && normalizeIdValue(r.alias_value) === k)) return;
+      rows.push({ agent_id: agentId, alias_type: "npn", alias_value: n });
+      addedNpn++;
+      if (!currentNpn && !setNpn) setNpn = n;
+    });
+    (carrierIds || []).forEach((c) => {
+      const k = normalizeNameKey(c.carrier) + "::" + normalizeIdValue(c.id);
+      const owner = agentLookupMaps.carrierIdMap[k];
+      if (owner && owner !== agentId) { conflicts.push(c.carrier + " ID " + c.id); return; }
+      if (existing.some((a) => a.aliasType === "carrier_id" && normalizeNameKey(a.carrier || "") + "::" + normalizeIdValue(a.aliasValue) === k)) return;
+      if (rows.some((r) => r.alias_type === "carrier_id" && normalizeNameKey(r.carrier || "") + "::" + normalizeIdValue(r.alias_value) === k)) return;
+      rows.push({ agent_id: agentId, alias_type: "carrier_id", carrier: c.carrier, alias_value: c.id });
+      addedCid++;
+    });
+    if (rows.length) await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(rows) });
+    if (setNpn) await sbFetch(cloudCfg, `agent_directory?id=eq.${agentId}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ npn: setNpn }) });
+    return { addedNpn, addedCid, conflicts };
+  }
+  function identifierNote(r) {
+    const parts = [];
+    if (r.addedNpn) parts.push(r.addedNpn + " NPN");
+    if (r.addedCid) parts.push(r.addedCid + " carrier ID" + (r.addedCid === 1 ? "" : "s"));
+    let note = parts.length ? " Also saved " + parts.join(" and ") + " to the directory." : "";
+    if (r.conflicts.length) note += " Skipped (already belongs to another agent): " + r.conflicts.join(", ") + ".";
+    return note;
+  }
+  async function linkRawNameToAgent(rawName, agentId, canonicalName, ids) {
     if (!cloudCfg) return;
     try {
       const isBlank = rawName === "";
@@ -1527,16 +1569,27 @@ export default function App() {
       await sbFetch(cloudCfg, `membership_updates?${membershipFilter}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ agent: canonicalName }) });
       setRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
       setMembershipRecords((prev) => prev.map((r) => ((r.agent ?? "") === rawName ? { ...r, agent: canonicalName } : r)));
+      let idNote = "";
+      if (!isBlank && ids && ((ids.npns && ids.npns.length) || (ids.carrierIds && ids.carrierIds.length))) {
+        const dirAgent = agentDirectory.find((a) => a.id === agentId);
+        const res = await saveAgentIdentifiers(agentId, dirAgent ? dirAgent.npn : "", ids.npns, ids.carrierIds);
+        idNote = identifierNote(res);
+      }
       await loadDirectory(cloudCfg);
-      showToast(isBlank ? `Fixed — blank agents assigned to ${canonicalName}.` : `Linked "${rawName}" to ${canonicalName}.`);
+      showToast((isBlank ? `Fixed — blank agents assigned to ${canonicalName}.` : `Linked "${rawName}" to ${canonicalName}.`) + idNote);
     } catch (e) { showToast("Could not link: " + e.message, "error"); }
   }
-  async function createAgentFromRawName(rawName) {
+  async function createAgentFromRawName(rawName, ids) {
     if (!cloudCfg) return;
     try {
       const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify([{ canonical_name: rawName, npn: null }]) });
       const agent = inserted[0];
       await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify([{ agent_id: agent.id, alias_type: "name_text", alias_value: normalizeNameKey(rawName) }]) });
+      let idNote = "";
+      if (ids && ((ids.npns && ids.npns.length) || (ids.carrierIds && ids.carrierIds.length))) {
+        const res = await saveAgentIdentifiers(agent.id, "", ids.npns, ids.carrierIds);
+        idNote = identifierNote(res);
+      }
 
       // Catch up any sibling spellings already sitting in the data (e.g. an
       // ALL-CAPS variant of the same name) so they get relabeled too, not
@@ -1559,7 +1612,7 @@ export default function App() {
       }
       const totalSiblings = siblingCommNames.length + siblingProdNames.length;
       await loadDirectory(cloudCfg);
-      showToast(totalSiblings ? `"${rawName}" added, and ${totalSiblings} matching spelling(s) merged in.` : `"${rawName}" added as a new agent.`);
+      showToast((totalSiblings ? `"${rawName}" added, and ${totalSiblings} matching spelling(s) merged in.` : `"${rawName}" added as a new agent.`) + idNote);
     } catch (e) { showToast("Could not create agent: " + e.message, "error"); }
   }
 
@@ -1573,7 +1626,15 @@ export default function App() {
       .map((n) => {
         const commRecs = records.filter((r) => (r.agent ?? "") === n);
         const prodRecs = membershipRecords.filter((r) => (r.agent ?? "") === n);
-        return { name: n === "" ? "(blank — matching failed with no fallback name)" : n, rawName: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0) };
+        const npnSet = new Set();
+        const cidMap = new Map();
+        commRecs.forEach((r) => {
+          const npn = String(r.agentNpn || "").trim();
+          if (npn) npnSet.add(npn);
+          const cid = String(r.agentCarrierId || "").trim();
+          if (cid && r.carrier) cidMap.set(normalizeNameKey(r.carrier) + "::" + normalizeIdValue(cid), { carrier: r.carrier, id: cid });
+        });
+        return { name: n === "" ? "(blank — matching failed with no fallback name)" : n, rawName: n, count: commRecs.length + prodRecs.length, commissionCount: commRecs.length, productionCount: prodRecs.length, revenue: commRecs.reduce((s, r) => s + r.commissionAmount, 0), npns: [...npnSet], carrierIds: [...cidMap.values()] };
       })
       .sort((a, b) => b.revenue - a.revenue);
   }, [records, membershipRecords, agentLookupMaps]);
@@ -4204,7 +4265,7 @@ export default function App() {
                       <p className="pt-hint">Nothing unmatched — every name in your data is linked. 🎉</p>
                     ) : (
                       <table className="pt-table">
-                        <thead><tr><th>Name as imported</th><th className="num">Commission rows</th><th className="num">Production rows</th><th className="num">Revenue</th><th>Link to…</th><th></th></tr></thead>
+                        <thead><tr><th>Name as imported</th><th className="num">Commission rows</th><th className="num">Production rows</th><th className="num">Revenue</th><th>NPN / carrier IDs in your file</th><th>Link to…</th><th></th></tr></thead>
                         <tbody>
                           {unmatchedAgentNames.map((u) => (
                             <tr key={u.name}>
@@ -4212,6 +4273,14 @@ export default function App() {
                               <td className="num">{u.commissionCount}</td>
                               <td className="num">{u.productionCount}</td>
                               <td className="num mono">{<Money v={u.revenue} />}</td>
+                              <td style={{ fontSize: 12 }}>
+                                {u.npns.length === 0 && u.carrierIds.length === 0 ? <span className="pt-hint">None in the file</span> : (
+                                  <>
+                                    {u.npns.map((n) => <div key={"n" + n}>NPN {n}</div>)}
+                                    {u.carrierIds.map((c) => <div key={c.carrier + c.id}>{c.carrier}: {c.id}</div>)}
+                                  </>
+                                )}
+                              </td>
                               <td>
                                 {u.rawName === "" ? (
                                   <span className="pt-hint">Fix via Client Lookup, scoped to the right carrier — a blanket fix here could affect unrelated carriers too.</span>
@@ -4225,8 +4294,8 @@ export default function App() {
                               <td className="num">
                                 {u.rawName !== "" && (
                                   <div className="pt-btn-row">
-                                    <button className="pt-btn ghost small" disabled={!linkChoice[u.name]} onClick={() => linkRawNameToAgent(u.name, linkChoice[u.name], agentDirectory.find((a) => a.id === linkChoice[u.name])?.canonicalName)}><Link2 size={12} /> Link</button>
-                                    <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name)}><UserPlus size={12} /> New</button>
+                                    <button className="pt-btn ghost small" disabled={!linkChoice[u.name]} onClick={() => linkRawNameToAgent(u.name, linkChoice[u.name], agentDirectory.find((a) => a.id === linkChoice[u.name])?.canonicalName, { npns: u.npns, carrierIds: u.carrierIds })}><Link2 size={12} /> Link</button>
+                                    <button className="pt-btn ghost small" onClick={() => createAgentFromRawName(u.name, { npns: u.npns, carrierIds: u.carrierIds })}><UserPlus size={12} /> New</button>
                                   </div>
                                 )}
                               </td>
