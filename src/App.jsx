@@ -849,13 +849,34 @@ export default function App() {
         fresh.push(r);
       });
       if (!fresh.length) { showToast(dup ? "Nothing new: all " + dup + " row(s) were already imported." : "No rows to import.", "error"); return false; }
+      // Agents named in the file who aren't in the directory yet (for example someone you
+      // invested in who never sold) are added to the directory, with a name alias so later
+      // uploads and sales files match them.
+      let addedAgents = [];
+      if (opts && opts.addToDirectory) {
+        const dirKeys = new Set(agentDirectory.map((d) => normalizeNameKey(d.canonicalName)));
+        const seen = new Map();
+        fresh.forEach((r) => {
+          if (!r.agentName) return;
+          const k = normalizeNameKey(r.agentName);
+          if (!k || dirKeys.has(k) || seen.has(k)) return;
+          seen.set(k, r.agentName);
+        });
+        if (seen.size) {
+          const names = [...seen.values()];
+          const inserted = await sbFetch(cloudCfg, "agent_directory", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(names.map((n) => ({ canonical_name: n, npn: null }))) });
+          await sbFetch(cloudCfg, "agent_aliases", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(inserted.map((a) => ({ agent_id: a.id, alias_type: "name_text", alias_value: normalizeNameKey(a.canonical_name) }))) });
+          await loadDirectory(cloudCfg);
+          addedAgents = names;
+        }
+      }
       const batchId = sourceFile ? "exp_" + Date.now() : "";
       const body = fresh.map((r) => ({ expense_date: r.date, amount: r.amount, agent_name: r.agentName || null, category: r.category || null, vendor: r.vendor || null, memo: r.memo || null, batch_id: batchId || null, source_file: sourceFile || null }));
       for (let i = 0; i < body.length; i += 200) {
         await sbFetch(cloudCfg, "roi_expenses", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(body.slice(i, i + 200)) });
       }
       await reloadExpenses(cloudCfg);
-      showToast("Added " + fresh.length + " entr" + (fresh.length === 1 ? "y" : "ies") + (dup ? " (" + dup + " already imported, skipped)" : "") + ".");
+      showToast("Added " + fresh.length + " entr" + (fresh.length === 1 ? "y" : "ies") + (dup ? " (" + dup + " already imported, skipped)" : "") + "." + (addedAgents.length ? " Added " + addedAgents.length + " new agent" + (addedAgents.length === 1 ? "" : "s") + " to the directory: " + addedAgents.join(", ") + "." : ""));
       return true;
     } catch (e) { showToast("Could not save: " + e.message, "error"); return false; }
   }
@@ -4584,6 +4605,7 @@ export default function App() {
                 available={expensesAvailable}
                 expenses={expenses}
                 knownAgentKeys={expenseKnownAgentKeys}
+                directoryKeys={new Set(agentDirectory.map((d) => normalizeNameKey(d.canonicalName)))}
                 resolveName={(n) => resolveAgentName(n, "", "", "")}
                 agentNames={expenseAgentNames}
                 onAdd={addExpenseEntries}
@@ -5490,7 +5512,7 @@ function detectExpenseCol(headers, patterns) {
   }
   return "";
 }
-function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolveName, agentNames, onAdd, onDeleteIds, onDeleteBatch, showToast }) {
+function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, directoryKeys, resolveName, agentNames, onAdd, onDeleteIds, onDeleteBatch, showToast }) {
   const [form, setForm] = useState({ date: "", amount: "", agent: "", category: "", vendor: "", memo: "" });
   const [saving, setSaving] = useState(false);
   const [fileName, setFileName] = useState("");
@@ -5498,6 +5520,7 @@ function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolv
   const [rawRows, setRawRows] = useState([]);
   const [map, setMap] = useState({ date: "", amount: "", cls: "", category: "", vendor: "", memo: "" });
   const [importing, setImporting] = useState(false);
+  const [addToDir, setAddToDir] = useState(true);
   const [q, setQ] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [page, setPage] = useState(0);
@@ -5551,14 +5574,14 @@ function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolv
   const byClass = {};
   parsed.forEach((r) => {
     const k = r.agentName || "Agency General (company)";
-    byClass[k] = byClass[k] || { n: 0, total: 0, known: !r.agentName || knownAgentKeys.has(normalizeNameKey(resolveName(r.agentName))) };
+    byClass[k] = byClass[k] || { n: 0, total: 0, known: !r.agentName || directoryKeys.has(normalizeNameKey(resolveName(r.agentName))) };
     byClass[k].n += 1; byClass[k].total += r.amount;
   });
   const parsedTotal = parsed.reduce((s, r) => s + r.amount, 0);
   function resetUpload() { setFileName(""); setHeaders([]); setRawRows([]); }
   async function doImport() {
     setImporting(true);
-    const res = await onAdd(parsed, fileName, {});
+    const res = await onAdd(parsed, fileName, { addToDirectory: addToDir });
     setImporting(false);
     if (res) resetUpload();
   }
@@ -5632,10 +5655,14 @@ function ExpensesManager({ cloudCfg, available, expenses, knownAgentKeys, resolv
                 <thead><tr><th>Goes to</th><th className="num">Rows</th><th className="num">Total</th><th>Note</th></tr></thead>
                 <tbody>
                   {Object.keys(byClass).sort().map((k) => (
-                    <tr key={k}><td>{k}</td><td className="num mono">{byClass[k].n}</td><td className="num mono">{fmtMoney(byClass[k].total)}</td><td className="pt-hint">{byClass[k].known ? "" : "Not in your sales yet (new agent?). Imported under this name."}</td></tr>
+                    <tr key={k}><td>{k}</td><td className="num mono">{byClass[k].n}</td><td className="num mono">{fmtMoney(byClass[k].total)}</td><td className="pt-hint">{byClass[k].known ? "" : addToDir ? "New agent: will be added to the agent directory." : "Not in the agent directory. Imported under this name only."}</td></tr>
                   ))}
                 </tbody>
               </table>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 13 }}>
+                <input type="checkbox" checked={addToDir} onChange={(e) => setAddToDir(e.target.checked)} />
+                Add agents who aren't in the agent directory yet (they show in ROI even with no sales)
+              </label>
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                 <button className="pt-btn primary" disabled={importing || parsed.length === 0 || !map.date || !map.amount} onClick={doImport}>{importing ? "Importing…" : "Import " + parsed.length + " row(s)"}</button>
                 <button className="pt-btn ghost" disabled={importing} onClick={resetUpload}>Cancel</button>
