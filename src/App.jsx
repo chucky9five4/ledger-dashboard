@@ -606,8 +606,25 @@ function excelSerialToDate(serial) {
   const utcValue = utcDays * 86400;
   return new Date(utcValue * 1000);
 }
+// Dates that only carry a month (202608, 2026-08, 08/2026) are placed on the LAST day
+// of that month. An 8-digit 20260831 is read as a full date. A real Excel date serial
+// is 5 digits (about 40000-50000), so a 6- or 8-digit number is never mistaken for one.
+function lastDayOfMonthIso(y, m) {
+  if (!(y >= 1990 && y <= 2100 && m >= 1 && m <= 12)) return "";
+  const d = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+}
 function parseDateValue(v) {
   if (v === undefined || v === null || v === "") return "";
+  const compact = String(v).trim();
+  let cm = compact.match(/^(\d{4})(\d{2})$/);
+  if (cm) { const r = lastDayOfMonthIso(Number(cm[1]), Number(cm[2])); if (r) return r; }
+  cm = compact.match(/^(\d{4})-(\d{1,2})$/) || compact.match(/^(\d{4})\/(\d{1,2})$/);
+  if (cm) { const r = lastDayOfMonthIso(Number(cm[1]), Number(cm[2])); if (r) return r; }
+  cm = compact.match(/^(\d{1,2})[\/-](\d{4})$/);
+  if (cm) { const r = lastDayOfMonthIso(Number(cm[2]), Number(cm[1])); if (r) return r; }
+  cm = compact.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (cm && Number(cm[1]) >= 1990 && Number(cm[1]) <= 2100 && Number(cm[2]) >= 1 && Number(cm[2]) <= 12 && Number(cm[3]) >= 1 && Number(cm[3]) <= 31) return cm[1] + "-" + cm[2] + "-" + cm[3];
   if (typeof v === "number") {
     const d = excelSerialToDate(v);
     if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
