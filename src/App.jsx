@@ -1686,7 +1686,9 @@ export default function App() {
   // ---------- DASHBOARD FILTERS ----------
   const [filterCarrier, setFilterCarrier] = useState("All");
   const [filterAgent, setFilterAgent] = useState("All");
-  const [dateFrom, setDateFrom] = useState("");
+  // The Dashboard opens on year to date: January 1 of the current year, no end date.
+  const ytdStart = new Date().getFullYear() + "-01-01";
+  const [dateFrom, setDateFrom] = useState(ytdStart);
   const [dateTo, setDateTo] = useState("");
 
   const filteredRecords = useMemo(() => records.filter((r) =>
@@ -1811,8 +1813,10 @@ export default function App() {
   }
   const commissionPeriodLabel = useMemo(() => {
     if (dateFrom && dateTo) return `${fmtMonthDay(dateFrom)}–${fmtMonthDay(dateTo)}`;
+    if (dateFrom === ytdStart) return "YTD";
+    if (dateFrom) return `Since ${fmtMonthDay(dateFrom)}`;
     return "Total";
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, ytdStart]);
   const asOfTodayLabel = (dateFrom && dateTo) ? `Eff. ${fmtMonthDay(dateFrom)}–${fmtMonthDay(dateTo)}` : "As of today";
   const allTimeLabel = "All time";
   const membershipDrillDownData = useMemo(() => {
@@ -3167,7 +3171,7 @@ export default function App() {
             <div className="pt-page-head">
               <div>
                 <h1>Dashboard</h1>
-                <p>Production across every carrier statement you've imported.</p>
+                <p>Year to date across every carrier statement you've imported. Change the dates or pick "All time" to look further back.</p>
               </div>
               {filteredRecords.length > 0 && (
                 <button className="pt-btn ghost" onClick={() => exportCSV(filteredRecords, "production-export.csv")}>
@@ -3191,13 +3195,18 @@ export default function App() {
                     <label>Paid to</label>
                     <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
                   </div>
-                  {(filterCarrier !== "All" || filterAgent !== "All" || dateFrom || dateTo) && (
-                    <button className="pt-btn text" onClick={() => { setFilterCarrier("All"); setFilterAgent("All"); setDateFrom(""); setDateTo(""); }}>
-                      Clear filters
+                  {(filterCarrier !== "All" || filterAgent !== "All" || dateFrom !== ytdStart || dateTo) && (
+                    <button className="pt-btn text" onClick={() => { setFilterCarrier("All"); setFilterAgent("All"); setDateFrom(ytdStart); setDateTo(""); }}>
+                      Reset to YTD
+                    </button>
+                  )}
+                  {(dateFrom || dateTo) && (
+                    <button className="pt-btn text" onClick={() => { setDateFrom(""); setDateTo(""); }}>
+                      All time
                     </button>
                   )}
                 </div>
-                <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Note: Paid From/To drives commission numbers by payment date, but the same range drives Membership Growth below by <b>effective date</b> instead — production statements don't have a payment date.</p>
+                <p className="pt-hint" style={{ marginTop: -6, marginBottom: 16 }}>Opens on year to date (January 1 of this year). Paid From/To drives the commission numbers by payment date; use "All time" to see everything. Total active members stays as of today unless you set both dates, which then filters it by <b>effective date</b> instead, since production statements don't have a payment date.</p>
                 {filterCarrier !== "All" && getCarrierLogo(filterCarrier) && (
                   <div style={{ textAlign: "center", margin: "4px 0 20px" }}>
                     <img src={getCarrierLogo(filterCarrier)} alt={filterCarrier} title={filterCarrier} style={{ height: 64, width: "auto" }} />
@@ -3234,7 +3243,7 @@ export default function App() {
                   <div className="pt-stat-section-label">Book of business</div>
                   <div className="pt-cards pt-cards-2">
                     <StatCard label="Carriers" value={activeCarrierCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedCarrier(null); setView("carriers"); }} />
-                    <StatCard label="Agents" value={activeAgentCount} tone="ink" period={allTimeLabel} onClick={() => { setSelectedAgent(null); setView("agents"); }} />
+                    <StatCard label="Agents" value={activeAgentCount} tone="ink" period={commissionPeriodLabel} onClick={() => { setSelectedAgent(null); setView("agents"); }} />
                   </div>
                   <p className="pt-hint" style={{ marginTop: 6 }}>Active membership counts now live in Active Members below — always reflecting your most recent production upload for each carrier.</p>
                 </div>
