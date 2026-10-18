@@ -3092,8 +3092,15 @@ export default function App() {
     } catch (e) { showToast("Could not update: " + e.message, "error"); }
   }
 
-  const [payablesMonth, setPayablesMonth] = useState("");
   const payablesMonthsAvailable = useMemo(() => [...new Set(payableLedger.filter((l) => l.transactionDate).map((l) => l.transactionDate.slice(0, 7)))].sort().reverse(), [payableLedger]);
+  // Defaults to the most recent month that has data (ignoring obviously bad years); picking
+  // "All time" or any month in the dropdown overrides it.
+  const [payablesMonthChoice, setPayablesMonth] = useState(null);
+  const latestPayablesMonth = useMemo(() => {
+    const maxYr = new Date().getFullYear() + 1;
+    return payablesMonthsAvailable.find((m) => { const y = Number(m.slice(0, 4)); return y >= 2015 && y <= maxYr; }) || "";
+  }, [payablesMonthsAvailable]);
+  const payablesMonth = payablesMonthChoice === null ? latestPayablesMonth : payablesMonthChoice;
   const owedByAgentThisMonth = useMemo(() => {
     const scoped = payableLedger.filter((l) => l.sourceType !== "one_time_correction" && l.sourceType !== "agency_numeric" && l.sourceType !== "agency_comp" && (!payablesMonth || (l.transactionDate && l.transactionDate.slice(0, 7) === payablesMonth)));
     const grouped = groupBy(scoped.map((l) => ({ ...l, commissionAmount: l.amount })), (l) => resolveAgentName(l.agentName, "", "", "") + " — " + l.carrier);
@@ -4657,7 +4664,7 @@ export default function App() {
                 <div className="pt-grid-list">
                   <div className="pt-card">
                     <div className="pt-row-between">
-                      <h3>Recognized as owed to agents{payablesMonth ? ` — ${payablesMonth}` : " — all time"}</h3>
+                      <h3>Recognized as owed to agents{payablesMonth ? ` — ${payablesMonth}${payablesMonthChoice === null ? " (latest month)" : ""}` : " — all time"}</h3>
                       <select value={payablesMonth} onChange={(e) => setPayablesMonth(e.target.value)} style={{ minWidth: 160 }}>
                         <option value="">All time</option>
                         {payablesMonthsAvailable.map((m) => <option key={m} value={m}>{m}</option>)}
