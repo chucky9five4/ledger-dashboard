@@ -5327,12 +5327,37 @@ function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
   return (
     <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
       <div className="pt-row-between" style={{ marginBottom: 6 }}>
-        <h3 style={{ margin: 0 }}>Return on investment · {yr}</h3>
+        <h3 style={{ margin: 0 }}>{hasInvest ? "Return on investment · " + yr : "Earnings · " + yr}</h3>
         {hasInvest && <RoiStatusPill status={a.status} />}
       </div>
       {!hasInvest ? (
         <>
-          <p className="pt-hint">No investment has been logged for {agentName} yet, so there is nothing to compare their income against. Add one in Manage data (single entry or a QuickBooks upload).</p>
+          <p className="pt-hint" style={{ marginBottom: 10 }}>No money has been invested in {agentName}, so there is no ROI to calculate. Here is what this agent has earned for the agency anyway. First year is net of first-year chargebacks and after the agent's share. Renewals are house money.</p>
+          <div className="pt-cards pt-cards-4" style={{ marginBottom: 6 }}>
+            <StatCard label="First-year net revenue (YTD)" value={fmtMoney(a ? a.incomeYtd : 0)} money={a ? a.incomeYtd : 0} period={String(yr)} />
+            <StatCard label="Renewals (YTD)" value={fmtMoney(a ? a.residYtd : 0)} money={a ? a.residYtd : 0} period={String(yr)} caption="House money" />
+            <StatCard label="Total from agent (YTD)" value={fmtMoney(a ? a.incomeYtd + a.residYtd : 0)} money={a ? a.incomeYtd + a.residYtd : 0} period={String(yr)} caption="First year + renewals" />
+            <StatCard label="Total from agent (lifetime)" value={fmtMoney(a ? a.totalAll : 0)} money={a ? a.totalAll : 0} period="All time" caption="Everything in the app, net of chargebacks" />
+          </div>
+          {a && (
+            <table className="pt-table" style={{ marginTop: 10 }}>
+              <thead><tr><th>Month</th><th className="num">First-year net</th><th className="num">Renewals</th><th className="num">Total</th></tr></thead>
+              <tbody>
+                {a.series.map((m) => {
+                  const rn = a.resid[m.month] || 0;
+                  return (
+                    <tr key={m.month}>
+                      <td>{fmtMonthLabel(m.month)}</td>
+                      <td className="num"><Money v={m.income} /></td>
+                      <td className="num"><Money v={rn} /></td>
+                      <td className="num"><Money v={m.income + rn} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <p className="pt-hint" style={{ marginTop: 10 }}>If you do invest in this agent later, add it in Manage data and the ROI cards, status and chart appear here.</p>
           <button className="pt-btn ghost small" style={{ marginTop: 8 }} onClick={onGoManage}>Go to Manage data</button>
         </>
       ) : (
