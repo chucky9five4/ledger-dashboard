@@ -5326,7 +5326,18 @@ function RoiMonthTable({ series, spendName = "Invested", incomeName = "Net reven
 function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
   const [q, setQ] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [showYtdInv, setShowYtdInv] = useState(false);
+  const [ytdQ, setYtdQ] = useState("");
+  const [ytdAll, setYtdAll] = useState(false);
   const hasInvest = a && a.firstInvest;
+  const ytdEntries = hasInvest ? a.entries.filter((e) => e.date && e.date.slice(0, 4) === String(yr)).sort((x, y) => (y.date || "").localeCompare(x.date || "")) : [];
+  const ytdTotal = ytdEntries.reduce((t, e) => t + e.amount, 0);
+  const ytdByCat = {};
+  ytdEntries.forEach((e) => { const c = e.category || "Uncategorized"; ytdByCat[c] = (ytdByCat[c] || 0) + e.amount; });
+  const ytdCats = Object.keys(ytdByCat).map((k) => ({ k, v: ytdByCat[k] })).sort((x, y) => y.v - x.v);
+  const ytdQl = ytdQ.trim().toLowerCase();
+  const ytdFiltered = ytdQl ? ytdEntries.filter((e) => (e.vendor + " " + e.memo + " " + e.category + " " + e.date).toLowerCase().includes(ytdQl)) : ytdEntries;
+  const ytdShown = ytdAll ? ytdFiltered : ytdFiltered.slice(0, 5);
   const entries = hasInvest ? [...a.entries].sort((x, y) => (y.date || "").localeCompare(x.date || "")) : [];
   const ql = q.trim().toLowerCase();
   const filtered = ql ? entries.filter((e) => (e.vendor + " " + e.memo + " " + e.category + " " + e.date).toLowerCase().includes(ql)) : entries;
@@ -5371,11 +5382,52 @@ function AgentRoiSection({ agentName, a, graceMonths, yr, onGoManage }) {
         <>
           <p className="pt-hint" style={{ marginBottom: 10 }}>Return on investment counts first-year sales only (net of first-year chargebacks), after the agent's share is passed through. Renewals are house money and are not part of ROI. First investment: {fmtDate(a.firstInvest)}. The first {graceMonths} months are a ramp-up period, since sales take time to close and pay.</p>
           <div className="pt-cards pt-cards-4" style={{ marginBottom: 6 }}>
-            <StatCard label="Invested (YTD)" value={fmtMoney(a.investedYtd)} tone="ink" period={String(yr)} />
+            <StatCard label="Invested (YTD)" value={fmtMoney(a.investedYtd)} tone="ink" period={String(yr)} caption={showYtdInv ? "Click to hide the list" : "Click to see everything invested"} onClick={() => setShowYtdInv(!showYtdInv)} />
             <StatCard label="First-year net revenue (YTD)" value={fmtMoney(a.incomeYtd)} money={a.incomeYtd} period={String(yr)} caption="First-year paid − first-year chargebacks" />
             <StatCard label="Net (YTD)" value={fmtMoney(a.incomeYtd - a.investedYtd)} money={a.incomeYtd - a.investedYtd} period={String(yr)} />
             <StatCard label="ROI (YTD)" value={fmtPct(a.roiYtd)} money={a.roiYtd === null ? 0 : a.roiYtd} caption={a.roiYtd === null ? "" : "(income − invested) ÷ invested"} period={String(yr)} />
           </div>
+          {showYtdInv && (
+            <div className="pt-card" style={{ marginTop: 10, marginBottom: 10 }}>
+              <div className="pt-row-between" style={{ marginBottom: 6 }}>
+                <h4 style={{ margin: 0 }}>Invested in {agentName} · {yr} <span className="pt-hint">({ytdEntries.length} {ytdEntries.length === 1 ? "entry" : "entries"}, {fmtMoney(ytdTotal)})</span></h4>
+                <button className="pt-btn primary small" onClick={() => { setShowYtdInv(false); setYtdQ(""); setYtdAll(false); }}>Back</button>
+              </div>
+              {ytdEntries.length === 0 ? (
+                <p className="pt-hint">Nothing has been invested in this agent in {yr}. Earlier investments are in the list further down.</p>
+              ) : (
+                <>
+                  <div className="pt-mini-label" style={{ marginTop: 4 }}>By category</div>
+                  <table className="pt-table">
+                    <thead><tr><th>Category</th><th className="num">Amount</th><th className="num">Share</th></tr></thead>
+                    <tbody>
+                      {ytdCats.map((c) => (
+                        <tr key={c.k}><td>{c.k}</td><td className="num mono">{fmtMoney(c.v)}</td><td className="num mono">{ytdTotal !== 0 ? fmtPct((c.v / ytdTotal) * 100) : "—"}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="pt-row-between" style={{ marginTop: 12, marginBottom: 6 }}>
+                    <div className="pt-mini-label" style={{ marginTop: 0 }}>{ytdAll ? "All entries" : "Most recent 5"}</div>
+                    {ytdAll ? (
+                      <button className="pt-btn primary small" onClick={() => setYtdAll(false)}>Show top 5</button>
+                    ) : (
+                      ytdFiltered.length > 5 && <button className="pt-btn primary small" onClick={() => setYtdAll(true)}>View all ({ytdFiltered.length})</button>
+                    )}
+                  </div>
+                  <input value={ytdQ} onChange={(e) => setYtdQ(e.target.value)} placeholder="Search vendor, memo or category…" style={{ width: "100%", marginBottom: 8 }} />
+                  <table className="pt-table">
+                    <thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Memo</th><th className="num">Amount</th></tr></thead>
+                    <tbody>
+                      {ytdShown.map((e) => (
+                        <tr key={e.id}><td>{fmtDate(e.date)}</td><td>{e.category || "—"}</td><td>{e.vendor || "—"}</td><td>{e.memo || "—"}</td><td className="num mono">{fmtMoney(e.amount)}</td></tr>
+                      ))}
+                      {ytdShown.length === 0 && <tr><td colSpan={5} className="pt-hint">No matches.</td></tr>}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          )}
           <div className="pt-mini-label" style={{ marginTop: 10 }}>Everything this agent has earned for the agency (not part of ROI)</div>
           <div className="pt-cards pt-cards-3" style={{ marginBottom: 6 }}>
             <StatCard label="Renewals (YTD)" value={fmtMoney(a.residYtd)} money={a.residYtd} period={String(yr)} caption="House money, excluded from ROI" />
